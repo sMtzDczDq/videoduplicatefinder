@@ -24,17 +24,27 @@ namespace VDF.GUI.Utils {
 	static class ImageUtils {
 		public static Bitmap? JoinImages(List<Image> pImgList) {
 			if (pImgList == null || pImgList.Count == 0) return null;
-
+			int maxWidth = 4;
 			int height = pImgList[0].Height;
 			int width = 0;
-			for (int i = 0; i <= pImgList.Count - 1; i++)
+			for (int i = 0; i <= maxWidth - 1; i++)
 				width += pImgList[i].Width;
-
+			var rows = 1
+			if (pImgList.Count > maxWidth) {
+				rows = (int)Math.Ceiling(pImgList.Count / (double)maxWidth);
+				height *= rows;
+			}
+			
 			using var img = new Image<Rgba32>(width, height); // create output image of the correct dimensions
 
 			List<Point> locations = new(pImgList.Count);
 			int tmpwidth = 0;
+			int tmpheight = 0;
 			for (int i = 0; i <= pImgList.Count - 1; i++) {
+				if (i != 0 && i % maxWidth == 0) {
+					tmpheight += height;
+					tmpwidth = 0;
+				}
 				img.Mutate(a => a.DrawImage(pImgList[i], new Point(tmpwidth, 0), 1f));
 				tmpwidth += pImgList[i].Width;
 			}

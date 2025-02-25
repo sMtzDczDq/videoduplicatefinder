@@ -45,7 +45,7 @@ namespace VDF.GUI.Utils {
 					tmpheight += height;
 					tmpwidth = 0;
 				}
-				img.Mutate(a => a.DrawImage(pImgList[i], new Point(tmpwidth, 0), 1f));
+				img.Mutate(a => a.DrawImage(pImgList[i], new Point(tmpwidth, tmpheight), 1f));
 				tmpwidth += pImgList[i].Width;
 			}
 

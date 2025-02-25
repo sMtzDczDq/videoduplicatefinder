@@ -29,7 +29,7 @@ namespace VDF.GUI.Utils {
 			int width = 0;
 			for (int i = 0; i <= maxWidth - 1; i++)
 				width += pImgList[i].Width;
-			var rows = 1
+			var rows = 1;
 			if (pImgList.Count > maxWidth) {
 				rows = (int)Math.Ceiling(pImgList.Count / (double)maxWidth);
 				height *= rows;

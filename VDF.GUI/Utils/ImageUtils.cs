@@ -41,7 +41,7 @@ namespace VDF.GUI.Utils {
 			int tmpwidth = 0;
 			int tmpheight = 0;
 			for (int i = 0; i <= pImgList.Count - 1; i++) {
-				if (i != 0 && i % maxWidth == 0) {
+				if (i % maxWidth == 0 && i > 0) {
 					tmpheight += height;
 					tmpwidth = 0;
 				}

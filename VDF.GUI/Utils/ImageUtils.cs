@@ -43,7 +43,7 @@ namespace VDF.GUI.Utils {
 			int tmpheight = 0;
 			for (int i = 0; i <= pImgList.Count - 1; i++) {
 				if (i % maxWidth == 0 && i > 0) {
-					tmpheight += height;
+					tmpheight += panelHeight;
 					tmpwidth = 0;
 				}
 				img.Mutate(a => a.DrawImage(pImgList[i], new Point(tmpwidth, tmpheight), 1f));

@@ -24,16 +24,17 @@ namespace VDF.GUI.Utils {
 	static class ImageUtils {
 		public static Bitmap? JoinImages(List<Image> pImgList) {
 			if (pImgList == null || pImgList.Count == 0) return null;
+			//Maximum number of thumbnails in one row
 			int maxWidth = 4;
-			int panelHeight = pImgList[0].Height;
+			int thumbnailHeight = pImgList[0].Height;
 			int width = 0;
 			for (int i = 0; i <= maxWidth - 1; i++)
 				width += pImgList[i].Width;
-			var rows = 1;
-			var height = panelHeight;
+			var height = thumbnailHeight;
 			if (pImgList.Count > maxWidth) {
-				rows = (int)Math.Ceiling(pImgList.Count / (double)maxWidth);
-				height = rows * panelHeight;
+				//Ceiling rounds up
+				int rows = (int)Math.Ceiling(pImgList.Count / (double)maxWidth);
+				height = rows * thumbnailHeight;
 			}
 			
 			using var img = new Image<Rgba32>(width, height); // create output image of the correct dimensions
@@ -43,7 +44,7 @@ namespace VDF.GUI.Utils {
 			int tmpheight = 0;
 			for (int i = 0; i <= pImgList.Count - 1; i++) {
 				if (i % maxWidth == 0 && i > 0) {
-					tmpheight += panelHeight;
+					tmpheight += thumbnailHeight;
 					tmpwidth = 0;
 				}
 				img.Mutate(a => a.DrawImage(pImgList[i], new Point(tmpwidth, tmpheight), 1f));

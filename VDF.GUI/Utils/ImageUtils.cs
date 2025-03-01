@@ -24,8 +24,8 @@ namespace VDF.GUI.Utils {
 	static class ImageUtils {
 		public static Bitmap? JoinImages(List<Image> pImgList) {
 			if (pImgList == null || pImgList.Count == 0) return null;
-			//Maximum number of thumbnails in one row
-			int maxWidth = 4;
+			//Maximum number of thumbnails in one row. 
+			int maxWidth = Math.Min(pImgList.Count, 4);
 			int thumbnailHeight = pImgList[0].Height;
 			int width = 0;
 			for (int i = 0; i <= maxWidth - 1; i++)

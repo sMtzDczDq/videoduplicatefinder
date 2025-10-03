@@ -22,15 +22,22 @@ using VDF.GUI.Data;
 
 namespace VDF.GUI.ViewModels {
 	public partial class MainWindowVM : ReactiveObject {
-		public KeyValuePair<string, Comparison<RowNode>>[] SortOrders { get; private set; }
-		private static int CompareLeafBy<T>(RowNode a, RowNode b, Func<DuplicateItemVM, T> key, bool desc = false) where T : IComparable<T> {
-			if (a.IsGroup || b.IsGroup) return 0;
-
-			var va = key(a.Item!);
-			var vb = key(b.Item!);
-			var c = va.CompareTo(vb);
-			return desc ? -c : c;
+		private readonly Dictionary<(Guid gid, Type kind), object?> _groupKeyCache = new();
+		private void InvalidateGroupCaches() {
+			_groupKeyCache.Clear();
+			_groupNodeToGuid.Clear();
 		}
+		private readonly Dictionary<RowNode, Guid> _groupNodeToGuid =
+			new(RowNodeReferenceComparer.Instance);
+		public KeyValuePair<string, Comparison<RowNode>>[] SortOrders { get; private set; }
+		//private static int CompareLeafBy<T>(RowNode a, RowNode b, Func<DuplicateItemVM, T> key, bool desc = false) where T : IComparable<T> {
+		//	if (a.IsGroup || b.IsGroup) return 0;
+
+		//	var va = key(a.Item!);
+		//	var vb = key(b.Item!);
+		//	var c = va.CompareTo(vb);
+		//	return desc ? -c : c;
+		//}
 
 		private static int CompareGroupsByInt(RowNode a, RowNode b, Func<RowNode, int> key, bool desc = false) {
 			if (!a.IsGroup || !b.IsGroup) return 0;
@@ -62,7 +69,7 @@ namespace VDF.GUI.ViewModels {
 							: (_hasChecked.TryGetValue(dy.ItemInfo.GroupId, out var b)
 							   ? b
 							   : (_hasChecked[dy.ItemInfo.GroupId] =
-								   mainVM.EnumerateItemsInGroup( dy.ItemInfo.GroupId).Any(a => a.Checked)));
+								   mainVM.EnumerateItemsInGroup(dy.ItemInfo.GroupId).Any(a => a.Checked)));
 
 				return X().CompareTo(Y());
 			}
@@ -108,6 +115,7 @@ namespace VDF.GUI.ViewModels {
 				if (value.Key == _FileType.Key) return;
 				_FileType = value;
 				this.RaisePropertyChanged(nameof(FileType));
+				ApplyFilter();
 				RefreshGroupStats();
 			}
 		}
@@ -118,6 +126,7 @@ namespace VDF.GUI.ViewModels {
 			set {
 				if (value.Key == _SortOrder.Key) return;
 				_SortOrder = value;
+				InvalidateGroupCaches();
 				TreeSource.Sort(_SortOrder.Value);
 				this.RaisePropertyChanged(nameof(SortOrder));
 			}
@@ -185,32 +194,125 @@ namespace VDF.GUI.ViewModels {
 			if (!Dispatcher.UIThread.CheckAccess()) { Dispatcher.UIThread.Post(ApplyFilter); return; }
 
 			RebuildSearchPathIndex();
-
-			// Set visible children per group
-			foreach (var g in _allGroups) {
-				g.Children.Clear();
-				foreach (var leaf in g.AllChildren)
-					if (leaf.Item is { } vm && Matches(vm))
-						g.Children.Add(leaf);
-
-				UpdateGroupHeader(g);
-			}
-
-			// Remove what is empty
-			foreach (var g in Duplicates.ToList())
-				if (g.Children.Count == 0)
-					Duplicates.Remove(g);
-
-			// Insert what should be visible
-			foreach (var g in _allGroups)
-				if (g.Children.Count > 0 && !Duplicates.Contains(g)) {
-					// Insert at old position (according to _allGroups order)
-					var idx = 0;
-					while (idx < Duplicates.Count && _allGroups.IndexOf(Duplicates[idx]) < _allGroups.IndexOf(g))
-						idx++;
-					Duplicates.Insert(idx, g);
+			using (Dispatcher.UIThread.DisableProcessing()) {
+				// Set visible children per group
+				foreach (var g in _allGroups) {
+					var newKids = new List<RowNode>(g.AllChildren.Count);
+					foreach (var leaf in g.AllChildren)
+						if (leaf.Item is { } vm && Matches(vm))
+							newKids.Add(leaf);
+					g.Children.Clear();
+					if (newKids.Count > 0)
+						g.Children.AddRange(newKids);
+					UpdateGroupHeader(g);
 				}
 
+				// Remove what is empty
+				var newGroups = new List<RowNode>(_allGroups.Count);
+				foreach (var g in _allGroups)
+					if (g.Children.Count > 0)
+						newGroups.Add(g);
+
+				Duplicates.Clear();
+				if (newGroups.Count > 0)
+					Duplicates.AddRange(newGroups);
+
+			}
+			InvalidateGroupCaches();
+		}
+		private sealed class RowNodeReferenceComparer : IEqualityComparer<RowNode> {
+			public static readonly RowNodeReferenceComparer Instance = new();
+			private RowNodeReferenceComparer() { }
+			public bool Equals(RowNode? x, RowNode? y) => ReferenceEquals(x, y);
+			public int GetHashCode(RowNode obj) => System.Runtime.CompilerServices.RuntimeHelpers.GetHashCode(obj);
+		}
+		private Guid GetGroupId(RowNode n) {
+			if (!n.IsGroup)
+				return n.Item!.ItemInfo.GroupId;
+
+			if (_groupNodeToGuid.TryGetValue(n, out var gid))
+				return gid;
+
+			// Find first leaf in AllChildren to read its GroupId
+			for (int i = 0; i < n.AllChildren.Count; i++) {
+				var c = n.AllChildren[i];
+				if (!c.IsGroup && c.Item is not null) {
+					gid = c.Item.ItemInfo.GroupId;
+					_groupNodeToGuid[n] = gid;
+					return gid;
+				}
+			}
+			// Empty group (should be rare / usually filtered out)
+			_groupNodeToGuid[n] = Guid.Empty;
+			return Guid.Empty;
+		}
+		private int CompareBy<T>(RowNode a, RowNode b, Func<DuplicateItemVM, T> key, bool desc = false, Func<IEnumerable<T>, T>? groupAggregate = null) where T : IComparable<T> {
+			// Default aggregator: Max
+			groupAggregate ??= static values => {
+				using var e = values.GetEnumerator();
+				if (!e.MoveNext()) return default!;
+				T best = e.Current;
+				var cmp = Comparer<T>.Default;
+				while (e.MoveNext())
+					if (cmp.Compare(e.Current, best) > 0)
+						best = e.Current;
+				return best;
+			};
+
+			T KeyForNode(RowNode n, out Guid groupIdOfNode) {
+				if (!n.IsGroup) {
+					groupIdOfNode = n.Item!.ItemInfo.GroupId;
+					return key(n.Item!);
+				}
+
+				groupIdOfNode = GetGroupId(n);
+
+				// Lookup aggregate per group Guid
+				if (!_groupKeyCache.TryGetValue((groupIdOfNode, typeof(T)), out var boxed)) {
+					// Aggregate over currently visible children
+					var kids = n.Children;
+
+					var list = new List<T>(kids.Count);
+					for (int i = 0; i < kids.Count; i++) {
+						var c = kids[i];
+						if (!c.IsGroup && c.Item is not null)
+							list.Add(key(c.Item));
+					}
+					var agg = groupAggregate(list);
+					_groupKeyCache[(groupIdOfNode, typeof(T))] = agg!;
+					return agg!;
+				}
+				return (T)boxed!;
+			}
+
+			var ka = KeyForNode(a, out var ga);
+			var kb = KeyForNode(b, out var gb);
+
+			int c = ka.CompareTo(kb);
+			if (c != 0) return desc ? -c : c;
+
+			// --- Stable tie-breakers ---
+
+			// If both are leaves and belong to the same group, keep insertion order (return 0).
+			if (!a.IsGroup && !b.IsGroup && ga == gb)
+				return 0;
+
+			// Prefer groups to come before their children when equal (or flip if you like)
+			if (a.IsGroup != b.IsGroup)
+				return a.IsGroup ? -1 : 1;
+
+			// Fallback to path to avoid flicker for identical values across different groups/leaves
+			if (!a.IsGroup && !b.IsGroup) {
+				string pa = a.Item!.ItemInfo.Path;
+				string pb = b.Item!.ItemInfo.Path;
+				int pc = string.Compare(pa, pb, StringComparison.OrdinalIgnoreCase);
+				if (pc != 0) return pc;
+			}
+			// As a last resort, compare group ids to ensure deterministic total ordering
+			if (ga != gb)
+				return ga.CompareTo(gb);
+
+			return 0;
 		}
 	}
 }

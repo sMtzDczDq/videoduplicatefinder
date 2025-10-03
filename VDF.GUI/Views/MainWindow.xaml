@@ -83,7 +83,7 @@
                                 FontSize="12"
                                 Text="Scanner" />
                         </TabItem.Header>
-                        <Grid Margin="0,0,0,10" RowDefinitions="Auto, *, Auto, Auto">
+                        <Grid Margin="0,0,0,10" RowDefinitions="Auto, *, Auto, Auto, Auto">
                             <Menu Grid.Row="0" MinHeight="30">
                                 <MenuItem
                                     Command="{Binding StartScanCommand}"
@@ -204,6 +204,14 @@
                                                 Margin="5,0,0,0"
                                                 VerticalAlignment="Center"
                                                 Text="Edit..." />
+                                        </MenuItem.Header>
+                                    </MenuItem>
+                                    <MenuItem Command="{Binding RelocateDatabaseFilesCommand}">
+                                        <MenuItem.Header>
+                                            <TextBlock
+                                                Margin="5,0,0,0"
+                                                VerticalAlignment="Center"
+                                                Text="Relocate Files" />
                                         </MenuItem.Header>
                                     </MenuItem>
                                     <Separator />
@@ -346,7 +354,7 @@
                                     </MenuItem>
                                 </MenuItem>
                             </Menu>
-                            <Grid Grid.Row="1">
+                            <Grid Grid.Row="1" IsVisible="{Binding ShowTreeDataGrid}">
                                 <Grid.RowDefinitions>
                                     <RowDefinition Height="Auto" />
                                     <RowDefinition Height="Auto" />
@@ -606,14 +614,24 @@
                                         <TreeDataGrid.KeyBindings>
                                             <KeyBinding Command="{Binding RenameFileCommand}" Gesture="F2" />
                                             <KeyBinding Command="{Binding ToggleCheckboxCommand}" Gesture="Space" />
+                                            <KeyBinding Command="{Binding OpenItemCommand}" Gesture="Enter" />
+                                            <KeyBinding Command="{Binding OpenItemInFolderCommand}" Gesture="Shift+Enter" />
                                             <KeyBinding Command="{Binding DeleteSelectionWithPromptCommand}" Gesture="Delete" />
                                             <KeyBinding Command="{Binding DeleteSelectionCommand}" Gesture="Shift+Delete" />
                                             <KeyBinding Command="{Binding DeleteHighlightedCommand}" Gesture="Control+Delete" />
                                             <KeyBinding Command="{Binding ShowGroupInThumbnailComparerCommand}" Gesture="Alt+C" />
+                                            <KeyBinding Command="{Binding MarkGroupAsNotAMatchCommand}" Gesture="Alt+X" />
                                         </TreeDataGrid.KeyBindings>
                                         <TreeDataGrid.ContextMenu>
                                             <ContextMenu>
-                                                <MenuItem Command="{Binding OpenItemInFolderCommand}" Header="Open In Folder" />
+                                                <MenuItem
+                                                    Command="{Binding OpenItemInFolderCommand}"
+                                                    Header="Open File"
+                                                    InputGesture="Return" />
+                                                <MenuItem
+                                                    Command="{Binding OpenItemInFolderCommand}"
+                                                    Header="Open In Folder"
+                                                    InputGesture="Shift+Return" />
                                                 <MenuItem
                                                     Command="{Binding RenameFileCommand}"
                                                     Header="Rename File"
@@ -757,6 +775,7 @@
                                                     <MenuItem
                                                         Command="{Binding MarkGroupAsNotAMatchCommand}"
                                                         Header="Mark as 'Not a match'"
+                                                        InputGesture="Alt+X"
                                                         ToolTip.Tip="Hides this group and exclude it from future scans, except when there is a new duplicate." />
                                                     <MenuItem
                                                         Command="{Binding OpenGroupCommand}"
@@ -799,56 +818,62 @@
                                     </Border>
                                 </Grid>
                             </Grid>
-                            <Grid
-                                Grid.Row="2"
-                                IsVisible="{Binding !Duplicates.Count}"
-                                RowDefinitions="Auto, Auto">
+                            <Grid Grid.Row="2" IsVisible="{Binding !Duplicates.Count}">
                                 <StackPanel
-                                    Grid.Row="0"
                                     MinHeight="20"
+                                    Margin="0,5,0,0"
                                     Orientation="Horizontal">
-                                    <TextBlock Text="{Binding DuplicatesSelectedCounter, Mode=OneWay, StringFormat=Total Selected Duplicates: \{0\}}" />
-                                </StackPanel>
-                                <StackPanel
-                                    Grid.Row="1"
-                                    MinHeight="20"
-                                    Orientation="Horizontal">
-                                    <TextBlock Text="{Binding #dataGridGrouping.Items.Count, Mode=OneWay, StringFormat=Visible Duplicates: \{0\}}" />
-                                    <Separator
+                                    <TextBlock Text="{Binding DuplicatesSelectedCounter, Mode=OneWay, StringFormat=Selected Duplicates: \{0\}}" />
+                                    <Border
                                         Width="1"
-                                        Margin="5"
-                                        Background="{actipro:ThemeResource StatusBarBorderBrush}" />
-                                    <TextBlock Text="{Binding TotalDuplicates, Mode=OneWay, StringFormat=Total Duplicates: \{0\}}" />
-                                    <Separator
+                                        Margin="5,0"
+                                        Background="{actipro:ThemeResource ButtonForegroundBrush}" />
+                                    <TextBlock Text="{Binding TotalDuplicates, Mode=OneWay, StringFormat=Duplicates: \{0\}}" />
+                                    <Border
                                         Width="1"
-                                        Margin="5"
-                                        Background="{actipro:ThemeResource StatusBarBorderBrush}" />
-                                    <TextBlock Text="{Binding TotalDuplicateGroups, Mode=OneWay, StringFormat=Total Duplicate Groups: \{0\}}" />
-                                    <Separator
+                                        Margin="5,0"
+                                        Background="{actipro:ThemeResource ButtonForegroundBrush}" />
+                                    <TextBlock Text="{Binding TotalDuplicateGroups, Mode=OneWay, StringFormat=Duplicate Groups: \{0\}}" />
+                                    <Border
                                         Width="1"
-                                        Margin="5"
-                                        Background="{actipro:ThemeResource StatusBarBorderBrush}" />
-                                    <TextBlock Text="{Binding TotalDuplicatesSize, Mode=OneWay, StringFormat=Total Size: \{0\}}" />
-                                    <Separator
+                                        Margin="5,0"
+                                        Background="{actipro:ThemeResource ButtonForegroundBrush}" />
+                                    <TextBlock Text="{Binding TotalDuplicatesSize, Mode=OneWay, StringFormat=Size: \{0\}}" />
+                                    <Border
                                         Width="1"
-                                        Margin="5"
-                                        Background="{actipro:ThemeResource StatusBarBorderBrush}" />
-                                    <TextBlock Text="{Binding TotalSizeRemoved, Mode=OneWay, StringFormat=Total Size Removed: \{0\}}" />
+                                        Margin="5,0"
+                                        Background="{actipro:ThemeResource ButtonForegroundBrush}" />
+                                    <TextBlock Text="{Binding TotalSizeRemoved, Mode=OneWay, StringFormat=Size Removed: \{0\}}" />
                                 </StackPanel>
                             </Grid>
-                            <Grid Grid.Row="3">
+                            <Grid Grid.Row="3" Margin="0,5,0,0">
                                 <StackPanel MinHeight="20" Orientation="Horizontal">
                                     <ProgressBar
                                         Name="PbScanProgress"
                                         MinWidth="100"
                                         Maximum="{Binding ScanProgressMaxValue, Mode=OneWay}"
                                         Value="{Binding ScanProgressValue, Mode=OneWay}" />
-                                    <Separator Width="1" Margin="5" />
+                                    <Border
+                                        Width="1"
+                                        Margin="5,0"
+                                        Background="{actipro:ThemeResource ButtonForegroundBrush}" />
                                     <TextBlock Text="{Binding TimeElapsed, Mode=OneWay, StringFormat=Elapsed time: {0:c}}" />
-                                    <Separator Width="1" Margin="5" />
+                                    <Border
+                                        Width="1"
+                                        Margin="5,0"
+                                        Background="{actipro:ThemeResource ButtonForegroundBrush}" />
                                     <TextBlock Text="{Binding RemainingTime, Mode=OneWay, StringFormat=Remaining time: ~{0:c}}" />
-                                    <Separator Width="1" Margin="5" />
+                                    <Border
+                                        Width="1"
+                                        Margin="5,0"
+                                        Background="{actipro:ThemeResource ButtonForegroundBrush}" />
                                     <TextBlock Text="{Binding ScanProgressText, Mode=OneWay} TextTrimming=CharacterEllipsis" />
+                                </StackPanel>
+                            </Grid>
+                            <Grid Grid.Row="4" IsVisible="{Binding ShowThumbnailRetrievalProgress}">
+                                <StackPanel Margin="0,5,0,0" Orientation="Horizontal">
+                                    <ProgressBar MinWidth="100" IsIndeterminate="{Binding ShowThumbnailRetrievalProgressBar}" />
+                                    <TextBlock Margin="5,0" Text="{Binding ThumbnailRetrievalProgressText}" />
                                 </StackPanel>
                             </Grid>
                         </Grid>
@@ -1452,41 +1477,36 @@
                                             Content="Dark Mode¹"
                                             IsChecked="{Binding Source={x:Static Settings:SettingsFile.Instance}, Path=DarkMode}"
                                             IsThreeState="False" />
+                                        <CheckBox
+                                            VerticalAlignment="Center"
+                                            Content="Show Path Column¹"
+                                            IsChecked="{Binding Source={x:Static Settings:SettingsFile.Instance}, Path=ShowPathColumn}"
+                                            IsThreeState="False" />
+                                        <CheckBox
+                                            VerticalAlignment="Center"
+                                            Content="Show Duration Column¹"
+                                            IsChecked="{Binding Source={x:Static Settings:SettingsFile.Instance}, Path=ShowDurationColumn}"
+                                            IsThreeState="False" />
+                                        <CheckBox
+                                            VerticalAlignment="Center"
+                                            Content="Show Format Column¹"
+                                            IsChecked="{Binding Source={x:Static Settings:SettingsFile.Instance}, Path=ShowFormatColumn}"
+                                            IsThreeState="False" />
+                                        <CheckBox
+                                            VerticalAlignment="Center"
+                                            Content="Show Audio Column¹"
+                                            IsChecked="{Binding Source={x:Static Settings:SettingsFile.Instance}, Path=ShowAudioColumn}"
+                                            IsThreeState="False" />
+                                        <CheckBox
+                                            VerticalAlignment="Center"
+                                            Content="Show Similarity Column¹"
+                                            IsChecked="{Binding Source={x:Static Settings:SettingsFile.Instance}, Path=ShowSimilarityColumn}"
+                                            IsThreeState="False" />
                                         <TextBlock
                                             Margin="0,5,0,5"
                                             VerticalAlignment="Center"
                                             Foreground="{actipro:ThemeResource ControlBackgroundBrushSolidWarning}"
                                             Text="¹ Restart VDF to apply changes" />
-                                        <CheckBox
-                                            VerticalAlignment="Center"
-                                            Content="Show Thumbnail Column"
-                                            IsChecked="{Binding Source={x:Static Settings:SettingsFile.Instance}, Path=ShowThumbnailColumn}"
-                                            IsThreeState="False" />
-                                        <CheckBox
-                                            VerticalAlignment="Center"
-                                            Content="Show Path Column"
-                                            IsChecked="{Binding Source={x:Static Settings:SettingsFile.Instance}, Path=ShowPathColumn}"
-                                            IsThreeState="False" />
-                                        <CheckBox
-                                            VerticalAlignment="Center"
-                                            Content="Show Duration Column"
-                                            IsChecked="{Binding Source={x:Static Settings:SettingsFile.Instance}, Path=ShowDurationColumn}"
-                                            IsThreeState="False" />
-                                        <CheckBox
-                                            VerticalAlignment="Center"
-                                            Content="Show Format Column"
-                                            IsChecked="{Binding Source={x:Static Settings:SettingsFile.Instance}, Path=ShowFormatColumn}"
-                                            IsThreeState="False" />
-                                        <CheckBox
-                                            VerticalAlignment="Center"
-                                            Content="Show Audio Column"
-                                            IsChecked="{Binding Source={x:Static Settings:SettingsFile.Instance}, Path=ShowAudioColumn}"
-                                            IsThreeState="False" />
-                                        <CheckBox
-                                            VerticalAlignment="Center"
-                                            Content="Show Similarity Column"
-                                            IsChecked="{Binding Source={x:Static Settings:SettingsFile.Instance}, Path=ShowSimilarityColumn}"
-                                            IsThreeState="False" />
                                     </StackPanel>
                                 </TabItem>
                             </TabControl>

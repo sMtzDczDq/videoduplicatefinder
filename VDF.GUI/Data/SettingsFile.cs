@@ -1,20 +1,22 @@
 // /*
-//     Copyright (C) 2021 0x90d
+//     Copyright (C) 2025 0x90d
 //     This file is part of VideoDuplicateFinder
 //     VideoDuplicateFinder is free software: you can redistribute it and/or modify
-//     it under the terms of the GPLv3 as published by
+//     it under the terms of the GNU Affero General Public License as published by
 //     the Free Software Foundation, either version 3 of the License, or
 //     (at your option) any later version.
 //     VideoDuplicateFinder is distributed in the hope that it will be useful,
 //     but WITHOUT ANY WARRANTY without even the implied warranty of
 //     MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
-//     GNU General Public License for more details.
-//     You should have received a copy of the GNU General Public License
+//     GNU Affero General Public License for more details.
+//     You should have received a copy of the GNU Affero General Public License
 //     along with VideoDuplicateFinder.  If not, see <http://www.gnu.org/licenses/>.
 // */
 //
 
 using System.Collections.ObjectModel;
+using System.Globalization;
+using System.Runtime.InteropServices;
 using System.Text.Json;
 using System.Text.Json.Serialization;
 using System.Xml.Linq;
@@ -24,10 +26,61 @@ using VDF.Core.Utils;
 namespace VDF.GUI.Data {
 	public class SettingsFile : ReactiveObject {
 		private static SettingsFile? instance;
+		private static string? settingsPath;
 
 		[JsonIgnore]
 		public static SettingsFile Instance => instance ??= new SettingsFile();
 
+		public SettingsFile() { }
+
+
+		public static void SetSettingsPath(string? path) {
+			settingsPath = string.IsNullOrWhiteSpace(path) ? null : path;
+		}
+
+		static string ResolveSettingsPath(string? path) {
+			if (!string.IsNullOrWhiteSpace(path))
+				return path;
+			if (!string.IsNullOrWhiteSpace(settingsPath))
+				return settingsPath;
+
+			if (CanWriteToDirectory(CoreUtils.CurrentFolder))
+				return FileUtils.SafePathCombine(CoreUtils.CurrentFolder, "Settings.json");
+
+			return FileUtils.SafePathCombine(GetDefaultSettingsFolder(), "Settings.json");
+		}
+
+		static string GetDefaultSettingsFolder() {
+			string? baseFolder;
+			if (CoreUtils.IsWindows) {
+				baseFolder = Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData);
+			}
+			else if (RuntimeInformation.IsOSPlatform(OSPlatform.OSX)) {
+				baseFolder = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.UserProfile), "Library", "Preferences");
+			}
+			else {
+				baseFolder = Environment.GetEnvironmentVariable("XDG_CONFIG_HOME");
+				if (string.IsNullOrWhiteSpace(baseFolder))
+					baseFolder = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.UserProfile), ".config");
+			}
+
+			var settingsFolder = Path.Combine(baseFolder, "VDF");
+			Directory.CreateDirectory(settingsFolder);
+			return settingsFolder;
+		}
+
+		static bool CanWriteToDirectory(string path) {
+			try {
+				Directory.CreateDirectory(path);
+				var testPath = Path.Combine(path, $".vdf_write_test_{Guid.NewGuid():N}");
+				using var stream = new FileStream(testPath, FileMode.CreateNew, FileAccess.Write, FileShare.None, 1, FileOptions.DeleteOnClose);
+				stream.WriteByte(0);
+				return true;
+			}
+			catch {
+				return false;
+			}
+		}
 		public class CustomActionCommands {
 			public string OpenItemInFolder { get; set; } = string.Empty;
 			public string OpenMultipleInFolder { get; set; } = string.Empty;
@@ -39,12 +92,25 @@ namespace VDF.GUI.Data {
 		public ObservableCollection<string> Includes { get; set; } = new();
 		[JsonPropertyName("Blacklists")]
 		public ObservableCollection<string> Blacklists { get; set; } = new();
-
 		string _LastCustomSelectExpression = string.Empty;
 		[JsonPropertyName("LastCustomSelectExpression")]
 		public string LastCustomSelectExpression {
 			get => _LastCustomSelectExpression;
 			set => this.RaiseAndSetIfChanged(ref _LastCustomSelectExpression, value);
+		}
+
+		ObservableCollection<string> _ExpressionHistory = new();
+		[JsonPropertyName("ExpressionHistory")]
+		public ObservableCollection<string> ExpressionHistory {
+			get => _ExpressionHistory;
+			set => this.RaiseAndSetIfChanged(ref _ExpressionHistory, value);
+		}
+
+		string _LanguageCode = ResolveDefaultLanguageCode();
+		[JsonPropertyName("LanguageCode")]
+		public string LanguageCode {
+			get => _LanguageCode;
+			set => this.RaiseAndSetIfChanged(ref _LanguageCode, ResolveLanguageCode(value));
 		}
 		bool _IgnoreReadOnlyFolders;
 		[JsonPropertyName("IgnoreReadOnlyFolders")]
@@ -76,7 +142,7 @@ namespace VDF.GUI.Data {
 			get => _IgnoreWhitePixels;
 			set => this.RaiseAndSetIfChanged(ref _IgnoreWhitePixels, value);
 		}
-		int _MaxDegreeOfParallelism = 1;
+		int _MaxDegreeOfParallelism = -1;
 		[JsonPropertyName("MaxDegreeOfParallelism")]
 		public int MaxDegreeOfParallelism {
 			get => _MaxDegreeOfParallelism;
@@ -117,6 +183,12 @@ namespace VDF.GUI.Data {
 		public bool ExtendedFFToolsLogging {
 			get => _ExtendedFFToolsLogging;
 			set => this.RaiseAndSetIfChanged(ref _ExtendedFFToolsLogging, value);
+		}
+		bool _LogExcludedFiles;
+		[JsonPropertyName("LogExcludedFiles")]
+		public bool LogExcludedFiles {
+			get => _LogExcludedFiles;
+			set => this.RaiseAndSetIfChanged(ref _LogExcludedFiles, value);
 		}
 		bool _AlwaysRetryFailedSampling = false;
 		[JsonPropertyName("AlwaysRetryFailedSampling")]
@@ -160,6 +232,18 @@ namespace VDF.GUI.Data {
 			get => _ScanAgainstEntireDatabase;
 			set => this.RaiseAndSetIfChanged(ref _ScanAgainstEntireDatabase, value);
 		}
+		bool _UsePHash;
+		[JsonPropertyName("UsePHash")]
+		public bool UsePHash {
+			get => _UsePHash;
+			set => this.RaiseAndSetIfChanged(ref _UsePHash, value);
+		}
+		bool _UseExifCreationDate;
+		[JsonPropertyName("UseExifCreationDate")]
+		public bool UseExifCreationDate {
+			get => _UseExifCreationDate;
+			set => this.RaiseAndSetIfChanged(ref _UseExifCreationDate, value);
+		}
 		int _Percent = 95;
 		[JsonPropertyName("Percent")]
 		public int Percent {
@@ -171,6 +255,24 @@ namespace VDF.GUI.Data {
 		public int PercentDurationDifference {
 			get => _PercentDurationDifference;
 			set => this.RaiseAndSetIfChanged(ref _PercentDurationDifference, value);
+		}
+		int _DurationDifferenceMinSeconds = 0;
+		[JsonPropertyName("DurationDifferenceMinSeconds")]
+		public int DurationDifferenceMinSeconds {
+			get => _DurationDifferenceMinSeconds;
+			set => this.RaiseAndSetIfChanged(ref _DurationDifferenceMinSeconds, value);
+		}
+		int _DurationDifferenceMaxSeconds = 0;
+		[JsonPropertyName("DurationDifferenceMaxSeconds")]
+		public int DurationDifferenceMaxSeconds {
+			get => _DurationDifferenceMaxSeconds;
+			set => this.RaiseAndSetIfChanged(ref _DurationDifferenceMaxSeconds, value);
+		}
+		int _MaxSamplingDurationSeconds = 0;
+		[JsonPropertyName("MaxSamplingDurationSeconds")]
+		public int MaxSamplingDurationSeconds {
+			get => _MaxSamplingDurationSeconds;
+			set => this.RaiseAndSetIfChanged(ref _MaxSamplingDurationSeconds, value);
 		}
 		int _Thumbnails = 1;
 		[JsonPropertyName("Thumbnails")]
@@ -188,7 +290,7 @@ namespace VDF.GUI.Data {
 		}
 
 		public static void SaveSettings(string? path = null) {
-			path ??= FileUtils.SafePathCombine(CoreUtils.CurrentFolder, "Settings.json");
+			path = ResolveSettingsPath(path);
 			File.WriteAllText(path, JsonSerializer.Serialize(instance));
 		}
 
@@ -204,11 +306,35 @@ namespace VDF.GUI.Data {
 			get => _DarkMode;
 			set => this.RaiseAndSetIfChanged(ref _DarkMode, value);
 		}
-		bool _ShowThumbnailColumn = true;
-		[JsonPropertyName("ShowThumbnailColumn")]
-		public bool ShowThumbnailColumn {
-			get => _ShowThumbnailColumn;
-			set => this.RaiseAndSetIfChanged(ref _ShowThumbnailColumn, value);
+		double? _ThumbnailComparerWindowWidth;
+		[JsonPropertyName("ThumbnailComparerWindowWidth")]
+		public double? ThumbnailComparerWindowWidth {
+			get => _ThumbnailComparerWindowWidth;
+			set => this.RaiseAndSetIfChanged(ref _ThumbnailComparerWindowWidth, value);
+		}
+		double? _ThumbnailComparerWindowHeight;
+		[JsonPropertyName("ThumbnailComparerWindowHeight")]
+		public double? ThumbnailComparerWindowHeight {
+			get => _ThumbnailComparerWindowHeight;
+			set => this.RaiseAndSetIfChanged(ref _ThumbnailComparerWindowHeight, value);
+		}
+		double? _ThumbnailComparerWindowPositionX;
+		[JsonPropertyName("ThumbnailComparerWindowPositionX")]
+		public double? ThumbnailComparerWindowPositionX {
+			get => _ThumbnailComparerWindowPositionX;
+			set => this.RaiseAndSetIfChanged(ref _ThumbnailComparerWindowPositionX, value);
+		}
+		double? _ThumbnailComparerWindowPositionY;
+		[JsonPropertyName("ThumbnailComparerWindowPositionY")]
+		public double? ThumbnailComparerWindowPositionY {
+			get => _ThumbnailComparerWindowPositionY;
+			set => this.RaiseAndSetIfChanged(ref _ThumbnailComparerWindowPositionY, value);
+		}
+		int? _ThumbnailComparerWindowScreenIndex;
+		[JsonPropertyName("ThumbnailComparerWindowScreenIndex")]
+		public int? ThumbnailComparerWindowScreenIndex {
+			get => _ThumbnailComparerWindowScreenIndex;
+			set => this.RaiseAndSetIfChanged(ref _ThumbnailComparerWindowScreenIndex, value);
 		}
 		bool _ShowPathColumn = true;
 		[JsonPropertyName("ShowPathColumn")]
@@ -283,11 +409,31 @@ namespace VDF.GUI.Data {
 			set => this.RaiseAndSetIfChanged(ref _MinimumFileSize, value);
 		}
 
+		bool _EnableScheduledScan;
+		[JsonPropertyName("EnableScheduledScan")]
+		public bool EnableScheduledScan {
+			get => _EnableScheduledScan;
+			set => this.RaiseAndSetIfChanged(ref _EnableScheduledScan, value);
+		}
+		string _ScheduledScanTime = "02:00";
+		[JsonPropertyName("ScheduledScanTime")]
+		public string ScheduledScanTime {
+			get => _ScheduledScanTime;
+			set => this.RaiseAndSetIfChanged(ref _ScheduledScanTime, value);
+		}
+		bool _NotifyOnScheduledScanComplete = true;
+		[JsonPropertyName("NotifyOnScheduledScanComplete")]
+		public bool NotifyOnScheduledScanComplete {
+			get => _NotifyOnScheduledScanComplete;
+			set => this.RaiseAndSetIfChanged(ref _NotifyOnScheduledScanComplete, value);
+		}
+
 		public static void LoadSettings(string? path = null) {
-			if ((path == null || path.EndsWith(".xml")) && LoadOldSettings(path))
+			path ??= settingsPath;
+			if ((path == null || path.EndsWith(".xml", StringComparison.OrdinalIgnoreCase)) && LoadOldSettings(path))
 				return;
 
-			path ??= FileUtils.SafePathCombine(CoreUtils.CurrentFolder, "Settings.json");
+			path = ResolveSettingsPath(path);
 			if (!File.Exists(path)) return;
 			instance = JsonSerializer.Deserialize<SettingsFile>(File.ReadAllBytes(path));
 		}
@@ -359,6 +505,19 @@ namespace VDF.GUI.Data {
 			SaveSettings(Path.ChangeExtension(path, "json"));
 			File.Delete(path);
 			return true;
+		}
+
+		static string ResolveDefaultLanguageCode() => ResolveLanguageCode(null);
+
+		static string ResolveLanguageCode(string? languageCode) {
+			if (!string.IsNullOrWhiteSpace(languageCode))
+				return languageCode;
+
+			var culture = CultureInfo.CurrentUICulture;
+			if (!string.IsNullOrWhiteSpace(culture.TwoLetterISOLanguageName))
+				return culture.TwoLetterISOLanguageName;
+
+			return "en";
 		}
 	}
 }

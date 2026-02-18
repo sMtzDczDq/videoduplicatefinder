@@ -1,15 +1,15 @@
 // /*
-//     Copyright (C) 2021 0x90d
+//     Copyright (C) 2025 0x90d
 //     This file is part of VideoDuplicateFinder
 //     VideoDuplicateFinder is free software: you can redistribute it and/or modify
-//     it under the terms of the GPLv3 as published by
+//     it under the terms of the GNU Affero General Public License as published by
 //     the Free Software Foundation, either version 3 of the License, or
 //     (at your option) any later version.
 //     VideoDuplicateFinder is distributed in the hope that it will be useful,
 //     but WITHOUT ANY WARRANTY without even the implied warranty of
 //     MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
-//     GNU General Public License for more details.
-//     You should have received a copy of the GNU General Public License
+//     GNU Affero General Public License for more details.
+//     You should have received a copy of the GNU Affero General Public License
 //     along with VideoDuplicateFinder.  If not, see <http://www.gnu.org/licenses/>.
 // */
 //
@@ -49,7 +49,7 @@ namespace VDF.Core.Utils {
 			".rm"
 		};
 		static readonly string[] AllExtensions = VideoExtensions.Concat(ImageExtensions).ToArray();
-		internal static List<FileInfo> GetFilesRecursive(string initial, bool ignoreReadonly, bool ignoreReparsePoints, bool recursive, bool includeImages, List<string> excludeFolders) {
+		internal static List<FileInfo> GetFilesRecursive(string initial, bool ignoreReadonly, bool ignoreReparsePoints, bool recursive, bool includeImages, List<string> excludeFolders, CancellationToken cancellationToken) {
 			EnumerationOptions enumerationOptions = new() {
 				IgnoreInaccessible = true,
 				AttributesToSkip = FileAttributes.System
@@ -60,23 +60,29 @@ namespace VDF.Core.Utils {
 			if (ignoreReparsePoints)
 				enumerationOptions.AttributesToSkip |= FileAttributes.ReparsePoint;
 
+			var extensions = includeImages ? AllExtensions : VideoExtensions;
+
 			List<FileInfo> files = new();
 			Queue<DirectoryInfo> subFolders = new();
 			subFolders.Enqueue(new(initial));
 
 			while (subFolders.Count > 0) {
+				if (cancellationToken.IsCancellationRequested)
+					break;
 				DirectoryInfo currentFolder = subFolders.Dequeue();
 				try {
 
 					files.AddRange(currentFolder.EnumerateFiles("*", enumerationOptions)
-					.Where(f => (includeImages ? AllExtensions : VideoExtensions)
-					.Any(x => f.FullName.EndsWith(x, StringComparison.OrdinalIgnoreCase))));
+					.Where(f => extensions.Any(x => f.FullName.EndsWith(x, StringComparison.OrdinalIgnoreCase))));
 
 					if (!recursive)
 						break;
 					foreach (DirectoryInfo subFolder in currentFolder.EnumerateDirectories("*", enumerationOptions)
-						.Where(d => !excludeFolders.Any(x => d.FullName.Equals(x, StringComparison.OrdinalIgnoreCase))))
+						.Where(d => !excludeFolders.Any(x => d.FullName.Equals(x, StringComparison.OrdinalIgnoreCase)))) {
+						if (cancellationToken.IsCancellationRequested)
+							break;
 						subFolders.Enqueue(subFolder);
+					}
 				}
 				catch (DirectoryNotFoundException) { }
 				catch (Exception e) {

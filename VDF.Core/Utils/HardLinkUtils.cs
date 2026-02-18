@@ -1,22 +1,25 @@
 // /*
-//     Copyright (C) 2021 0x90d
+//     Copyright (C) 2025 0x90d
 //     This file is part of VideoDuplicateFinder
 //     VideoDuplicateFinder is free software: you can redistribute it and/or modify
-//     it under the terms of the GPLv3 as published by
+//     it under the terms of the GNU Affero General Public License as published by
 //     the Free Software Foundation, either version 3 of the License, or
 //     (at your option) any later version.
 //     VideoDuplicateFinder is distributed in the hope that it will be useful,
 //     but WITHOUT ANY WARRANTY without even the implied warranty of
 //     MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
-//     GNU General Public License for more details.
-//     You should have received a copy of the GNU General Public License
+//     GNU Affero General Public License for more details.
+//     You should have received a copy of the GNU Affero General Public License
 //     along with VideoDuplicateFinder.  If not, see <http://www.gnu.org/licenses/>.
 // */
 //
 
 using System.Buffers;
 using System.Diagnostics;
+using System.IO;
+using System.Reflection.Metadata.Ecma335;
 using System.Runtime.InteropServices;
+using Microsoft.Win32.SafeHandles;
 
 namespace VDF.Core.Utils {
 	/// <summary>
@@ -38,51 +41,104 @@ namespace VDF.Core.Utils {
 		[return: MarshalAs(UnmanagedType.Bool)]
 		private static partial bool GetVolumePathNameW(string lpszFileName, [Out] char[] lpszVolumePathName, int cchBufferLength);
 
-		const IntPtr INVALID_HANDLE_VALUE = -1;
-		const int ERROR_MORE_DATA = 234;
 
-		/// <summary>
-		//// Returns enumeration of hard links for the given *file* as full file paths
-		/// </summary>
-		public static IEnumerable<string> GetHardLinks(string filepath) {
-			if (CoreUtils.IsWindows)
-				return GetHardLinksWindows(filepath);
-			else
-				return GetHardLinksPosix(filepath);
+		[LibraryImport("kernel32.dll", SetLastError = true, StringMarshalling = StringMarshalling.Utf16)]
+		private static partial SafeFileHandle CreateFileW(
+			string lpFileName,
+			uint dwDesiredAccess,
+			FileShare dwShareMode,
+			IntPtr lpSecurityAttributes,
+			FileMode dwCreationDisposition,
+			uint dwFlagsAndAttributes,
+			IntPtr hTemplateFile);
+
+		[LibraryImport("kernel32.dll", SetLastError = true)]
+		[return: MarshalAs(UnmanagedType.Bool)]
+		private static partial bool GetFileInformationByHandle(SafeFileHandle hFile, out BY_HANDLE_FILE_INFORMATION lpFileInformation);
+
+		[StructLayout(LayoutKind.Sequential)]
+		private struct BY_HANDLE_FILE_INFORMATION {
+			public uint FileAttributes;
+			public FILETIME CreationTime;
+			public FILETIME LastAccessTime;
+			public FILETIME LastWriteTime;
+			public uint VolumeSerialNumber;
+			public uint FileSizeHigh;
+			public uint FileSizeLow;
+			public uint NumberOfLinks;
+			public uint FileIndexHigh;
+			public uint FileIndexLow;
+		}
+		[StructLayout(LayoutKind.Sequential)]
+		private struct FILETIME {
+			public uint dwLowDateTime;
+			public uint dwHighDateTime;
 		}
 
-		static IEnumerable<string> GetHardLinksPosix(string filepath) {
-			const int timeout = 30_000;
-			int success = Mono.Unix.Native.Syscall.stat(filepath, out var stat);
-			if (success == 0 && stat.st_nlink <= 1)
-				return Array.Empty<string>();
+		const IntPtr INVALID_HANDLE_VALUE = -1;
+		const int ERROR_MORE_DATA = 234;
+		const uint FILE_READ_ATTRIBUTES = 0x0080;
+		const uint FILE_FLAG_BACKUP_SEMANTICS = 0x02000000;
 
-			Process process = new() {
-				StartInfo = {
-					FileName = "find",
-					Arguments = $" {Path.GetPathRoot(filepath)} -samefile \"{filepath}\"",
-					RedirectStandardOutput = true,
-					/*
-					 * Do not redirect error output, this makes the process run
-					 * much longer due to all the 'Permission denied' errors
-					 */
-					WindowStyle = ProcessWindowStyle.Hidden,
-					UseShellExecute = false
+		public static bool AreSameFile(string filepath, string otherFilepath) {
+			if (CoreUtils.IsWindows)
+				return AreSameFileWindows(filepath, otherFilepath);
+			return AreSameFilePosix(filepath, otherFilepath);
+		}
+
+		static bool AreSameFilePosix(string filepath, string otherFilepath) {
+			if (Mono.Unix.Native.Syscall.stat(filepath, out var statA) != 0)
+				return false;
+			if (Mono.Unix.Native.Syscall.stat(otherFilepath, out var statB) != 0)
+				return false;
+			return statA.st_ino == statB.st_ino && statA.st_dev == statB.st_dev;
+		}
+
+		static bool AreSameFileWindows(string filepath, string otherFilepath) {
+			if (!TryGetFileIdWindows(filepath, out var fileA)) {
+				return FallbackWindows(filepath, otherFilepath);
+			}
+			if ( !TryGetFileIdWindows(otherFilepath, out var fileB)) {
+				return FallbackWindows(filepath, otherFilepath);
+			}
+
+			// Heuristic: some providers may return zeros; treat as unknown
+			if ((fileA.VolumeSerial, fileA.FileIndexHigh, fileA.FileIndexLow) == (0u, 0u, 0u))
+				return FallbackWindows(filepath, otherFilepath);
+			if ((fileB.VolumeSerial, fileB.FileIndexHigh, fileB.FileIndexLow) == (0u, 0u, 0u))
+				return FallbackWindows(filepath, otherFilepath);
+
+			return fileA.Equals(fileB);
+		}
+		static bool FallbackWindows(string filepath, string otherFilepath) {
+			foreach (var link in GetHardLinksWindows(filepath))
+				if (otherFilepath == link) {
+					return true;
 				}
-			};
+			return false;
+		}
+
+		static bool TryGetFileIdWindows(string filepath, out (uint VolumeSerial, uint FileIndexHigh, uint FileIndexLow) fileId) {
+			fileId = default;
 			try {
-				process.Start();
-				process.WaitForExit(timeout);
-				if (!process.HasExited) {
-					process.Kill();
-					throw new TimeoutException("timed out");
-				}
-				List<string> files = new(process.StandardOutput.ReadToEnd().Split(Environment.NewLine));
-				return files;
+				using SafeFileHandle handle = CreateFileW(
+					filepath,
+					FILE_READ_ATTRIBUTES,
+					FileShare.ReadWrite | FileShare.Delete,
+					IntPtr.Zero,
+					FileMode.Open,
+					FILE_FLAG_BACKUP_SEMANTICS,
+					IntPtr.Zero);
+				if (handle.IsInvalid)
+					return false;
+				if (!GetFileInformationByHandle(handle, out var info))
+					return false;
+				fileId = (info.VolumeSerialNumber, info.FileIndexHigh, info.FileIndexLow);
+				return true;
 			}
 			catch (Exception ex) {
-				Logger.Instance.Info($"Failed getting hard links of file: {filepath}, reason: {ex.Message}");
-				return Array.Empty<string>();
+				Logger.Instance.Info($"Failed getting file id for file: {filepath}, reason: {ex.Message}");
+				return false;
 			}
 		}
 

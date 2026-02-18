@@ -1,23 +1,21 @@
 // /*
-//     Copyright (C) 2021 0x90d
+//     Copyright (C) 2025 0x90d
 //     This file is part of VideoDuplicateFinder
 //     VideoDuplicateFinder is free software: you can redistribute it and/or modify
-//     it under the terms of the GPLv3 as published by
+//     it under the terms of the GNU Affero General Public License as published by
 //     the Free Software Foundation, either version 3 of the License, or
 //     (at your option) any later version.
 //     VideoDuplicateFinder is distributed in the hope that it will be useful,
 //     but WITHOUT ANY WARRANTY without even the implied warranty of
 //     MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
-//     GNU General Public License for more details.
-//     You should have received a copy of the GNU General Public License
+//     GNU Affero General Public License for more details.
+//     You should have received a copy of the GNU Affero General Public License
 //     along with VideoDuplicateFinder.  If not, see <http://www.gnu.org/licenses/>.
 // */
 //
 
 using System;
 using System.Collections.Generic;
-using System.Collections.ObjectModel;
-using System.Linq;
 using System.Reactive;
 using System.Text;
 using System.Text.Json;
@@ -54,7 +52,7 @@ namespace VDF.GUI.ViewModels {
 		});
 		[JsonIgnore]
 		public ReactiveCommand<ListBox, Action> AddFilePathContainsTextToListCommand => ReactiveCommand.CreateFromTask<ListBox, Action>(async lbox => {
-			var result = await InputBoxService.Show("New Entry");
+			var result = await PromptForWildcardEntryAsync(App.Lang["Dialog.Add"], string.Empty);
 			if (string.IsNullOrEmpty(result)) return null!;
 			if (!Data.PathContains.Contains(result))
 				Data.PathContains.Add(result);
@@ -68,7 +66,7 @@ namespace VDF.GUI.ViewModels {
 		});
 		[JsonIgnore]
 		public ReactiveCommand<ListBox, Action> AddFilePathNotContainsTextToListCommand => ReactiveCommand.CreateFromTask<ListBox, Action>(async lbox => {
-			var result = await InputBoxService.Show("New Entry");
+			var result = await PromptForWildcardEntryAsync(App.Lang["Dialog.Add"], string.Empty);
 			if (string.IsNullOrEmpty(result)) return null!;
 			if (!Data.PathNotContains.Contains(result))
 				Data.PathNotContains.Add(result);
@@ -114,6 +112,22 @@ namespace VDF.GUI.ViewModels {
 				await MessageBoxService.Show($"Loading from file has failed: {ex.Message}");
 			}
 		});
+
+		static async Task<string?> PromptForWildcardEntryAsync(string title, string initialValue) {
+			var currentValue = initialValue;
+			while (true) {
+				var result = await InputBoxService.Show(App.Lang["CustomSelection.NewEntry"], currentValue, title: title);
+				if (string.IsNullOrEmpty(result))
+					return null;
+				if (HasTrailingWildcard(result))
+					return result;
+				await MessageBoxService.Show(App.Lang["CustomSelection.WildcardRequired"]);
+				currentValue = result;
+			}
+		}
+
+		static bool HasTrailingWildcard(string value) =>
+			value.EndsWith("*", StringComparison.Ordinal) || value.EndsWith("?", StringComparison.Ordinal);
 
 	}
 }

@@ -14,9 +14,10 @@
     xmlns:media="clr-namespace:Avalonia.Media;assembly=Avalonia.Base"
     xmlns:mvvm="clr-namespace:VDF.GUI.Mvvm;assembly=VDF.GUI"
     xmlns:presenters="clr-namespace:Avalonia.Controls.Presenters;assembly=Avalonia.Controls"
+    xmlns:tdg="using:Avalonia.Controls.Models.TreeDataGrid"
     xmlns:vm="clr-namespace:VDF.GUI.ViewModels;assembly=VDF.GUI"
     x:Name="MainWindow"
-    Title="Video Duplicate Finder - Cross-platform"
+    Title="{Binding Source={x:Static local:App.Lang}, Path=[App.Title]}"
     Width="1020"
     Height="950"
     d:DesignHeight="750"
@@ -81,13 +82,12 @@
                             <TextBlock
                                 VerticalAlignment="Center"
                                 FontSize="12"
-                                Text="Scanner" />
+                                Text="{Binding Source={x:Static local:App.Lang}, Path=[MainWindow.Tab.Scanner]}" />
                         </TabItem.Header>
-                        <Grid
-                            Margin="0,0,0,10"
-                            Background="{DynamicResource SystemControlBackgroundChromeBlackLowBrush}"
-                            RowDefinitions="Auto, *, Auto, Auto">
-                            <Menu Grid.Row="0" MinHeight="30">
+                        <Grid Margin="0,0,0,10" RowDefinitions="Auto, *, Auto, Auto, Auto">
+                            <Menu Grid.Row="0" MinHeight="30" 
+                                Background="{actipro:ThemeResource Container2BackgroundBrush}"
+                                BorderBrush="{actipro:ThemeResource Container2BorderBrush}">
                                 <MenuItem
                                     Command="{Binding StartScanCommand}"
                                     CommandParameter="FullScan"
@@ -102,7 +102,7 @@
                                             <TextBlock
                                                 Margin="5,0,0,0"
                                                 VerticalAlignment="Center"
-                                                Text="Scan" />
+                                                Text="{Binding Source={x:Static local:App.Lang}, Path=[MainWindow.Command.Scan]}" />
                                         </StackPanel>
                                     </MenuItem.Header>
                                 </MenuItem>
@@ -111,7 +111,7 @@
                                     CommandParameter="CompareOnly"
                                     IsEnabled="{Binding IsReadyToCompare}"
                                     IsVisible="{Binding !IsScanning}"
-                                    ToolTip.Tip="Re-run the scan but without enumerating and gathering file informations. Changing certain settings will only take effect during a full scan.">
+                                    ToolTip.Tip="{Binding Source={x:Static local:App.Lang}, Path=[MainWindow.Tooltip.Rescan]}">
                                     <MenuItem.Header>
                                         <StackPanel Orientation="Horizontal">
                                             <Viewbox Width="20" Height="20">
@@ -124,7 +124,7 @@
                                             <TextBlock
                                                 Margin="5,0,0,0"
                                                 VerticalAlignment="Center"
-                                                Text="Rescan" />
+                                                Text="{Binding Source={x:Static local:App.Lang}, Path=[MainWindow.Command.Rescan]}" />
                                         </StackPanel>
                                     </MenuItem.Header>
                                 </MenuItem>
@@ -139,7 +139,7 @@
                                             <TextBlock
                                                 Margin="5,0,0,0"
                                                 VerticalAlignment="Center"
-                                                Text="Resume" />
+                                                Text="{Binding Source={x:Static local:App.Lang}, Path=[MainWindow.Command.Resume]}" />
                                         </StackPanel>
                                     </MenuItem.Header>
                                 </MenuItem>
@@ -155,7 +155,7 @@
                                             <TextBlock
                                                 Margin="5,0,0,0"
                                                 VerticalAlignment="Center"
-                                                Text="Pause" />
+                                                Text="{Binding Source={x:Static local:App.Lang}, Path=[MainWindow.Command.Pause]}" />
                                         </StackPanel>
                                     </MenuItem.Header>
                                 </MenuItem>
@@ -170,7 +170,7 @@
                                             <TextBlock
                                                 Margin="5,0,0,0"
                                                 VerticalAlignment="Center"
-                                                Text="Stop" />
+                                                Text="{Binding Source={x:Static local:App.Lang}, Path=[MainWindow.Command.Stop]}" />
                                         </StackPanel>
                                     </MenuItem.Header>
                                 </MenuItem>
@@ -180,7 +180,7 @@
                                             <TextBlock
                                                 Margin="5,0,0,0"
                                                 VerticalAlignment="Center"
-                                                Text="Database" />
+                                                Text="{Binding Source={x:Static local:App.Lang}, Path=[MainWindow.Menu.Database]}" />
                                             <Path
                                                 Margin="4,2,0,0"
                                                 VerticalAlignment="Center"
@@ -188,8 +188,7 @@
                                                 Fill="{actipro:ThemeResource ButtonForegroundBrush}" />
                                         </StackPanel>
                                     </MenuItem.Header>
-                                    <MenuItem Command="{Binding CleanDatabaseCommand}"
-                                              ToolTip.Tip="Removes entries which file no longer exists or which failed on ffmpeg/ffprobe">
+                                    <MenuItem Command="{Binding CleanDatabaseCommand}" ToolTip.Tip="{Binding Source={x:Static local:App.Lang}, Path=[MainWindow.Tooltip.CleanDatabase]}">
                                         <MenuItem.Header>
                                             <StackPanel Orientation="Horizontal">
                                                 <Viewbox Width="16" Height="16">
@@ -202,7 +201,7 @@
                                                 <TextBlock
                                                     Margin="5,0,0,0"
                                                     VerticalAlignment="Center"
-                                                    Text="Cleanup Database" />
+                                                    Text="{Binding Source={x:Static local:App.Lang}, Path=[MainWindow.Database.Cleanup]}" />
                                             </StackPanel>
                                         </MenuItem.Header>
                                     </MenuItem>
@@ -211,7 +210,15 @@
                                             <TextBlock
                                                 Margin="5,0,0,0"
                                                 VerticalAlignment="Center"
-                                                Text="Edit..." />
+                                                Text="{Binding Source={x:Static local:App.Lang}, Path=[Dialog.EditEllipsis]}" />
+                                        </MenuItem.Header>
+                                    </MenuItem>
+                                    <MenuItem Command="{Binding RelocateDatabaseFilesCommand}">
+                                        <MenuItem.Header>
+                                            <TextBlock
+                                                Margin="5,0,0,0"
+                                                VerticalAlignment="Center"
+                                                Text="{Binding Source={x:Static local:App.Lang}, Path=[MainWindow.Database.RelocateFiles]}" />
                                         </MenuItem.Header>
                                     </MenuItem>
                                     <Separator />
@@ -220,7 +227,7 @@
                                             <TextBlock
                                                 Margin="5,0,0,0"
                                                 VerticalAlignment="Center"
-                                                Text="Export To Json" />
+                                                Text="{Binding Source={x:Static local:App.Lang}, Path=[MainWindow.Database.ExportJson]}" />
                                         </MenuItem.Header>
                                     </MenuItem>
                                     <MenuItem Command="{Binding ExportDataBaseToJsonPrettyCommand}">
@@ -228,7 +235,7 @@
                                             <TextBlock
                                                 Margin="5,0,0,0"
                                                 VerticalAlignment="Center"
-                                                Text="Export To Json (pretty)" />
+                                                Text="{Binding Source={x:Static local:App.Lang}, Path=[MainWindow.Database.ExportJsonPretty]}" />
                                         </MenuItem.Header>
                                     </MenuItem>
                                     <Separator />
@@ -237,7 +244,7 @@
                                             <TextBlock
                                                 Margin="5,0,0,0"
                                                 VerticalAlignment="Center"
-                                                Text="Import From Json" />
+                                                Text="{Binding Source={x:Static local:App.Lang}, Path=[MainWindow.Database.ImportJson]}" />
                                         </MenuItem.Header>
                                     </MenuItem>
                                     <Separator />
@@ -251,10 +258,10 @@
                                                             Fill="Red" />
                                                     </Canvas>
                                                 </Viewbox>
-                                                <TextBlock
-                                                    Margin="5,0,0,0"
-                                                    VerticalAlignment="Center"
-                                                    Text="Clear Database" />
+                                                    <TextBlock
+                                                        Margin="5,0,0,0"
+                                                        VerticalAlignment="Center"
+                                                        Text="{Binding Source={x:Static local:App.Lang}, Path=[MainWindow.Database.Clear]}" />
                                             </StackPanel>
                                         </MenuItem.Header>
                                     </MenuItem>
@@ -272,7 +279,7 @@
                                             <TextBlock
                                                 Margin="5,0,0,0"
                                                 VerticalAlignment="Center"
-                                                Text="Latest Release" />
+                                                Text="{Binding Source={x:Static local:App.Lang}, Path=[MainWindow.Menu.LatestRelease]}" />
                                         </StackPanel>
                                     </MenuItem.Header>
                                 </MenuItem>
@@ -281,7 +288,7 @@
                                         <TextBlock
                                             Margin="5,0,0,0"
                                             VerticalAlignment="Center"
-                                            Text="Open Folder" />
+                                            Text="{Binding Source={x:Static local:App.Lang}, Path=[Dialog.OpenFolder]}" />
                                     </MenuItem.Header>
                                 </MenuItem>
                                 <MenuItem IsVisible="{Binding !!Duplicates.Count}">
@@ -295,7 +302,7 @@
                                             <TextBlock
                                                 Margin="5,0,0,0"
                                                 VerticalAlignment="Center"
-                                                Text="Export Scan Results" />
+                                                Text="{Binding Source={x:Static local:App.Lang}, Path=[MainWindow.Menu.ExportScanResults]}" />
                                             <Path
                                                 Margin="4,2,0,0"
                                                 VerticalAlignment="Center"
@@ -308,7 +315,7 @@
                                             <TextBlock
                                                 Margin="5,0,0,0"
                                                 VerticalAlignment="Center"
-                                                Text="To Json" />
+                                                Text="{Binding Source={x:Static local:App.Lang}, Path=[MainWindow.Menu.ExportScanResults.Json]}" />
                                         </MenuItem.Header>
                                     </MenuItem>
                                     <MenuItem Command="{Binding ExportScanResultsPrettyCommand}">
@@ -316,7 +323,7 @@
                                             <TextBlock
                                                 Margin="5,0,0,0"
                                                 VerticalAlignment="Center"
-                                                Text="To Json (pretty)" />
+                                                Text="{Binding Source={x:Static local:App.Lang}, Path=[MainWindow.Menu.ExportScanResults.JsonPretty]}" />
                                         </MenuItem.Header>
                                     </MenuItem>
                                     <Separator />
@@ -325,7 +332,7 @@
                                             <TextBlock
                                                 Margin="5,0,0,0"
                                                 VerticalAlignment="Center"
-                                                Text="To File including thumbnails" />
+                                                Text="{Binding Source={x:Static local:App.Lang}, Path=[MainWindow.Menu.ExportScanResults.WithThumbnails]}" />
                                         </MenuItem.Header>
                                     </MenuItem>
                                 </MenuItem>
@@ -341,7 +348,7 @@
                                             <TextBlock
                                                 Margin="5,0,0,0"
                                                 VerticalAlignment="Center"
-                                                Text="Import Scan Results" />
+                                                Text="{Binding Source={x:Static local:App.Lang}, Path=[MainWindow.Menu.ImportScanResults]}" />
                                             <Path
                                                 Margin="4,2,0,0"
                                                 VerticalAlignment="Center"
@@ -354,18 +361,20 @@
                                             <TextBlock
                                                 Margin="5,0,0,0"
                                                 VerticalAlignment="Center"
-                                                Text="From File including thumbnails" />
+                                                Text="{Binding Source={x:Static local:App.Lang}, Path=[MainWindow.Menu.ImportScanResults.WithThumbnails]}" />
                                         </MenuItem.Header>
                                     </MenuItem>
                                 </MenuItem>
                             </Menu>
-                            <Grid Grid.Row="1">
+                            <Grid Grid.Row="1" IsVisible="{Binding ShowTreeDataGrid}">
                                 <Grid.RowDefinitions>
                                     <RowDefinition Height="Auto" />
                                     <RowDefinition Height="Auto" />
                                     <RowDefinition />
                                 </Grid.RowDefinitions>
-                                <Menu Grid.Row="0" MinHeight="30">
+                                <Menu 
+                                Background="{actipro:ThemeResource Container3BackgroundBrush}"
+                                BorderBrush="{actipro:ThemeResource Container3BorderBrush}" Grid.Row="0" MinHeight="30">
                                     <Menu.Styles>
                                         <Style Selector="Separator">
                                             <Setter Property="Margin" Value="0,5,0,5" />
@@ -385,7 +394,7 @@
                                                 <TextBlock
                                                     Margin="5,0,0,0"
                                                     VerticalAlignment="Center"
-                                                    Text="Selection" />
+                                                    Text="{Binding Source={x:Static local:App.Lang}, Path=[MainWindow.Menu.Selection]}" />
                                                 <Path
                                                     Margin="4,2,0,0"
                                                     VerticalAlignment="Center"
@@ -395,54 +404,59 @@
                                         </MenuItem.Header>
                                         <MenuItem Command="{Binding CheckWhenIdenticalCommand}">
                                             <MenuItem.Header>
-                                                <TextBlock VerticalAlignment="Center"
-                                                           Text="Select 100% Identical (Keep First)" />
+                                                <TextBlock VerticalAlignment="Center" Text="Select 100% Identical (Keep First)" />
                                             </MenuItem.Header>
                                         </MenuItem>
                                         <MenuItem Command="{Binding CheckWhenIdenticalButSizeCommand}">
                                             <MenuItem.Header>
-                                                <TextBlock VerticalAlignment="Center"
-                                                           Text="Select 100% Identical Except Size (Keep Smallest)" />
+                                                <TextBlock VerticalAlignment="Center" Text="Select 100% Identical Except Size (Keep Smallest)" />
                                             </MenuItem.Header>
                                         </MenuItem>
                                         <MenuItem Command="{Binding CheckLowestQualityCommand}">
                                             <MenuItem.Header>
-                                                <TextBlock
-                                                    VerticalAlignment="Center"
-                                                    Text="Select Lowest Duration / Quality"
-                                                    ToolTip.Tip="Keep longest / Best Quality. The order is: Duration, Resolution, FPS, Bitrate, Audio Bitrate" />
+                                                <TextBlock VerticalAlignment="Center" Text="{Binding Source={x:Static local:App.Lang}, Path=[MainWindow.Selection.SelectLowestQuality]}" />
                                             </MenuItem.Header>
                                         </MenuItem>
-                                        <MenuItem Header="Date">
+                                        <MenuItem Header="{Binding Source={x:Static local:App.Lang}, Path=[MainWindow.Selection.DateMenu]}">
                                             <MenuItem Command="{Binding CheckOldestCommand}">
                                                 <MenuItem.Header>
-                                                    <TextBlock VerticalAlignment="Center" Text="Select Oldest" />
+                                                    <TextBlock VerticalAlignment="Center" Text="{Binding Source={x:Static local:App.Lang}, Path=[MainWindow.Selection.SelectOldest]}" />
                                                 </MenuItem.Header>
                                             </MenuItem>
                                             <MenuItem Command="{Binding CheckNewestCommand}">
                                                 <MenuItem.Header>
-                                                    <TextBlock VerticalAlignment="Center" Text="Select Newest" />
+                                                    <TextBlock VerticalAlignment="Center" Text="{Binding Source={x:Static local:App.Lang}, Path=[MainWindow.Selection.SelectNewest]}" />
                                                 </MenuItem.Header>
                                             </MenuItem>
                                         </MenuItem>
                                         <MenuItem>
                                             <MenuItem.Header>
-                                                <TextBlock VerticalAlignment="Center" Text="Select Custom" />
+                                                <TextBlock VerticalAlignment="Center" Text="{Binding Source={x:Static local:App.Lang}, Path=[MainWindow.Selection.SelectCustom]}" />
                                             </MenuItem.Header>
                                             <MenuItem Command="{Binding CheckCustomCommand}">
                                                 <MenuItem.Header>
-                                                    <TextBlock VerticalAlignment="Center" Text="Expression Builder" />
+                                                    <TextBlock VerticalAlignment="Center" Text="{Binding Source={x:Static local:App.Lang}, Path=[MainWindow.Selection.ExpressionBuilder]}" />
                                                 </MenuItem.Header>
                                             </MenuItem>
                                             <MenuItem Command="{Binding OpenCustomSelectionCommand}">
                                                 <MenuItem.Header>
-                                                    <TextBlock VerticalAlignment="Center" Text="Custom Selection" />
+                                                    <TextBlock VerticalAlignment="Center" Text="{Binding Source={x:Static local:App.Lang}, Path=[MainWindow.Selection.CustomSelection]}" />
                                                 </MenuItem.Header>
                                             </MenuItem>
                                         </MenuItem>
                                         <MenuItem Command="{Binding ClearSelectionCommand}">
                                             <MenuItem.Header>
-                                                <TextBlock VerticalAlignment="Center" Text="Clear Selection" />
+                                                <TextBlock VerticalAlignment="Center" Text="{Binding Source={x:Static local:App.Lang}, Path=[MainWindow.Selection.ClearSelection]}" />
+                                            </MenuItem.Header>
+                                        </MenuItem>
+                                        <MenuItem Command="{Binding InvertSelectionCommand}">
+                                            <MenuItem.Header>
+                                                <TextBlock VerticalAlignment="Center" Text="{Binding Source={x:Static local:App.Lang}, Path=[MainWindow.Selection.InvertSelection]}" />
+                                            </MenuItem.Header>
+                                        </MenuItem>
+                                        <MenuItem Command="{Binding ExportCleanupDryRunReportCommand}">
+                                            <MenuItem.Header>
+                                                <TextBlock VerticalAlignment="Center" Text="{Binding Source={x:Static local:App.Lang}, Path=[MainWindow.Selection.ExportCleanupDryRun]}" />
                                             </MenuItem.Header>
                                         </MenuItem>
                                     </MenuItem>
@@ -459,7 +473,7 @@
                                                 <TextBlock
                                                     Margin="5,0,0,0"
                                                     VerticalAlignment="Center"
-                                                    Text="Delete Selection" />
+                                                    Text="{Binding Source={x:Static local:App.Lang}, Path=[MainWindow.Selection.DeleteSelection]}" />
                                                 <Path
                                                     Margin="4,2,0,0"
                                                     VerticalAlignment="Center"
@@ -469,33 +483,30 @@
                                         </MenuItem.Header>
                                         <MenuItem Command="{Binding DeleteSelectionCommand}">
                                             <MenuItem.Header>
-                                                <TextBlock VerticalAlignment="Center"
-                                                           Text="Delete from disk (Shift+Delete)" />
+                                                <TextBlock VerticalAlignment="Center" Text="Delete from disk (Shift+Delete)" />
                                             </MenuItem.Header>
                                         </MenuItem>
                                         <MenuItem Command="{Binding DeleteSelectionPermanentlyCommand}"
                                                   IsVisible="{Binding IsWindows}">
                                             <MenuItem.Header>
-                                                <TextBlock VerticalAlignment="Center"
-                                                           Text="Delete permanently from disk" />
+                                                <TextBlock VerticalAlignment="Center" Text="Delete permanently from disk" />
                                             </MenuItem.Header>
                                         </MenuItem>
                                         <MenuItem Header="-" />
 
                                         <MenuItem Command="{Binding RemoveSelectionFromListCommand}">
                                             <MenuItem.Header>
-                                                <TextBlock VerticalAlignment="Center" Text="From List (Keep Files)" />
+                                                <TextBlock VerticalAlignment="Center" Text="{Binding Source={x:Static local:App.Lang}, Path=[MainWindow.Selection.RemoveFromListKeepFiles]}" />
                                             </MenuItem.Header>
                                         </MenuItem>
                                         <MenuItem Command="{Binding CopySelectionCommand}">
                                             <MenuItem.Header>
-                                                <TextBlock VerticalAlignment="Center"
-                                                           Text="Copy To Folder (Keep Files)" />
+                                                <TextBlock VerticalAlignment="Center" Text="Copy To Folder (Keep Files)" />
                                             </MenuItem.Header>
                                         </MenuItem>
                                         <MenuItem Command="{Binding MoveSelectionCommand}">
                                             <MenuItem.Header>
-                                                <TextBlock VerticalAlignment="Center" Text="Move To Folder" />
+                                                <TextBlock VerticalAlignment="Center" Text="{Binding Source={x:Static local:App.Lang}, Path=[MainWindow.Selection.MoveToFolder]}" />
                                             </MenuItem.Header>
                                         </MenuItem>
                                     </MenuItem>
@@ -520,71 +531,28 @@
                                             <TextBlock
                                                 Margin="5,0,0,0"
                                                 VerticalAlignment="Center"
-                                                Text="Filter / Sort" />
+                                                Text="{Binding Source={x:Static local:App.Lang}, Path=[MainWindow.Filter.Title]}" />
                                         </StackPanel>
                                     </CheckBox>
-
-                                    <StackPanel Orientation="Horizontal">
-                                        <TextBlock
-                                            Margin="5,0,0,0"
-                                            VerticalAlignment="Center"
-                                            IsEnabled="False"
-                                            Text="Zoom All:" />
-                                        <Slider
-                                            x:Name="ZoomSlider"
-                                            MinWidth="100"
-                                            Margin="5,0,0,0"
-                                            Padding="0"
-                                            VerticalAlignment="Center"
-                                            Classes="theme-solid"
-                                            IsSnapToTickEnabled="True"
-                                            LargeChange="0.5"
-                                            Maximum="4.0"
-                                            Minimum="0.5"
-                                            Orientation="Horizontal"
-                                            SmallChange="0.1"
-                                            TickFrequency="0.5"
-                                            Value="1.0" />
-                                    </StackPanel>
-                                    <StackPanel Orientation="Horizontal">
-                                        <TextBlock
-                                            Margin="5,0,0,0"
-                                            VerticalAlignment="Center"
-                                            IsEnabled="False"
-                                            Text="Zoom Thumbnails:" />
-                                        <Slider
-                                            x:Name="ZoomSliderThumbnails"
-                                            MinWidth="100"
-                                            Margin="5,0,0,0"
-                                            VerticalAlignment="Center"
-                                            Classes="theme-solid"
-                                            IsSnapToTickEnabled="True"
-                                            LargeChange="0.5"
-                                            Maximum="4.0"
-                                            Minimum="0.5"
-                                            Orientation="Horizontal"
-                                            SmallChange="0.1"
-                                            TickFrequency="0.5"
-                                            Value="1.0" />
-                                    </StackPanel>
                                 </Menu>
                                 <Grid
                                     x:Name="GridFilter"
                                     Grid.Row="1"
-                                    Margin="5"
+                                Background="{actipro:ThemeResource Container3BackgroundBrush}"
                                     IsVisible="False"
                                     RowDefinitions="*, Auto">
-                                    <StackPanel Orientation="Horizontal">
-                                        <TextBlock VerticalAlignment="Center" Text="Path:" />
+                                    <WrapPanel
+                                    Margin="5">
+                                        <TextBlock VerticalAlignment="Center" Text="{Binding Source={x:Static local:App.Lang}, Path=[MainWindow.Filter.Path]}" />
                                         <TextBox
                                             MinWidth="150"
                                             Margin="5,0,0,0"
                                             Text="{Binding FilterByPath}"
-                                            ToolTip.Tip="Note: if only one item of a group is matching, all group items will be shown" />
+                                            ToolTip.Tip="{Binding Source={x:Static local:App.Lang}, Path=[MainWindow.Filter.PathNote]}" />
                                         <TextBlock
                                             Margin="5,0,0,0"
                                             VerticalAlignment="Center"
-                                            Text="Sort:" />
+                                            Text="{Binding Source={x:Static local:App.Lang}, Path=[MainWindow.Filter.Sort]}" />
                                         <ComboBox
                                             MinWidth="150"
                                             Margin="5,0,0,0"
@@ -599,7 +567,7 @@
                                         <TextBlock
                                             Margin="5,0,0,0"
                                             VerticalAlignment="Center"
-                                            Text="Type:" />
+                                            Text="{Binding Source={x:Static local:App.Lang}, Path=[MainWindow.Filter.Type]}" />
                                         <ComboBox
                                             MinWidth="150"
                                             Margin="5,0,0,0"
@@ -614,7 +582,7 @@
                                         <TextBlock
                                             Margin="5,0,0,0"
                                             VerticalAlignment="Center"
-                                            Text="Similarity:" />
+                                            Text="{Binding Source={x:Static local:App.Lang}, Path=[MainWindow.Filter.Similarity]}" />
                                         <NumericUpDown
                                             Width="140"
                                             FormatString="\{0\}%"
@@ -624,14 +592,20 @@
                                         <TextBlock
                                             Margin="5,0"
                                             VerticalAlignment="Center"
-                                            Text="to" />
+                                            Text="{Binding Source={x:Static local:App.Lang}, Path=[MainWindow.Filter.To]}" />
                                         <NumericUpDown
                                             Width="140"
                                             FormatString="\{0\}%"
                                             Maximum="100"
                                             Minimum="0"
                                             Value="{Binding FilterSimilarityTo}" />
-                                    </StackPanel>
+                                        <CheckBox
+                                            Margin="10,0,0,0"
+                                            VerticalAlignment="Center"
+                                            IsChecked="{Binding FilterGroupsWithSelection}">
+                                            <TextBlock Text="{Binding Source={x:Static local:App.Lang}, Path=[MainWindow.Filter.GroupsWithSelection]}" />
+                                        </CheckBox>
+                                    </WrapPanel>
                                     <StackPanel
                                         Grid.Row="1"
                                         Margin="0,10"
@@ -666,28 +640,25 @@
                                             Margin="10,0"
                                             VerticalAlignment="Center"
                                             FontWeight="Bold"
-                                            Foreground="Yellow"
-                                            Text="Note: Any action (select, delete etc) will only apply on filtered duplicates" />
+                                            Foreground="{actipro:ThemeResource ControlForegroundBrushSoftWarning}"
+                                            Text="{Binding Source={x:Static local:App.Lang}, Path=[MainWindow.Filter.Note]}" />
                                     </StackPanel>
                                 </Grid>
-                                <LayoutTransformControl Grid.Row="2">
-                                    <DataGrid
-                                        Name="dataGridGrouping"
-                                        Grid.Row="2"
-                                        Background="{DynamicResource SystemControlBackgroundChromeMediumBrush}"
-                                        CanUserResizeColumns="True">
-                                        <DataGrid.KeyBindings>
+                                <Grid Grid.Row="2">
+                                    <TreeDataGrid
+                                        x:Name="treeGrouping"
+                                        MaxWidth="{Binding $parent[Window].Bounds.Width}"
+                                        CanUserResizeColumns="True"
+                                        IsVisible="{Binding ShowTreeDataGrid}"
+                                        Source="{Binding TreeSource}">
+                                        <TreeDataGrid.KeyBindings>
                                             <KeyBinding Command="{Binding RenameFileCommand}" Gesture="F2" />
                                             <KeyBinding Command="{Binding ToggleCheckboxCommand}" Gesture="Space" />
                                             <KeyBinding Command="{Binding OpenItemsByColIdCommand}" Gesture="Enter" />
-                                            <KeyBinding Command="{Binding DeleteSelectionWithPromptCommand}"
-                                                        Gesture="Delete" />
-                                            <KeyBinding Command="{Binding DeleteSelectionCommand}"
-                                                        Gesture="Shift+Delete" />
-                                            <KeyBinding Command="{Binding DeleteHighlitedCommand}"
-                                                        Gesture="Control+Delete" />
-                                            <KeyBinding Command="{Binding ShowGroupInThumbnailComparerCommand}"
-                                                        Gesture="Alt+C" />
+                                            <KeyBinding Command="{Binding DeleteSelectionWithPromptCommand}" Gesture="Delete" />
+                                            <KeyBinding Command="{Binding DeleteSelectionCommand}" Gesture="Shift+Delete" />
+                                            <KeyBinding Command="{Binding DeleteHighlitedCommand}" Gesture="Control+Delete" />
+                                            <KeyBinding Command="{Binding ShowGroupInThumbnailComparerCommand}" Gesture="Alt+C" />
                                         </DataGrid.KeyBindings>
                                         <DataGrid.Columns>
                                             <DataGridTemplateColumn>
@@ -697,26 +668,20 @@
                                                     </DataTemplate>
                                                 </DataGridTemplateColumn.CellTemplate>
                                             </DataGridTemplateColumn>
-                                            <DataGridTemplateColumn Header="Thumbnail"
-                                                                    IsVisible="{Binding Source={x:Static Settings:SettingsFile.Instance}, Path=ShowThumbnailColumn}">
+                                            <DataGridTemplateColumn Header="Thumbnail" IsVisible="{Binding Source={x:Static Settings:SettingsFile.Instance}, Path=ShowThumbnailColumn}">
                                                 <DataGridTemplateColumn.CellTemplate>
                                                     <DataTemplate>
                                                         <LayoutTransformControl>
                                                             <LayoutTransformControl.LayoutTransform>
-                                                                <ScaleTransform
-                                                                    ScaleX="{Binding ElementName=ZoomSliderThumbnails, Path=Value}"
-                                                                    ScaleY="{Binding ElementName=ZoomSliderThumbnails, Path=Value}" />
+                                                                <ScaleTransform ScaleX="{Binding ElementName=ZoomSliderThumbnails, Path=Value}" ScaleY="{Binding ElementName=ZoomSliderThumbnails, Path=Value}" />
                                                             </LayoutTransformControl.LayoutTransform>
                                                             <Image
                                                                 Name="ThumbnailImage"
                                                                 Source="{Binding Thumbnail}"
                                                                 Stretch="None">
                                                                 <i:Interaction.Behaviors>
-                                                                    <ia:EventTriggerBehavior EventName="DoubleTapped"
-                                                                        SourceObject="{Binding #ThumbnailImage}">
-                                                                        <ia:InvokeCommandAction
-                                                                            Command="{Binding $parent[DataGrid].DataContext.OpenItemCommand}"
-                                                                            CommandParameter="{Binding}" />
+                                                                    <ia:EventTriggerBehavior EventName="DoubleTapped" SourceObject="{Binding #ThumbnailImage}">
+                                                                        <ia:InvokeCommandAction Command="{Binding $parent[DataGrid].DataContext.OpenItemCommand}" CommandParameter="{Binding}" />
                                                                     </ia:EventTriggerBehavior>
                                                                 </i:Interaction.Behaviors>
                                                                 <ToolTip.Tip>
@@ -739,22 +704,18 @@
                                                             Text="{Binding ItemInfo.Path}"
                                                             TextWrapping="Wrap">
                                                             <i:Interaction.Behaviors>
-                                                                <ia:EventTriggerBehavior EventName="DoubleTapped"
-                                                                    SourceObject="{Binding #TextBlockPath}">
-                                                                    <ia:InvokeCommandAction
-                                                                        Command="{Binding $parent[DataGrid].DataContext.OpenItemInFolderCommand}" />
+                                                                <ia:EventTriggerBehavior EventName="DoubleTapped" SourceObject="{Binding #TextBlockPath}">
+                                                                    <ia:InvokeCommandAction Command="{Binding $parent[DataGrid].DataContext.OpenItemInFolderCommand}" />
                                                                 </ia:EventTriggerBehavior>
                                                             </i:Interaction.Behaviors>
                                                             <ToolTip.Tip>
-                                                                <TextBlock
-                                                                    Text="Double click to open the file in explorer/shell" />
+                                                                <TextBlock Text="Double click to open the file in explorer/shell" />
                                                             </ToolTip.Tip>
                                                         </TextBlock>
                                                     </DataTemplate>
                                                 </DataGridTemplateColumn.CellTemplate>
                                             </DataGridTemplateColumn>
-                                            <DataGridTemplateColumn Width="1*"
-                                                                    IsVisible="{Binding Source={x:Static Settings:SettingsFile.Instance}, Path=ShowDurationColumn}">
+                                            <DataGridTemplateColumn Width="1*" IsVisible="{Binding Source={x:Static Settings:SettingsFile.Instance}, Path=ShowDurationColumn}">
                                                 <DataGridTemplateColumn.Header>
                                                     <StackPanel>
                                                         <TextBlock Text="Duration / type" />
@@ -806,8 +767,7 @@
                                                     </DataTemplate>
                                                 </DataGridTemplateColumn.CellTemplate>
                                             </DataGridTemplateColumn>
-                                            <DataGridTemplateColumn Width="1*"
-                                                                    IsVisible="{Binding Source={x:Static Settings:SettingsFile.Instance}, Path=ShowFormatColumn}">
+                                            <DataGridTemplateColumn Width="1*" IsVisible="{Binding Source={x:Static Settings:SettingsFile.Instance}, Path=ShowFormatColumn}">
                                                 <DataGridTemplateColumn.Header>
                                                     <StackPanel>
                                                         <TextBlock Text="Format" />
@@ -846,8 +806,7 @@
                                                     </DataTemplate>
                                                 </DataGridTemplateColumn.CellTemplate>
                                             </DataGridTemplateColumn>
-                                            <DataGridTemplateColumn Width="1*"
-                                                                    IsVisible="{Binding Source={x:Static Settings:SettingsFile.Instance}, Path=ShowAudioColumn}">
+                                            <DataGridTemplateColumn Width="1*" IsVisible="{Binding Source={x:Static Settings:SettingsFile.Instance}, Path=ShowAudioColumn}">
                                                 <DataGridTemplateColumn.Header>
                                                     <StackPanel>
                                                         <TextBlock Text="Audio Format" />
@@ -893,11 +852,10 @@
                                         </DataGrid.Columns>
                                         <DataGrid.ContextMenu>
                                             <ContextMenu>
-                                                <MenuItem Command="{Binding OpenItemInFolderCommand}"
-                                                          Header="Open In Folder" />
+                                                <MenuItem Command="{Binding OpenItemInFolderCommand}" Header="Open In Folder" />
                                                 <MenuItem
                                                     Command="{Binding RenameFileCommand}"
-                                                    Header="Rename File"
+                                                    Header="{Binding Source={x:Static local:App.Lang}, Path=[MainWindow.ContextMenu.RenameFile]}"
                                                     InputGesture="F2" />
                                                 <MenuItem>
                                                     <MenuItem.Header>
@@ -912,7 +870,7 @@
                                                             <TextBlock
                                                                 Margin="5,0,0,0"
                                                                 VerticalAlignment="Center"
-                                                                Text="Selected Items" />
+                                                                Text="{Binding Source={x:Static local:App.Lang}, Path=[MainWindow.ContextMenu.SelectedItems]}" />
                                                         </StackPanel>
                                                     </MenuItem.Header>
                                                     <MenuItem Command="{Binding DeleteSelectionCommand}"
@@ -929,7 +887,7 @@
                                                                 <TextBlock
                                                                     Margin="5,0,0,0"
                                                                     VerticalAlignment="Center"
-                                                                    Text="Delete from disk (to recycle bin if possible)" />
+                                                                    Text="{Binding Source={x:Static local:App.Lang}, Path=[MainWindow.ContextMenu.DeleteFromDiskRecycle]}" />
                                                             </StackPanel>
                                                         </MenuItem.Header>
                                                     </MenuItem>
@@ -947,7 +905,7 @@
                                                                 <TextBlock
                                                                     Margin="5,0,0,0"
                                                                     VerticalAlignment="Center"
-                                                                    Text="Delete permanently from disk" />
+                                                                    Text="{Binding Source={x:Static local:App.Lang}, Path=[MainWindow.ContextMenu.DeletePermanently]}" />
                                                             </StackPanel>
                                                         </MenuItem.Header>
                                                     </MenuItem>
@@ -966,7 +924,7 @@
                                                                 <TextBlock
                                                                     Margin="5,0,0,0"
                                                                     VerticalAlignment="Center"
-                                                                    Text="Remove from list only" />
+                                                                    Text="{Binding Source={x:Static local:App.Lang}, Path=[MainWindow.ContextMenu.RemoveFromListOnly]}" />
                                                             </StackPanel>
                                                         </MenuItem.Header>
                                                     </MenuItem>
@@ -984,13 +942,11 @@
                                                                 <TextBlock
                                                                     Margin="5,0,0,0"
                                                                     VerticalAlignment="Center"
-                                                                    Text="Remove from list only and exclude from future scans" />
+                                                                    Text="{Binding Source={x:Static local:App.Lang}, Path=[MainWindow.ContextMenu.RemoveFromListAndExclude]}" />
                                                             </StackPanel>
                                                         </MenuItem.Header>
                                                     </MenuItem>
-                                                    <MenuItem
-                                                        Command="{Binding CreateSymbolLinksForSelectedItemsCommand}"
-                                                        ToolTip.Tip="Links all selected items to the first unselected item in each group.">
+                                                    <MenuItem Command="{Binding CreateSymbolLinksForSelectedItemsCommand}" ToolTip.Tip="Links all selected items to the first unselected item in each group.">
                                                         <MenuItem.Header>
                                                             <StackPanel Orientation="Horizontal">
                                                                 <Viewbox Width="16" Height="16">
@@ -1003,13 +959,11 @@
                                                                 <TextBlock
                                                                     Margin="5,0,0,0"
                                                                     VerticalAlignment="Center"
-                                                                    Text="Remove from list only + create symbol links" />
+                                                                    Text="{Binding Source={x:Static local:App.Lang}, Path=[MainWindow.ContextMenu.RemoveFromListAndSymbolLinks]}" />
                                                             </StackPanel>
                                                         </MenuItem.Header>
                                                     </MenuItem>
-                                                    <MenuItem
-                                                        Command="{Binding CreateSymbolLinksForSelectedItemsAndBlacklistCommand}"
-                                                        ToolTip.Tip="Links all selected items to the first unselected item in each group.">
+                                                    <MenuItem Command="{Binding CreateSymbolLinksForSelectedItemsAndBlacklistCommand}" ToolTip.Tip="Links all selected items to the first unselected item in each group.">
                                                         <MenuItem.Header>
                                                             <StackPanel Orientation="Horizontal">
                                                                 <Viewbox Width="16" Height="16">
@@ -1022,19 +976,17 @@
                                                                 <TextBlock
                                                                     Margin="5,0,0,0"
                                                                     VerticalAlignment="Center"
-                                                                    Text="Remove from list only + create symbol links + exclude" />
+                                                                    Text="{Binding Source={x:Static local:App.Lang}, Path=[MainWindow.ContextMenu.RemoveFromListSymbolLinksExclude]}" />
                                                             </StackPanel>
                                                         </MenuItem.Header>
                                                     </MenuItem>
                                                     <Separator />
-                                                    <MenuItem Command="{Binding CopySelectionCommand}"
-                                                              Header="Copy To Folder..." />
-                                                    <MenuItem Command="{Binding MoveSelectionCommand}"
-                                                              Header="Move To Folder..." />
+                                                    <MenuItem Command="{Binding CopySelectionCommand}" Header="Copy To Folder..." />
+                                                    <MenuItem Command="{Binding MoveSelectionCommand}" Header="Move To Folder..." />
                                                     <Separator />
                                                     <MenuItem
                                                         Command="{Binding ShowGroupInThumbnailComparerCommand}"
-                                                        Header="Compare Fullsize Thumbnails"
+                                                        Header="{Binding Source={x:Static local:App.Lang}, Path=[MainWindow.ContextMenu.CompareFullsizeThumbnails]}"
                                                         InputGesture="Alt+C" />
                                                 </MenuItem>
                                                 <MenuItem>
@@ -1050,46 +1002,42 @@
                                                             <TextBlock
                                                                 Margin="5,0,0,0"
                                                                 VerticalAlignment="Center"
-                                                                Text="Copy" />
+                                                                Text="{Binding Source={x:Static local:App.Lang}, Path=[Dialog.Copy]}" />
                                                         </StackPanel>
                                                     </MenuItem.Header>
-                                                    <MenuItem Command="{Binding CopyPathsToClipboardCommand}"
-                                                              Header="Copy path(s) to clipboard" />
-                                                    <MenuItem Command="{Binding CopyFilenamesToClipboardCommand}"
-                                                              Header="Copy filename(s) to clipboard" />
+                                                    <MenuItem Command="{Binding CopyPathsToClipboardCommand}" Header="Copy path(s) to clipboard" />
+                                                    <MenuItem Command="{Binding CopyFilenamesToClipboardCommand}" Header="Copy filename(s) to clipboard" />
                                                 </MenuItem>
                                                 <MenuItem Header="Groups">
-                                                    <MenuItem Command="{Binding ExpandAllGroupsCommand}"
-                                                              Header="Expand all" />
-                                                    <MenuItem Command="{Binding CollapseAllGroupsCommand}"
-                                                              Header="Collapse all" />
+                                                    <MenuItem Command="{Binding ExpandAllGroupsCommand}" Header="Expand all" />
+                                                    <MenuItem Command="{Binding CollapseAllGroupsCommand}" Header="Collapse all" />
                                                 </MenuItem>
-                                                <MenuItem Header="Selected Group">
+                                                <MenuItem Header="{Binding Source={x:Static local:App.Lang}, Path=[MainWindow.ContextMenu.SelectedGroup]}">
                                                     <MenuItem
                                                         Command="{Binding MarkGroupAsNotAMatchCommand}"
-                                                        Header="Mark as 'Not a match'"
-                                                        ToolTip.Tip="Hides this group and exclude it from future scans, except when there is a new duplicate." />
+                                                        Header="{Binding Source={x:Static local:App.Lang}, Path=[MainWindow.ContextMenu.MarkNotMatch]}"
+                                                        InputGesture="Alt+X"
+                                                        ToolTip.Tip="{Binding Source={x:Static local:App.Lang}, Path=[MainWindow.ContextMenu.MarkNotMatchTooltip]}" />
                                                     <MenuItem
                                                         Command="{Binding OpenGroupCommand}"
                                                         CommandParameter="0"
-                                                        Header="Open Group"
+                                                        Header="{Binding Source={x:Static local:App.Lang}, Path=[MainWindow.ContextMenu.OpenGroup]}"
                                                         IsVisible="{Binding IsMultiOpenSupported}" />
                                                     <MenuItem
                                                         Command="{Binding OpenGroupCommand}"
                                                         CommandParameter="1"
-                                                        Header="Open Group In Folder"
+                                                        Header="{Binding Source={x:Static local:App.Lang}, Path=[MainWindow.ContextMenu.OpenGroupInFolder]}"
                                                         IsVisible="{Binding IsMultiOpenInFolderSupported}" />
                                                     <MenuItem
                                                         Command="{Binding ShowGroupInThumbnailComparerCommand}"
-                                                        Header="Compare Fullsize Thumbnails"
+                                                        Header="{Binding Source={x:Static local:App.Lang}, Path=[MainWindow.ContextMenu.CompareFullsizeThumbnails]}"
                                                         InputGesture="Alt+C" />
                                                 </MenuItem>
                                             </ContextMenu>
                                         </DataGrid.ContextMenu>
                                     </DataGrid>
                                     <LayoutTransformControl.LayoutTransform>
-                                        <ScaleTransform ScaleX="{Binding ElementName=ZoomSlider, Path=Value}"
-                                                        ScaleY="{Binding ElementName=ZoomSlider, Path=Value}" />
+                                        <ScaleTransform ScaleX="{Binding ElementName=ZoomSlider, Path=Value}" ScaleY="{Binding ElementName=ZoomSlider, Path=Value}" />
                                     </LayoutTransformControl.LayoutTransform>
                                 </LayoutTransformControl>
                             </Grid>
@@ -1101,39 +1049,33 @@
                                     Grid.Row="0"
                                     MinHeight="20"
                                     Orientation="Horizontal">
-                                    <TextBlock
-                                        Text="{Binding DuplicatesSelectedCounter, Mode=OneWay, StringFormat=Total Selected Duplicates: \{0\}}" />
+                                    <TextBlock Text="{Binding DuplicatesSelectedCounter, Mode=OneWay, StringFormat=Total Selected Duplicates: \{0\}}" />
                                 </StackPanel>
                                 <StackPanel
-                                    Grid.Row="1"
                                     MinHeight="20"
+                                    Margin="0,5,0,0"
                                     Orientation="Horizontal">
-                                    <TextBlock
-                                        Text="{Binding #dataGridGrouping.Items.Count, Mode=OneWay, StringFormat=Visible Duplicates: \{0\}}" />
+                                    <TextBlock Text="{Binding #dataGridGrouping.Items.Count, Mode=OneWay, StringFormat=Visible Duplicates: \{0\}}" />
                                     <Separator
                                         Width="1"
                                         Margin="5"
                                         Background="{actipro:ThemeResource StatusBarBorderBrush}" />
-                                    <TextBlock
-                                        Text="{Binding TotalDuplicates, Mode=OneWay, StringFormat=Total Duplicates: \{0\}}" />
+                                    <TextBlock Text="{Binding TotalDuplicates, Mode=OneWay, StringFormat=Total Duplicates: \{0\}}" />
                                     <Separator
                                         Width="1"
                                         Margin="5"
                                         Background="{actipro:ThemeResource StatusBarBorderBrush}" />
-                                    <TextBlock
-                                        Text="{Binding TotalDuplicateGroups, Mode=OneWay, StringFormat=Total Duplicate Groups: \{0\}}" />
+                                    <TextBlock Text="{Binding TotalDuplicateGroups, Mode=OneWay, StringFormat=Total Duplicate Groups: \{0\}}" />
                                     <Separator
                                         Width="1"
                                         Margin="5"
                                         Background="{actipro:ThemeResource StatusBarBorderBrush}" />
-                                    <TextBlock
-                                        Text="{Binding TotalDuplicatesSize, Mode=OneWay, StringFormat=Total Size: \{0\}}" />
+                                    <TextBlock Text="{Binding TotalDuplicatesSize, Mode=OneWay, StringFormat=Total Size: \{0\}}" />
                                     <Separator
                                         Width="1"
                                         Margin="5"
                                         Background="{actipro:ThemeResource StatusBarBorderBrush}" />
-                                    <TextBlock
-                                        Text="{Binding TotalSizeRemoved, Mode=OneWay, StringFormat=Total Size Removed: \{0\}}" />
+                                    <TextBlock Text="{Binding TotalSizeRemoved, Mode=OneWay, StringFormat=Total Size Removed: \{0\}}" />
                                 </StackPanel>
                             </Grid>
                             <Grid Grid.Row="3">
@@ -1144,14 +1086,11 @@
                                         Maximum="{Binding ScanProgressMaxValue, Mode=OneWay}"
                                         Value="{Binding ScanProgressValue, Mode=OneWay}" />
                                     <Separator Width="1" Margin="5" />
-                                    <TextBlock
-                                        Text="{Binding TimeElapsed, Mode=OneWay, StringFormat=Elapsed time: \{0:hh\}:\{0:mm\}:\{0:ss\}}" />
+                                    <TextBlock Text="{Binding TimeElapsed, Mode=OneWay, StringFormat=Elapsed time: \{0:hh\}:\{0:mm\}:\{0:ss\}}" />
                                     <Separator Width="1" Margin="5" />
-                                    <TextBlock
-                                        Text="{Binding RemainingTime, Mode=OneWay, StringFormat=Remaining time: ~\{0:hh\}:\{0:mm\}:\{0:ss\}}" />
+                                    <TextBlock Text="{Binding RemainingTime, Mode=OneWay, StringFormat=Remaining time: ~\{0:hh\}:\{0:mm\}:\{0:ss\}}" />
                                     <Separator Width="1" Margin="5" />
-                                    <TextBlock
-                                        Text="{Binding ScanProgressText, Mode=OneWay} TextTrimming=CharacterEllipsis" />
+                                    <TextBlock Text="{Binding ScanProgressText, Mode=OneWay} TextTrimming=CharacterEllipsis" />
                                 </StackPanel>
                             </Grid>
                         </Grid>
@@ -1161,15 +1100,14 @@
                             <TextBlock
                                 VerticalAlignment="Center"
                                 FontSize="12"
-                                Text="Settings" />
+                                Text="{Binding Source={x:Static local:App.Lang}, Path=[MainWindow.Tab.Settings]}" />
                         </TabItem.Header>
                         <Grid
                             Margin="0,0,0,10"
                             Background="{DynamicResource SystemControlBackgroundChromeBlackLowBrush}"
                             RowDefinitions="Auto, *">
                             <Menu Grid.Row="0" MinHeight="30">
-                                <MenuItem Command="{Binding SaveSettingsCommand}"
-                                          ToolTip.Tip="Note: Settings are automatically saved on normal exit">
+                                <MenuItem Command="{Binding SaveSettingsCommand}" ToolTip.Tip="Note: Settings are automatically saved on normal exit">
                                     <MenuItem.Header>
                                         <StackPanel Orientation="Horizontal">
                                             <Viewbox Width="20" Height="20">
@@ -1182,7 +1120,7 @@
                                             <TextBlock
                                                 Margin="5,0,0,0"
                                                 VerticalAlignment="Center"
-                                                Text="Save" />
+                                                Text="{Binding Source={x:Static local:App.Lang}, Path=[Dialog.Save]}" />
                                         </StackPanel>
                                     </MenuItem.Header>
                                 </MenuItem>
@@ -1199,7 +1137,7 @@
                                             <TextBlock
                                                 Margin="5,0,0,0"
                                                 VerticalAlignment="Center"
-                                                Text="Save To File" />
+                                                Text="{Binding Source={x:Static local:App.Lang}, Path=[Dialog.SaveToFile]}" />
                                         </StackPanel>
                                     </MenuItem.Header>
                                 </MenuItem>
@@ -1216,7 +1154,7 @@
                                             <TextBlock
                                                 Margin="5,0,0,0"
                                                 VerticalAlignment="Center"
-                                                Text="Load From File" />
+                                                Text="{Binding Source={x:Static local:App.Lang}, Path=[Dialog.LoadFromFile]}" />
                                         </StackPanel>
                                     </MenuItem.Header>
                                 </MenuItem>
@@ -1227,211 +1165,297 @@
                                         <TextBlock
                                             VerticalAlignment="Center"
                                             FontSize="12"
-                                            Text="Misc" />
+                                            Text="{Binding Source={x:Static local:App.Lang}, Path=[MainWindow.Settings.Misc]}" />
                                     </TabItem.Header>
-                                    <ScrollViewer>
-                                        <Grid IsEnabled="{Binding !IsScanning}" RowDefinitions="Auto,Auto, *">
+                                    <ScrollViewer HorizontalScrollBarVisibility="Auto">
+                                        <Grid IsEnabled="{Binding !IsScanning}" RowDefinitions="Auto,Auto,Auto, *">
                                             <TextBlock
                                                 Grid.Row="0"
-                                                Margin="10"
+                                                Margin="10,0,0,10"
                                                 Foreground="{actipro:ThemeResource ControlBackgroundBrushSolidWarning}"
-                                                Text="Hint: Mouse hover options to get more information about them" />
-                                            <Grid Grid.Row="1" ColumnDefinitions="Auto, Auto, *">
+                                                Text="{Binding Source={x:Static local:App.Lang}, Path=[MainWindow.Settings.MiscHint]}" />
+                                            <StackPanel Grid.Row="1" Orientation="Horizontal" Margin="10,0,0,10">
+                                                <TextBlock
+                                                    Grid.Row="0"
+                                                    Foreground="{actipro:ThemeResource ControlBackgroundBrushSolidWarning}"
+                                                    Text="{Binding Source={x:Static local:App.Lang}, Path=[MainWindow.Settings.MiscWikiHint]}" />
+                                                <Button
+                                                    Margin="5,0,0,0"
+                                                    Classes="hyperlink"
+                                                    Command="{Binding OpenWikiLinkCommand}"
+                                                    Content="{Binding Source={x:Static local:App.Lang}, Path=[MainWindow.Settings.MiscWikiHyperlink]}" />
+                                            </StackPanel>
+                                            <Grid Grid.Row="2" ColumnDefinitions="Auto, Auto, *">
                                                 <StackPanel Margin="5,5,0,0">
                                                     <CheckBox
                                                         VerticalAlignment="Center"
-                                                        Content="Ignore Read Only Folders"
+                                                        Content="{Binding Source={x:Static local:App.Lang}, Path=[MainWindow.Settings.IgnoreReadOnlyFolders]}"
                                                         IsChecked="{Binding Source={x:Static Settings:SettingsFile.Instance}, Path=IgnoreReadOnlyFolders}"
                                                         IsThreeState="False" />
                                                     <CheckBox
                                                         VerticalAlignment="Center"
-                                                        Content="Include Sub Directories"
+                                                        Content="{Binding Source={x:Static local:App.Lang}, Path=[MainWindow.Settings.IncludeSubDirectories]}"
                                                         IsChecked="{Binding Source={x:Static Settings:SettingsFile.Instance}, Path=IncludeSubDirectories}"
                                                         IsThreeState="False" />
                                                     <CheckBox
                                                         VerticalAlignment="Center"
-                                                        Content="Include Images"
+                                                        Content="{Binding Source={x:Static local:App.Lang}, Path=[MainWindow.Settings.IncludeImages]}"
                                                         IsChecked="{Binding Source={x:Static Settings:SettingsFile.Instance}, Path=IncludeImages}"
                                                         IsThreeState="False" />
                                                     <CheckBox
                                                         VerticalAlignment="Center"
-                                                        Content="Generate Preview Images"
+                                                        Content="{Binding Source={x:Static local:App.Lang}, Path=[MainWindow.Settings.UseExifCreationDate]}"
+                                                        IsChecked="{Binding Source={x:Static Settings:SettingsFile.Instance}, Path=UseExifCreationDate}"
+                                                        IsThreeState="False"
+                                                        ToolTip.Tip="{Binding Source={x:Static local:App.Lang}, Path=[MainWindow.Settings.UseExifCreationDateTooltip]}" />
+                                                    <CheckBox
+                                                        VerticalAlignment="Center"
+                                                        Content="{Binding Source={x:Static local:App.Lang}, Path=[MainWindow.Settings.GeneratePreviewImages]}"
                                                         IsChecked="{Binding Source={x:Static Settings:SettingsFile.Instance}, Path=GeneratePreviewThumbnails}"
                                                         IsThreeState="False"
-                                                        ToolTip.Tip="Deactivate to save memory by disabling preview images of duplicates" />
+                                                        ToolTip.Tip="{Binding Source={x:Static local:App.Lang}, Path=[MainWindow.Settings.GeneratePreviewImagesTooltip]}" />
                                                     <CheckBox
                                                         VerticalAlignment="Center"
-                                                        Content="Exclude Reparse Points"
+                                                        Content="{Binding Source={x:Static local:App.Lang}, Path=[MainWindow.Settings.ExcludeReparsePoints]}"
                                                         IsChecked="{Binding Source={x:Static Settings:SettingsFile.Instance}, Path=IgnoreReparsePoints}"
                                                         IsThreeState="False"
-                                                        ToolTip.Tip="Symbolic links and junction only. Note this will completely skip these from file enumeration to search." />
+                                                        ToolTip.Tip="{Binding Source={x:Static local:App.Lang}, Path=[MainWindow.Settings.ExcludeReparsePointsTooltip]}" />
                                                     <CheckBox
                                                         VerticalAlignment="Center"
-                                                        Content="Exclude Hard Links"
+                                                        Content="{Binding Source={x:Static local:App.Lang}, Path=[MainWindow.Settings.ExcludeHardLinks]}"
                                                         IsChecked="{Binding Source={x:Static Settings:SettingsFile.Instance}, Path=ExcludeHardLinks}"
                                                         IsThreeState="False"
-                                                        ToolTip.Tip="Unlike reparse points hard links are still included in search but are not considered as duplicates. WARNING: Use this option only when necessary, as it slows down the scanning process considerably!" />
+                                                        ToolTip.Tip="{Binding Source={x:Static local:App.Lang}, Path=[MainWindow.Settings.ExcludeHardLinksTooltip]}" />
                                                     <CheckBox
                                                         VerticalAlignment="Center"
-                                                        Content="Extended FFTools Logging"
+                                                        Content="{Binding Source={x:Static local:App.Lang}, Path=[MainWindow.Settings.ExtendedFFToolsLogging]}"
                                                         IsChecked="{Binding Source={x:Static Settings:SettingsFile.Instance}, Path=ExtendedFFToolsLogging}"
                                                         IsThreeState="False"
-                                                        ToolTip.Tip="If activated ffmpeg and ffprobe errors will be written to the log" />
+                                                        ToolTip.Tip="{Binding Source={x:Static local:App.Lang}, Path=[MainWindow.Settings.ExtendedFFToolsLoggingTooltip]}" />
                                                     <CheckBox
                                                         VerticalAlignment="Center"
-                                                        Content="Always retry failed sampling"
+                                                        Content="{Binding Source={x:Static local:App.Lang}, Path=[MainWindow.Settings.LogExcludedFiles]}"
+                                                        IsChecked="{Binding Source={x:Static Settings:SettingsFile.Instance}, Path=LogExcludedFiles}"
+                                                        IsThreeState="False"
+                                                        ToolTip.Tip="{Binding Source={x:Static local:App.Lang}, Path=[MainWindow.Settings.LogExcludedFilesTooltip]}" />
+                                                    <CheckBox
+                                                        VerticalAlignment="Center"
+                                                        Content="{Binding Source={x:Static local:App.Lang}, Path=[MainWindow.Settings.AlwaysRetryFailedSampling]}"
                                                         IsChecked="{Binding Source={x:Static Settings:SettingsFile.Instance}, Path=AlwaysRetryFailedSampling}"
                                                         IsThreeState="False"
-                                                        ToolTip.Tip="If activated scan engine will try to generate thumbprints of failed entries each time it is run. Otherwise consecutive attempt will be taken only after cleanup of the database." />
+                                                        ToolTip.Tip="{Binding Source={x:Static local:App.Lang}, Path=[MainWindow.Settings.AlwaysRetryFailedSamplingTooltip]}" />
                                                     <CheckBox
                                                         VerticalAlignment="Center"
-                                                        Content="Auto backup scan results"
+                                                        Content="{Binding Source={x:Static local:App.Lang}, Path=[MainWindow.Settings.AutoBackupScanResults]}"
                                                         IsChecked="{Binding Source={x:Static Settings:SettingsFile.Instance}, Path=BackupAfterListChanged}"
                                                         IsThreeState="False"
-                                                        ToolTip.Tip="If activated a backup gets created each time the scan results list gets changed" />
+                                                        ToolTip.Tip="{Binding Source={x:Static local:App.Lang}, Path=[MainWindow.Settings.AutoBackupScanResultsTooltip]}" />
                                                     <CheckBox
                                                         VerticalAlignment="Center"
-                                                        Content="Use native Ffmpeg binding"
+                                                        Content="{Binding Source={x:Static local:App.Lang}, Path=[MainWindow.Settings.UseNativeFfmpegBinding]}"
                                                         IsChecked="{Binding Source={x:Static Settings:SettingsFile.Instance}, Path=UseNativeFfmpegBinding}"
                                                         IsThreeState="False"
-                                                        ToolTip.Tip="If activated it will call ffmpeg functions natively instead of spawning a new ffmpeg.exe process. This is MUCH(!!) faster. WARNING: You must use the latest SHARED and STABLE ffmpeg version. If something goes wrong then whole VDF will crash." />
+                                                        ToolTip.Tip="{Binding Source={x:Static local:App.Lang}, Path=[MainWindow.Settings.UseNativeFfmpegBindingTooltip]}" />
                                                     <CheckBox
                                                         VerticalAlignment="Center"
-                                                        Content="Ignore Black Pixels"
+                                                        Content="{Binding Source={x:Static local:App.Lang}, Path=[MainWindow.Settings.IgnoreBlackPixels]}"
                                                         IsChecked="{Binding Source={x:Static Settings:SettingsFile.Instance}, Path=IgnoreBlackPixels}"
                                                         IsThreeState="False"
-                                                        ToolTip.Tip="Skip black pixels when comparing thumbnails. Lowers the chance for 'false positives' if thumbnails contain too much dark and raises the chance to detect duplicates if one of the thumbnails have black bars and the others not. In rare scenarios this might raise the 'false positives' instead. Slows down the scan speed by a bit." />
+                                                        ToolTip.Tip="{Binding Source={x:Static local:App.Lang}, Path=[MainWindow.Settings.IgnoreBlackPixelsTooltip]}" />
                                                     <CheckBox
                                                         VerticalAlignment="Center"
-                                                        Content="Ignore White Pixels"
+                                                        Content="{Binding Source={x:Static local:App.Lang}, Path=[MainWindow.Settings.IgnoreWhitePixels]}"
                                                         IsChecked="{Binding Source={x:Static Settings:SettingsFile.Instance}, Path=IgnoreWhitePixels}"
                                                         IsThreeState="False"
-                                                        ToolTip.Tip="Skip white pixels when comparing thumbnails. Lowers the chance for 'false positives' if thumbnails contain too much brightness and raises the chance to detect duplicates if one of the thumbnails have white bars and the others not. In rare scenarios this might raise the 'false positives' instead. Slows down the scan speed by a bit." />
+                                                        ToolTip.Tip="{Binding Source={x:Static local:App.Lang}, Path=[MainWindow.Settings.IgnoreWhitePixelsTooltip]}" />
                                                     <CheckBox
                                                         VerticalAlignment="Center"
-                                                        Content="Compare Horizontally Flipped"
+                                                        Content="{Binding Source={x:Static local:App.Lang}, Path=[MainWindow.Settings.CompareHorizontallyFlipped]}"
                                                         IsChecked="{Binding Source={x:Static Settings:SettingsFile.Instance}, Path=CompareHorizontallyFlipped}"
                                                         IsThreeState="False"
-                                                        ToolTip.Tip="Select this option if your video collection might contain horizontally flipped videos and you want them to be detected reliably. Slows down the scan speed by a bit." />
+                                                        ToolTip.Tip="{Binding Source={x:Static local:App.Lang}, Path=[MainWindow.Settings.CompareHorizontallyFlippedTooltip]}" />
                                                     <CheckBox
                                                         VerticalAlignment="Center"
-                                                        Content="Save results on exit"
+                                                        Content="{Binding Source={x:Static local:App.Lang}, Path=[MainWindow.Settings.SaveResultsOnExit]}"
                                                         IsChecked="{Binding Source={x:Static Settings:SettingsFile.Instance}, Path=AskToSaveResultsOnExit}"
                                                         IsThreeState="False"
-                                                        ToolTip.Tip="If checked you will be asked if you want to save the results when you close VDF" />
+                                                        ToolTip.Tip="{Binding Source={x:Static local:App.Lang}, Path=[MainWindow.Settings.SaveResultsOnExitTooltip]}" />
                                                     <CheckBox
                                                         VerticalAlignment="Center"
-                                                        Content="Scan against non-existing files"
+                                                        Content="{Binding Source={x:Static local:App.Lang}, Path=[MainWindow.Settings.ScanAgainstNonExistingFiles]}"
                                                         IsChecked="{Binding Source={x:Static Settings:SettingsFile.Instance}, Path=IncludeNonExistingFiles}"
                                                         IsThreeState="False"
-                                                        ToolTip.Tip="If checked non-existing files which have all necessary information are included" />
+                                                        ToolTip.Tip="{Binding Source={x:Static local:App.Lang}, Path=[MainWindow.Settings.ScanAgainstNonExistingFilesTooltip]}" />
                                                     <CheckBox
                                                         VerticalAlignment="Center"
-                                                        Content="Scan against entire database"
+                                                        Content="{Binding Source={x:Static local:App.Lang}, Path=[MainWindow.Settings.ScanAgainstEntireDatabase]}"
                                                         IsChecked="{Binding Source={x:Static Settings:SettingsFile.Instance}, Path=ScanAgainstEntireDatabase}"
                                                         IsThreeState="False"
-                                                        ToolTip.Tip="If checked scan is also performed against your entire database unless database files are excluded otherwise (i.e. exclude list, file path must contain, etc)" />
+                                                        ToolTip.Tip="{Binding Source={x:Static local:App.Lang}, Path=[MainWindow.Settings.ScanAgainstEntireDatabaseTooltip]}" />
+                                                    <CheckBox
+                                                        VerticalAlignment="Center"
+                                                        Content="{Binding Source={x:Static local:App.Lang}, Path=[MainWindow.Settings.UsePHashing]}"
+                                                        IsChecked="{Binding Source={x:Static Settings:SettingsFile.Instance}, Path=UsePHash}"
+                                                        IsThreeState="False"
+                                                        ToolTip.Tip="{Binding Source={x:Static local:App.Lang}, Path=[MainWindow.Settings.UsePHashingTooltip]}" />
                                                 </StackPanel>
                                                 <StackPanel Grid.Column="1" Margin="15,5,0,0">
-                                                    <TextBlock VerticalAlignment="Center" Text="Percent:" />
+                                                    <TextBlock VerticalAlignment="Center" Text="{Binding Source={x:Static local:App.Lang}, Path=[MainWindow.Settings.Percent]}" />
                                                     <NumericUpDown
                                                         Width="200"
                                                         HorizontalAlignment="Left"
                                                         VerticalAlignment="Center"
                                                         FormatString="\{0\}%"
+                                                        Increment="0.1"
                                                         Maximum="100"
                                                         Minimum="1"
-                                                        ToolTip.Tip="Minimum percentage that thumbnails must match before they are considered duplicates"
+                                                        ToolTip.Tip="{Binding Source={x:Static local:App.Lang}, Path=[MainWindow.Settings.PercentTooltip]}"
                                                         Value="{Binding Source={x:Static Settings:SettingsFile.Instance}, Path=Percent}" />
-                                                    <TextBlock VerticalAlignment="Center" Text="Duration Difference:" />
+                                                    <TextBlock VerticalAlignment="Center" Text="{Binding Source={x:Static local:App.Lang}, Path=[MainWindow.Settings.DurationDifference]}" />
                                                     <NumericUpDown
                                                         Width="200"
                                                         HorizontalAlignment="Left"
                                                         VerticalAlignment="Center"
                                                         FormatString="\{0\}%"
+                                                        Increment="0.1"
                                                         Maximum="100"
                                                         Minimum="0"
-                                                        ToolTip.Tip="Only scan videos against each other where the duration is not bigger/smaller than X %"
+                                                        ToolTip.Tip="{Binding Source={x:Static local:App.Lang}, Path=[MainWindow.Settings.DurationDifferenceTooltip]}"
                                                         Value="{Binding Source={x:Static Settings:SettingsFile.Instance}, Path=PercentDurationDifference}" />
+                                                    <TextBlock VerticalAlignment="Center" Text="{Binding Source={x:Static local:App.Lang}, Path=[MainWindow.Settings.DurationDifferenceMinSeconds]}" />
+                                                    <NumericUpDown
+                                                        Width="200"
+                                                        HorizontalAlignment="Left"
+                                                        VerticalAlignment="Center"
+                                                        Increment="1"
+                                                        Maximum="3600"
+                                                        Minimum="0"
+                                                        ToolTip.Tip="{Binding Source={x:Static local:App.Lang}, Path=[MainWindow.Settings.DurationDifferenceMinSecondsTooltip]}"
+                                                        Value="{Binding Source={x:Static Settings:SettingsFile.Instance}, Path=DurationDifferenceMinSeconds}" />
+                                                    <TextBlock VerticalAlignment="Center" Text="{Binding Source={x:Static local:App.Lang}, Path=[MainWindow.Settings.DurationDifferenceMaxSeconds]}" />
+                                                    <NumericUpDown
+                                                        Width="200"
+                                                        HorizontalAlignment="Left"
+                                                        VerticalAlignment="Center"
+                                                        Increment="1"
+                                                        Maximum="86400"
+                                                        Minimum="0"
+                                                        ToolTip.Tip="{Binding Source={x:Static local:App.Lang}, Path=[MainWindow.Settings.DurationDifferenceMaxSecondsTooltip]}"
+                                                        Value="{Binding Source={x:Static Settings:SettingsFile.Instance}, Path=DurationDifferenceMaxSeconds}" />
+                                                    <TextBlock VerticalAlignment="Center" Text="{Binding Source={x:Static local:App.Lang}, Path=[MainWindow.Settings.MaxSamplingDurationSeconds]}" />
+                                                    <NumericUpDown
+                                                        Width="200"
+                                                        HorizontalAlignment="Left"
+                                                        VerticalAlignment="Center"
+                                                        Increment="1"
+                                                        Maximum="86400"
+                                                        Minimum="0"
+                                                        ToolTip.Tip="{Binding Source={x:Static local:App.Lang}, Path=[MainWindow.Settings.MaxSamplingDurationSecondsTooltip]}"
+                                                        Value="{Binding Source={x:Static Settings:SettingsFile.Instance}, Path=MaxSamplingDurationSeconds}" />
                                                     <TextBlock
                                                         Margin="0,5,0,0"
                                                         VerticalAlignment="Center"
-                                                        Text="Thumbnails:" />
+                                                        Text="{Binding Source={x:Static local:App.Lang}, Path=[MainWindow.Settings.Thumbnails]}" />
                                                     <NumericUpDown
                                                         Width="200"
                                                         HorizontalAlignment="Left"
                                                         VerticalAlignment="Center"
                                                         Maximum="100"
                                                         Minimum="1"
-                                                        ToolTip.Tip="Number of thumbnails generated per file. This only applies to video files. A high number means that the scan takes longer but also the chance of a 'false positive' decreases."
+                                                        ToolTip.Tip="{Binding Source={x:Static local:App.Lang}, Path=[MainWindow.Settings.ThumbnailsTooltip]}"
                                                         ValueChanged="Thumbnails_ValueChanged"
                                                         Value="{Binding Source={x:Static Settings:SettingsFile.Instance}, Path=Thumbnails}" />
                                                     <TextBlock
                                                         Margin="0,5,0,0"
                                                         VerticalAlignment="Center"
-                                                        Text="Max Degree Of Parallelism:" />
+                                                        Text="{Binding Source={x:Static local:App.Lang}, Path=[MainWindow.Settings.MaxDegreeOfParallelism]}" />
                                                     <NumericUpDown
                                                         Width="200"
                                                         HorizontalAlignment="Left"
                                                         VerticalAlignment="Center"
                                                         Maximum="100"
                                                         Minimum="-1"
-                                                        ToolTip.Tip="Limits the amount of concurrent tasks. A value of -1 leaves it up to the system to decide, a value of 1 is most stable."
-                                                        Value="{Binding Source={x:Static Settings:SettingsFile.Instance}, Path=MaxDegreeOfParallelism}" />
-                                                    <TextBlock VerticalAlignment="Center" Text="Custom FF Arguments:" />
+                                                        ToolTip.Tip="{Binding Source={x:Static local:App.Lang}, Path=[MainWindow.Settings.MaxDegreeOfParallelismTooltip]}"
+                                                        Value="{Binding Source={x:Static Settings:SettingsFile.Instance}, Path=MaxDegreeOfParallelism}" />                                                    
+                                                </StackPanel>
+                                                <StackPanel Grid.Column="2" Margin="15,5,10,0" Spacing="6">
+                                                    <TextBlock FontWeight="Bold" Margin="0,10,0,0" Text="{Binding Source={x:Static local:App.Lang}, Path=[MainWindow.Settings.ScanScheduler]}" />
+                                                    <CheckBox
+                                                        Content="{Binding Source={x:Static local:App.Lang}, Path=[MainWindow.Settings.EnableScheduledScan]}"
+                                                        IsChecked="{Binding Source={x:Static Settings:SettingsFile.Instance}, Path=EnableScheduledScan}" />
+                                                    <StackPanel Orientation="Horizontal" Spacing="6">
+                                                        <TextBlock VerticalAlignment="Center" Text="{Binding Source={x:Static local:App.Lang}, Path=[MainWindow.Settings.ScheduledScanTime]}" />
+                                                        <TextBox
+                                                            Width="80"
+                                                            Text="{Binding Source={x:Static Settings:SettingsFile.Instance}, Path=ScheduledScanTime}"
+                                                            ToolTip.Tip="{Binding Source={x:Static local:App.Lang}, Path=[MainWindow.Settings.ScheduledScanTimeTooltip]}" />
+                                                    </StackPanel>
+                                                    <CheckBox
+                                                        Content="{Binding Source={x:Static local:App.Lang}, Path=[MainWindow.Settings.NotifyScheduledScanComplete]}"
+                                                        IsChecked="{Binding Source={x:Static Settings:SettingsFile.Instance}, Path=NotifyOnScheduledScanComplete}" /><TextBlock VerticalAlignment="Center" Text="{Binding Source={x:Static local:App.Lang}, Path=[MainWindow.Settings.CustomFFArguments]}" />
                                                     <TextBox
                                                         VerticalAlignment="Center"
+                                                        Width="250"
+                                                        HorizontalAlignment="Left"
                                                         Text="{Binding Source={x:Static Settings:SettingsFile.Instance}, Path=CustomFFArguments}"
-                                                        ToolTip.Tip="FF(mpeg/probe) arguments passed to the end of the internal arguments. Most users can leave this empty." />
+                                                        ToolTip.Tip="{Binding Source={x:Static local:App.Lang}, Path=[MainWindow.Settings.CustomFFArgumentsTooltip]}" />
                                                     <StackPanel Orientation="Horizontal">
                                                         <TextBlock
                                                             VerticalAlignment="Center"
                                                             FontSize="14"
-                                                            Text="Hardware Acceleration:" />
+                                                            Text="{Binding Source={x:Static local:App.Lang}, Path=[MainWindow.Settings.HardwareAcceleration]}" />
                                                         <Button
                                                             Margin="10,0,0,0"
                                                             Classes="hyperlink"
                                                             Command="{Binding OpenHWInfoLinkCommand}"
-                                                            Content="More Info" />
+                                                            Content="{Binding Source={x:Static local:App.Lang}, Path=[Dialog.MoreInfo]}" />
                                                     </StackPanel>
                                                     <ComboBox
                                                         x:Name="ComboboxHardwareAccelerationMode"
                                                         VerticalAlignment="Center"
+                                                        Width="250"
+                                                        HorizontalAlignment="Left"
                                                         ItemsSource="{Binding HardwareAccelerationModes}"
                                                         SelectedItem="{Binding Source={x:Static Settings:SettingsFile.Instance}, Path=HardwareAccelerationMode}"
-                                                        ToolTip.Tip="Hardware acceleration mode of ffmpeg" />
+                                                        ToolTip.Tip="{Binding Source={x:Static local:App.Lang}, Path=[MainWindow.Settings.HardwareAccelerationTooltip]}" />
                                                     <TextBlock
                                                         VerticalAlignment="Center"
                                                         FontSize="14"
-                                                        Text="Custom Commands:" />
+                                                        Text="{Binding Source={x:Static local:App.Lang}, Path=[MainWindow.Settings.CustomCommands]}" />
                                                     <ComboBox
                                                         VerticalAlignment="Center"
                                                         ItemsSource="{Binding CustomCommandList}"
                                                         SelectedItem="{Binding SelectedCustomCommand}"
-                                                        ToolTip.Tip="Enter your own commands to open single or multiple files." />
+                                                        Width="250"
+                                                        HorizontalAlignment="Left"
+                                                        ToolTip.Tip="{Binding Source={x:Static local:App.Lang}, Path=[MainWindow.Settings.CustomCommandsTooltip]}" />
                                                     <TextBox
                                                         VerticalAlignment="Center"
                                                         Text="{Binding SelectedCustomCommandValue}"
-                                                        ToolTip.Tip="E.g.: 'nemo --tabs %f', where '%f' is the placeholder for the file(s)" />
+                                                        Width="250"
+                                                        HorizontalAlignment="Left"
+                                                        ToolTip.Tip="{Binding Source={x:Static local:App.Lang}, Path=[MainWindow.Settings.CustomCommandsPlaceholderTooltip]}" />
                                                     <TextBlock
                                                         VerticalAlignment="Center"
                                                         FontSize="14"
-                                                        Text="Custom Database Folder:" />
+                                                        Text="{Binding Source={x:Static local:App.Lang}, Path=[MainWindow.Settings.CustomDatabaseFolder]}" />
                                                     <TextBox
                                                         VerticalAlignment="Center"
+                                                        Width="250"
+                                                        HorizontalAlignment="Left"
                                                         Text="{Binding Source={x:Static Settings:SettingsFile.Instance}, Path=CustomDatabaseFolder}"
-                                                        ToolTip.Tip="Specify a custom database folder. Otherwise it uses the current VDF folder." />
+                                                        ToolTip.Tip="{Binding Source={x:Static local:App.Lang}, Path=[MainWindow.Settings.CustomDatabaseFolderTooltip]}" />
                                                 </StackPanel>
                                             </Grid>
                                             <Grid
-                                                Grid.Row="2"
+                                                Grid.Row="3"
                                                 Margin="0,10,5,0"
                                                 ColumnDefinitions="*, *"
                                                 RowDefinitions="Auto, 300">
                                                 <TextBlock
                                                     Margin="5,0,0,2"
                                                     FontWeight="Bold"
-                                                    Text="Search Directories" />
+                                                    Text="{Binding Source={x:Static local:App.Lang}, Path=[MainWindow.Settings.SearchDirectories]}" />
                                                 <Grid Grid.Row="1" RowDefinitions="Auto, *, Auto">
                                                     <Menu Grid.Row="0" MinHeight="30">
                                                         <MenuItem Command="{Binding AddIncludesToListCommand}">
@@ -1447,7 +1471,7 @@
                                                                     <TextBlock
                                                                         Margin="5,0,0,0"
                                                                         VerticalAlignment="Center"
-                                                                        Text="Add" />
+                                                                        Text="{Binding Source={x:Static local:App.Lang}, Path=[Dialog.Add]}" />
                                                                 </StackPanel>
                                                             </MenuItem.Header>
                                                         </MenuItem>
@@ -1465,7 +1489,7 @@
                                                                     <TextBlock
                                                                         Margin="5,0,0,0"
                                                                         VerticalAlignment="Center"
-                                                                        Text="Remove" />
+                                                                        Text="{Binding Source={x:Static local:App.Lang}, Path=[Dialog.Remove]}" />
                                                                 </StackPanel>
                                                             </MenuItem.Header>
                                                         </MenuItem>
@@ -1482,7 +1506,7 @@
                                                                     <TextBlock
                                                                         Margin="5,0,0,0"
                                                                         VerticalAlignment="Center"
-                                                                        Text="Clear All" />
+                                                                        Text="{Binding Source={x:Static local:App.Lang}, Path=[Dialog.ClearAll]}" />
                                                                 </StackPanel>
                                                             </MenuItem.Header>
                                                         </MenuItem>
@@ -1497,14 +1521,14 @@
                                                         Grid.Row="2"
                                                         Margin="5"
                                                         Foreground="{actipro:ThemeResource ControlBackgroundBrushSolidWarning}"
-                                                        Text="Hint: You can also add folders with drag &amp; drop" />
+                                                        Text="{Binding Source={x:Static local:App.Lang}, Path=[MainWindow.Settings.DragDropHint]}" />
                                                 </Grid>
                                                 <TextBlock
                                                     Grid.Row="0"
                                                     Grid.Column="1"
                                                     Margin="15,0,0,2"
                                                     FontWeight="Bold"
-                                                    Text="Exclude Directories" />
+                                                    Text="{Binding Source={x:Static local:App.Lang}, Path=[MainWindow.Settings.ExcludeDirectories]}" />
                                                 <Grid
                                                     Grid.Row="1"
                                                     Grid.Column="1"
@@ -1524,7 +1548,7 @@
                                                                     <TextBlock
                                                                         Margin="5,0,0,0"
                                                                         VerticalAlignment="Center"
-                                                                        Text="Add" />
+                                                                        Text="{Binding Source={x:Static local:App.Lang}, Path=[Dialog.Add]}" />
                                                                 </StackPanel>
                                                             </MenuItem.Header>
                                                         </MenuItem>
@@ -1542,7 +1566,7 @@
                                                                     <TextBlock
                                                                         Margin="5,0,0,0"
                                                                         VerticalAlignment="Center"
-                                                                        Text="Remove" />
+                                                                        Text="{Binding Source={x:Static local:App.Lang}, Path=[Dialog.Remove]}" />
                                                                 </StackPanel>
                                                             </MenuItem.Header>
                                                         </MenuItem>
@@ -1559,7 +1583,7 @@
                                                                     <TextBlock
                                                                         Margin="5,0,0,0"
                                                                         VerticalAlignment="Center"
-                                                                        Text="Clear All" />
+                                                                        Text="{Binding Source={x:Static local:App.Lang}, Path=[Dialog.ClearAll]}" />
                                                                 </StackPanel>
                                                             </MenuItem.Header>
                                                         </MenuItem>
@@ -1574,7 +1598,7 @@
                                                         Grid.Row="2"
                                                         Margin="5"
                                                         Foreground="{actipro:ThemeResource ControlBackgroundBrushSolidWarning}"
-                                                        Text="Hint: You can also add folders with drag &amp; drop" />
+                                                        Text="{Binding Source={x:Static local:App.Lang}, Path=[MainWindow.Settings.DragDropHint]}" />
                                                 </Grid>
                                             </Grid>
                                         </Grid>
@@ -1585,7 +1609,7 @@
                                         <TextBlock
                                             VerticalAlignment="Center"
                                             FontSize="12"
-                                            Text="Files" />
+                                            Text="{Binding Source={x:Static local:App.Lang}, Path=[MainWindow.Settings.Files]}" />
                                     </TabItem.Header>
                                     <Grid
                                         ColumnDefinitions="Auto, Auto, Auto, Auto, *"
@@ -1596,13 +1620,13 @@
                                             Grid.ColumnSpan="4"
                                             Margin="10"
                                             Foreground="{actipro:ThemeResource ControlBackgroundBrushEmphasizedDanger}"
-                                            Text="Note: These settings apply when files are added to database, not when comparing files against duplicates" />
+                                            Text="{Binding Source={x:Static local:App.Lang}, Path=[MainWindow.Settings.FilesNote]}" />
                                         <CheckBox
                                             x:Name="CheckboxFilterByFileSize"
                                             Grid.Row="1"
                                             Grid.Column="0"
                                             VerticalAlignment="Center"
-                                            Content="File Size (MB):"
+                                            Content="{Binding Source={x:Static local:App.Lang}, Path=[MainWindow.Settings.FileSize]}"
                                             IsChecked="{Binding Source={x:Static Settings:SettingsFile.Instance}, Path=FilterByFileSize}"
                                             IsThreeState="False" />
                                         <NumericUpDown
@@ -1620,7 +1644,7 @@
                                             Grid.Column="2"
                                             Margin="10,0"
                                             VerticalAlignment="Center"
-                                            Text="to" />
+                                            Text="{Binding Source={x:Static local:App.Lang}, Path=[MainWindow.Filter.To]}" />
                                         <NumericUpDown
                                             Grid.Row="1"
                                             Grid.Column="3"
@@ -1636,7 +1660,7 @@
                                             Grid.Row="2"
                                             Grid.Column="0"
                                             VerticalAlignment="Top"
-                                            Content="File Path contains:"
+                                            Content="{Binding Source={x:Static local:App.Lang}, Path=[MainWindow.Settings.FilePathContains]}"
                                             IsChecked="{Binding Source={x:Static Settings:SettingsFile.Instance}, Path=FilterByFilePathContains}"
                                             IsThreeState="False" />
                                         <Grid
@@ -1661,7 +1685,7 @@
                                                             <TextBlock
                                                                 Margin="5,0,0,0"
                                                                 VerticalAlignment="Center"
-                                                                Text="Add" />
+                                                                Text="{Binding Source={x:Static local:App.Lang}, Path=[Dialog.Add]}" />
                                                         </StackPanel>
                                                     </MenuItem.Header>
                                                 </MenuItem>
@@ -1679,7 +1703,7 @@
                                                             <TextBlock
                                                                 Margin="5,0,0,0"
                                                                 VerticalAlignment="Center"
-                                                                Text="Remove" />
+                                                                Text="{Binding Source={x:Static local:App.Lang}, Path=[Dialog.Remove]}" />
                                                         </StackPanel>
                                                     </MenuItem.Header>
                                                 </MenuItem>
@@ -1691,17 +1715,17 @@
                                                 BorderThickness="1"
                                                 IsEnabled="{Binding #CheckboxFilterByFilePathContains.IsChecked}"
                                                 ItemsSource="{Binding Source={x:Static Settings:SettingsFile.Instance}, Path=FilePathContainsTexts}" />
-                                            <TextBlock
-                                                Grid.Row="2"
-                                                Foreground="{actipro:ThemeResource ControlBackgroundBrushSolidWarning}"
-                                                Text="Note: Supports the following wildcards: '*' and '?'. The backslash character '\' escapes." />
+                                                <TextBlock
+                                                    Grid.Row="2"
+                                                    Foreground="{actipro:ThemeResource ControlBackgroundBrushSolidWarning}"
+                                                    Text="{Binding Source={x:Static local:App.Lang}, Path=[MainWindow.Settings.WildcardNote]}" />
                                         </Grid>
                                         <CheckBox
                                             x:Name="CheckboxFilterByFilePathNotContains"
                                             Grid.Row="3"
                                             Grid.Column="0"
                                             VerticalAlignment="Top"
-                                            Content="File Path does NOT contain:"
+                                            Content="{Binding Source={x:Static local:App.Lang}, Path=[MainWindow.Settings.FilePathNotContains]}"
                                             IsChecked="{Binding Source={x:Static Settings:SettingsFile.Instance}, Path=FilterByFilePathNotContains}"
                                             IsThreeState="False" />
                                         <Grid
@@ -1726,7 +1750,7 @@
                                                             <TextBlock
                                                                 Margin="5,0,0,0"
                                                                 VerticalAlignment="Center"
-                                                                Text="Add" />
+                                                                Text="{Binding Source={x:Static local:App.Lang}, Path=[Dialog.Add]}" />
                                                         </StackPanel>
                                                     </MenuItem.Header>
                                                 </MenuItem>
@@ -1745,7 +1769,7 @@
                                                             <TextBlock
                                                                 Margin="5,0,0,0"
                                                                 VerticalAlignment="Center"
-                                                                Text="Remove" />
+                                                                Text="{Binding Source={x:Static local:App.Lang}, Path=[Dialog.Remove]}" />
                                                         </StackPanel>
                                                     </MenuItem.Header>
                                                 </MenuItem>
@@ -1757,10 +1781,10 @@
                                                 BorderThickness="1"
                                                 IsEnabled="{Binding #CheckboxFilterByFilePathNotContains.IsChecked}"
                                                 ItemsSource="{Binding Source={x:Static Settings:SettingsFile.Instance}, Path=FilePathNotContainsTexts}" />
-                                            <TextBlock
-                                                Grid.Row="2"
-                                                Foreground="{actipro:ThemeResource ControlBackgroundBrushSolidWarning}"
-                                                Text="Note: Supports the following wildcards: '*' and '?'. The backslash character '\' escapes." />
+                                                <TextBlock
+                                                    Grid.Row="2"
+                                                    Foreground="{actipro:ThemeResource ControlBackgroundBrushSolidWarning}"
+                                                    Text="{Binding Source={x:Static local:App.Lang}, Path=[MainWindow.Settings.WildcardNote]}" />
                                         </Grid>
                                     </Grid>
                                 </TabItem>
@@ -1769,54 +1793,67 @@
                                         <TextBlock
                                             VerticalAlignment="Center"
                                             FontSize="12"
-                                            Text="Appearance" />
+                                            Text="{Binding Source={x:Static local:App.Lang}, Path=[MainWindow.Settings.Appearance]}" />
                                     </TabItem.Header>
                                     <StackPanel>
+                                        <StackPanel
+                                            Margin="0,6,0,0"
+                                            Orientation="Horizontal"
+                                            Spacing="6">
+                                            <TextBlock
+                                                VerticalAlignment="Center"
+                                                Text="{Binding Source={x:Static local:App.Lang}, Path=[MainWindow.Settings.Language]}" />
+                                           <ComboBox
+                                                Width="180"
+                                                ItemsSource="{Binding LanguageOptions}"
+                                                SelectedItem="{Binding SelectedLanguageOption, Mode=TwoWay}">
+                                                <ComboBox.ItemTemplate>
+                                                    <DataTemplate>
+                                                        <TextBlock Text="{Binding DisplayName}" />
+                                                    </DataTemplate>
+                                                </ComboBox.ItemTemplate>
+                                            </ComboBox>
+                                        </StackPanel>
                                         <CheckBox
                                             VerticalAlignment="Center"
-                                            Content="Use Mica (Windows 11 only)¹"
+                                            Content="{Binding Source={x:Static local:App.Lang}, Path=[MainWindow.Settings.UseMica]}"
                                             IsChecked="{Binding Source={x:Static Settings:SettingsFile.Instance}, Path=UseMica}"
                                             IsThreeState="False" />
                                         <CheckBox
                                             VerticalAlignment="Center"
-                                            Content="Dark Mode¹"
+                                            Content="{Binding Source={x:Static local:App.Lang}, Path=[MainWindow.Settings.DarkMode]}"
                                             IsChecked="{Binding Source={x:Static Settings:SettingsFile.Instance}, Path=DarkMode}"
+                                            IsThreeState="False" />
+                                        <CheckBox
+                                            VerticalAlignment="Center"
+                                            Content="{Binding Source={x:Static local:App.Lang}, Path=[MainWindow.Settings.ShowPathColumn]}"
+                                            IsChecked="{Binding Source={x:Static Settings:SettingsFile.Instance}, Path=ShowPathColumn}"
+                                            IsThreeState="False" />
+                                        <CheckBox
+                                            VerticalAlignment="Center"
+                                            Content="{Binding Source={x:Static local:App.Lang}, Path=[MainWindow.Settings.ShowDurationColumn]}"
+                                            IsChecked="{Binding Source={x:Static Settings:SettingsFile.Instance}, Path=ShowDurationColumn}"
+                                            IsThreeState="False" />
+                                        <CheckBox
+                                            VerticalAlignment="Center"
+                                            Content="{Binding Source={x:Static local:App.Lang}, Path=[MainWindow.Settings.ShowFormatColumn]}"
+                                            IsChecked="{Binding Source={x:Static Settings:SettingsFile.Instance}, Path=ShowFormatColumn}"
+                                            IsThreeState="False" />
+                                        <CheckBox
+                                            VerticalAlignment="Center"
+                                            Content="{Binding Source={x:Static local:App.Lang}, Path=[MainWindow.Settings.ShowAudioColumn]}"
+                                            IsChecked="{Binding Source={x:Static Settings:SettingsFile.Instance}, Path=ShowAudioColumn}"
+                                            IsThreeState="False" />
+                                        <CheckBox
+                                            VerticalAlignment="Center"
+                                            Content="{Binding Source={x:Static local:App.Lang}, Path=[MainWindow.Settings.ShowSimilarityColumn]}"
+                                            IsChecked="{Binding Source={x:Static Settings:SettingsFile.Instance}, Path=ShowSimilarityColumn}"
                                             IsThreeState="False" />
                                         <TextBlock
                                             Margin="0,5,0,5"
                                             VerticalAlignment="Center"
                                             Foreground="{actipro:ThemeResource ControlBackgroundBrushSolidWarning}"
-                                            Text="¹ Restart VDF to apply changes" />
-                                        <CheckBox
-                                            VerticalAlignment="Center"
-                                            Content="Show Thumbnail Column"
-                                            IsChecked="{Binding Source={x:Static Settings:SettingsFile.Instance}, Path=ShowThumbnailColumn}"
-                                            IsThreeState="False" />
-                                        <CheckBox
-                                            VerticalAlignment="Center"
-                                            Content="Show Path Column"
-                                            IsChecked="{Binding Source={x:Static Settings:SettingsFile.Instance}, Path=ShowPathColumn}"
-                                            IsThreeState="False" />
-                                        <CheckBox
-                                            VerticalAlignment="Center"
-                                            Content="Show Duration Column"
-                                            IsChecked="{Binding Source={x:Static Settings:SettingsFile.Instance}, Path=ShowDurationColumn}"
-                                            IsThreeState="False" />
-                                        <CheckBox
-                                            VerticalAlignment="Center"
-                                            Content="Show Format Column"
-                                            IsChecked="{Binding Source={x:Static Settings:SettingsFile.Instance}, Path=ShowFormatColumn}"
-                                            IsThreeState="False" />
-                                        <CheckBox
-                                            VerticalAlignment="Center"
-                                            Content="Show Audio Column"
-                                            IsChecked="{Binding Source={x:Static Settings:SettingsFile.Instance}, Path=ShowAudioColumn}"
-                                            IsThreeState="False" />
-                                        <CheckBox
-                                            VerticalAlignment="Center"
-                                            Content="Show Similarity Column"
-                                            IsChecked="{Binding Source={x:Static Settings:SettingsFile.Instance}, Path=ShowSimilarityColumn}"
-                                            IsThreeState="False" />
+                                            Text="{Binding Source={x:Static local:App.Lang}, Path=[MainWindow.Settings.RestartHint]}" />
                                     </StackPanel>
                                 </TabItem>
                             </TabControl>
@@ -1827,10 +1864,9 @@
                             <TextBlock
                                 VerticalAlignment="Center"
                                 FontSize="12"
-                                Text="Log" />
+                                Text="{Binding Source={x:Static local:App.Lang}, Path=[MainWindow.Tab.Log]}" />
                         </TabItem.Header>
-                        <Grid Margin="0,0,0,10"
-                              Background="{DynamicResource SystemControlBackgroundChromeBlackLowBrush}">
+                        <Grid Margin="0,0,0,10" Background="{DynamicResource SystemControlBackgroundChromeBlackLowBrush}">
                             <Grid.RowDefinitions>
                                 <RowDefinition Height="Auto" />
                                 <RowDefinition />
@@ -1850,7 +1886,7 @@
                                             <TextBlock
                                                 Margin="5,0,0,0"
                                                 VerticalAlignment="Center"
-                                                Text="Clear" />
+                                                Text="{Binding Source={x:Static local:App.Lang}, Path=[Dialog.Clear]}" />
                                         </StackPanel>
                                     </MenuItem.Header>
                                 </MenuItem>
@@ -1867,7 +1903,7 @@
                                             <TextBlock
                                                 Margin="5,0,0,0"
                                                 VerticalAlignment="Center"
-                                                Text="Save To File" />
+                                                Text="{Binding Source={x:Static local:App.Lang}, Path=[Dialog.SaveToFile]}" />
                                         </StackPanel>
                                     </MenuItem.Header>
                                 </MenuItem>
@@ -1883,7 +1919,6 @@
                 </TabControl>
                 <Grid
                     x:Name="BusyIndicator"
-                    Background="Silver"
                     IsVisible="{Binding IsBusy}"
                     Opacity="0.8">
                     <StackPanel HorizontalAlignment="Center" VerticalAlignment="Center">
@@ -1893,18 +1928,18 @@
                             BorderBrush="LimeGreen"
                             BorderThickness="1"
                             IsIndeterminate="{Binding IsBusy}" />
-                        <TextBlock
-                            Margin="0,10,0,0"
-                            HorizontalAlignment="Center"
-                            FontSize="14"
-                            FontWeight="ExtraBold"
-                            Text="Please Wait" />
+                            <TextBlock
+                                Margin="0,10,0,0"
+                                HorizontalAlignment="Center"
+                                FontSize="14"
+                                FontWeight="ExtraBold"
+                                Text="{Binding Source={x:Static local:App.Lang}, Path=[MainWindow.Busy.PleaseWait]}" />
                         <TextBlock
                             Name="LblBusyIndicator"
                             Margin="0,10,0,0"
                             HorizontalAlignment="Center"
                             FontSize="14"
-                            Text="{Binding IsBusyText}" />
+                            Text="{Binding IsBusyOverlayText}" />
                     </StackPanel>
                 </Grid>
             </Grid>

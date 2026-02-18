@@ -3,8 +3,9 @@
     xmlns="https://github.com/avaloniaui"
     xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
     xmlns:d="http://schemas.microsoft.com/expression/blend/2008"
+    xmlns:local="clr-namespace:VDF.GUI;assembly=VDF.GUI"
     xmlns:mc="http://schemas.openxmlformats.org/markup-compatibility/2006"
-    Title="Expression Builder"
+    Title="{Binding Source={x:Static local:App.Lang}, Path=[ExpressionBuilder.Title]}"
     MinWidth="400"
     MaxWidth="600"
     d:DesignHeight="450"
@@ -33,12 +34,13 @@
             <TextBlock
                 Grid.Column="0"
                 VerticalAlignment="Center"
-                Text="Expression: " />
-            <TextBox
-                x:Name="TextBoxInput"
+                Text="{Binding Source={x:Static local:App.Lang}, Path=[ExpressionBuilder.ExpressionLabel]}" />
+            <AutoCompleteBox
+                x:Name="ExpressionHistoryInput"
                 Grid.Column="1"
                 Margin="5,0,0,0"
-                Text="{Binding ExpressionText}" />
+                ItemsSource="{Binding ExpressionHistory}"
+                Text="{Binding ExpressionText, Mode=TwoWay}" />
         </Grid>
         <Grid Grid.Row="2" Margin="5,0,5,5">
             <Grid.ColumnDefinitions>
@@ -52,13 +54,13 @@
                 Width="100"
                 Margin="5"
                 Command="{Binding OKCommand}"
-                Content="OK" />
+                Content="{Binding Source={x:Static local:App.Lang}, Path=[Dialog.OK]}" />
             <Button
                 Grid.Column="2"
                 Width="100"
                 Margin="5"
                 Command="{Binding CancelCommand}"
-                Content="Cancel" />
+                    Content="{Binding Source={x:Static local:App.Lang}, Path=[Dialog.Cancel]}" />
         </Grid>
     </Grid>
 </Window>

@@ -1,20 +1,21 @@
 // /*
-//     Copyright (C) 2021 0x90d
+//     Copyright (C) 2025 0x90d
 //     This file is part of VideoDuplicateFinder
 //     VideoDuplicateFinder is free software: you can redistribute it and/or modify
-//     it under the terms of the GPLv3 as published by
+//     it under the terms of the GNU Affero General Public License as published by
 //     the Free Software Foundation, either version 3 of the License, or
 //     (at your option) any later version.
 //     VideoDuplicateFinder is distributed in the hope that it will be useful,
 //     but WITHOUT ANY WARRANTY without even the implied warranty of
 //     MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
-//     GNU General Public License for more details.
-//     You should have received a copy of the GNU General Public License
+//     GNU Affero General Public License for more details.
+//     You should have received a copy of the GNU Affero General Public License
 //     along with VideoDuplicateFinder.  If not, see <http://www.gnu.org/licenses/>.
 // */
 //
 
 using System.Diagnostics;
+using System.Globalization;
 using System.Linq;
 using System.Reactive;
 using System.Reflection;
@@ -34,6 +35,18 @@ namespace VDF.GUI.ViewModels {
 		public IEnumerable<Core.FFTools.FFHardwareAccelerationMode> HardwareAccelerationModes =>
 #pragma warning restore CA1822 // Mark members as static
 			Enum.GetValues<Core.FFTools.FFHardwareAccelerationMode>();
+		public record LanguageOption(string Code, string DisplayName);
+		public IReadOnlyList<LanguageOption> LanguageOptions { get; } = BuildLanguageOptions();
+		public LanguageOption? SelectedLanguageOption {
+			get => LanguageOptions.FirstOrDefault(option =>
+				string.Equals(option.Code, SettingsFile.Instance.LanguageCode, StringComparison.OrdinalIgnoreCase));
+			set {
+				if (value == null) return;
+				if (!string.Equals(SettingsFile.Instance.LanguageCode, value.Code, StringComparison.OrdinalIgnoreCase))
+					SettingsFile.Instance.LanguageCode = value.Code;
+				this.RaisePropertyChanged();
+			}
+		}
 
 		static readonly List<string> _CustomCommandList = typeof(SettingsFile.CustomActionCommands).GetProperties(BindingFlags.Public | BindingFlags.Instance).Select(p => p.Name).ToList();
 		public List<string> CustomCommandList => _CustomCommandList;
@@ -67,14 +80,25 @@ namespace VDF.GUI.ViewModels {
 				});
 			}
 			catch {
-				await MessageBoxService.Show("Failed to open URL: https://trac.ffmpeg.org/wiki/HWAccelIntro#PlatformAPIAvailability");
+				await MessageBoxService.Show(App.Lang["Message.OpenHwAccelInfoFailed"]);
+			}
+		});
+		public ReactiveCommand<Unit, Unit> OpenWikiLinkCommand => ReactiveCommand.CreateFromTask(async () => {
+			try {
+				Process.Start(new ProcessStartInfo {
+					FileName = "https://github.com/0x90d/videoduplicatefinder/wiki/Setup-&-Use",
+					UseShellExecute = true
+				});
+			}
+			catch {
+				await MessageBoxService.Show(App.Lang["Message.OpenHwAccelInfoFailed"]);
 			}
 		});
 		public ReactiveCommand<Unit, Unit> AddIncludesToListCommand => ReactiveCommand.CreateFromTask(async () => {
 			var result = await Utils.PickerDialogUtils.OpenDialogPicker(
 				new FolderPickerOpenOptions() {
 					AllowMultiple = true,
-					Title = "Select folder"
+					Title = App.Lang["Dialog.SelectFolder"]
 				}
 				);
 
@@ -114,13 +138,13 @@ namespace VDF.GUI.ViewModels {
 		});
 
 		public ReactiveCommand<Unit, Unit> ClearIncludesListCommand => ReactiveCommand.CreateFromTask(async () => {
-			var result = await MessageBoxService.Show("Are you sure you want to clear the list of ALL included folders?", MessageBoxButtons.Yes | MessageBoxButtons.Cancel);
+			var result = await MessageBoxService.Show(App.Lang["Message.ClearAllIncludedConfirm"], MessageBoxButtons.Yes | MessageBoxButtons.Cancel);
 			if (result == MessageBoxButtons.Yes)
 				SettingsFile.Instance.Includes.Clear();
 		});
 
 		public ReactiveCommand<Unit, Unit> ClearBlacklistListCommand => ReactiveCommand.CreateFromTask(async () => {
-			var result = await MessageBoxService.Show("Are you sure you want to clear the list of ALL excluded folders?", MessageBoxButtons.Yes | MessageBoxButtons.Cancel);
+			var result = await MessageBoxService.Show(App.Lang["Message.ClearAllExcludedConfirm"], MessageBoxButtons.Yes | MessageBoxButtons.Cancel);
 			if (result == MessageBoxButtons.Yes)
 				SettingsFile.Instance.Blacklists.Clear();
 		});
@@ -129,7 +153,7 @@ namespace VDF.GUI.ViewModels {
 			var result = await Utils.PickerDialogUtils.OpenDialogPicker(
 				new FolderPickerOpenOptions() {
 					AllowMultiple = true,
-					Title = "Select folder"
+					Title = App.Lang["Dialog.SelectFolder"]
 				});
 
 			if (result == null || result.Count == 0) return;
@@ -200,8 +224,26 @@ namespace VDF.GUI.ViewModels {
 				await MessageBoxService.Show($"Loading settings from file has failed: {ex.Message}");
 				return;
 			}
-			await MessageBoxService.Show("Please restart VDF to apply new settings.");
+			await MessageBoxService.Show(App.Lang["Message.RestartRequired"]);
 		});
+		static IReadOnlyList<LanguageOption> BuildLanguageOptions() {
+			var languageCodes = App.Lang.AvailableLanguages.ToList();
+			var currentLanguage = SettingsFile.Instance.LanguageCode;
 
+			return languageCodes
+				.Distinct(StringComparer.OrdinalIgnoreCase)
+				.Select(code => new LanguageOption(code, GetLanguageDisplayName(code)))
+				.OrderBy(option => option.DisplayName, StringComparer.CurrentCultureIgnoreCase)
+				.ToList();
+		}
+
+		static string GetLanguageDisplayName(string code) {
+			try {
+				return CultureInfo.GetCultureInfo(code).NativeName;
+			}
+			catch (CultureNotFoundException) {
+				return code;
+			}
+		}
 	}
 }

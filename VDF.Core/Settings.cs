@@ -28,6 +28,7 @@ namespace VDF.Core {
 		public bool IncludeSubDirectories = true;
 		public bool IncludeImages = true;
 		public bool ExtendedFFToolsLogging;
+		public bool LogExcludedFiles;
 		public bool AlwaysRetryFailedSampling;
 		public bool IgnoreBlackPixels;
 		public bool IgnoreWhitePixels;
@@ -36,12 +37,16 @@ namespace VDF.Core {
 		public bool ScanAgainstEntireDatabase;
 		public bool UsePHashing;
 		public bool UseExifCreationDate;
+		public string LanguageCode = "en";
 
 		public FFTools.FFHardwareAccelerationMode HardwareAccelerationMode;
 
 		public byte Threshhold = 5;
 		public float Percent = 96f;
 		public double PercentDurationDifference = 20d;
+		public double DurationDifferenceMinSeconds;
+		public double DurationDifferenceMaxSeconds;
+		public double MaxSamplingDurationSeconds;
 
 		public int ThumbnailCount = 1;
 		public int MaxDegreeOfParallelism = 1;

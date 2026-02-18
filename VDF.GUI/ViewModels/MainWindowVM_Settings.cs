@@ -15,6 +15,7 @@
 //
 
 using System.Diagnostics;
+using System.Globalization;
 using System.Linq;
 using System.Reactive;
 using System.Reflection;
@@ -34,6 +35,18 @@ namespace VDF.GUI.ViewModels {
 		public IEnumerable<Core.FFTools.FFHardwareAccelerationMode> HardwareAccelerationModes =>
 #pragma warning restore CA1822 // Mark members as static
 			Enum.GetValues<Core.FFTools.FFHardwareAccelerationMode>();
+		public record LanguageOption(string Code, string DisplayName);
+		public IReadOnlyList<LanguageOption> LanguageOptions { get; } = BuildLanguageOptions();
+		public LanguageOption? SelectedLanguageOption {
+			get => LanguageOptions.FirstOrDefault(option =>
+				string.Equals(option.Code, SettingsFile.Instance.LanguageCode, StringComparison.OrdinalIgnoreCase));
+			set {
+				if (value == null) return;
+				if (!string.Equals(SettingsFile.Instance.LanguageCode, value.Code, StringComparison.OrdinalIgnoreCase))
+					SettingsFile.Instance.LanguageCode = value.Code;
+				this.RaisePropertyChanged();
+			}
+		}
 
 		static readonly List<string> _CustomCommandList = typeof(SettingsFile.CustomActionCommands).GetProperties(BindingFlags.Public | BindingFlags.Instance).Select(p => p.Name).ToList();
 		public List<string> CustomCommandList => _CustomCommandList;
@@ -67,7 +80,18 @@ namespace VDF.GUI.ViewModels {
 				});
 			}
 			catch {
-				await MessageBoxService.Show("Failed to open URL: https://trac.ffmpeg.org/wiki/HWAccelIntro#PlatformAPIAvailability");
+				await MessageBoxService.Show(App.Lang["Message.OpenHwAccelInfoFailed"]);
+			}
+		});
+		public ReactiveCommand<Unit, Unit> OpenWikiLinkCommand => ReactiveCommand.CreateFromTask(async () => {
+			try {
+				Process.Start(new ProcessStartInfo {
+					FileName = "https://github.com/0x90d/videoduplicatefinder/wiki/Setup-&-Use",
+					UseShellExecute = true
+				});
+			}
+			catch {
+				await MessageBoxService.Show(App.Lang["Message.OpenHwAccelInfoFailed"]);
 			}
 		});
 		public ReactiveCommand<Unit, Unit> AddIncludesToListCommand => ReactiveCommand.CreateFromTask(async () => {
@@ -114,13 +138,13 @@ namespace VDF.GUI.ViewModels {
 		});
 
 		public ReactiveCommand<Unit, Unit> ClearIncludesListCommand => ReactiveCommand.CreateFromTask(async () => {
-			var result = await MessageBoxService.Show("Are you sure you want to clear the list of ALL included folders?", MessageBoxButtons.Yes | MessageBoxButtons.Cancel);
+			var result = await MessageBoxService.Show(App.Lang["Message.ClearAllIncludedConfirm"], MessageBoxButtons.Yes | MessageBoxButtons.Cancel);
 			if (result == MessageBoxButtons.Yes)
 				SettingsFile.Instance.Includes.Clear();
 		});
 
 		public ReactiveCommand<Unit, Unit> ClearBlacklistListCommand => ReactiveCommand.CreateFromTask(async () => {
-			var result = await MessageBoxService.Show("Are you sure you want to clear the list of ALL excluded folders?", MessageBoxButtons.Yes | MessageBoxButtons.Cancel);
+			var result = await MessageBoxService.Show(App.Lang["Message.ClearAllExcludedConfirm"], MessageBoxButtons.Yes | MessageBoxButtons.Cancel);
 			if (result == MessageBoxButtons.Yes)
 				SettingsFile.Instance.Blacklists.Clear();
 		});
@@ -200,8 +224,26 @@ namespace VDF.GUI.ViewModels {
 				await MessageBoxService.Show($"Loading settings from file has failed: {ex.Message}");
 				return;
 			}
-			await MessageBoxService.Show("Please restart VDF to apply new settings.");
+			await MessageBoxService.Show(App.Lang["Message.RestartRequired"]);
 		});
+		static IReadOnlyList<LanguageOption> BuildLanguageOptions() {
+			var languageCodes = App.Lang.AvailableLanguages.ToList();
+			var currentLanguage = SettingsFile.Instance.LanguageCode;
 
+			return languageCodes
+				.Distinct(StringComparer.OrdinalIgnoreCase)
+				.Select(code => new LanguageOption(code, GetLanguageDisplayName(code)))
+				.OrderBy(option => option.DisplayName, StringComparer.CurrentCultureIgnoreCase)
+				.ToList();
+		}
+
+		static string GetLanguageDisplayName(string code) {
+			try {
+				return CultureInfo.GetCultureInfo(code).NativeName;
+			}
+			catch (CultureNotFoundException) {
+				return code;
+			}
+		}
 	}
 }

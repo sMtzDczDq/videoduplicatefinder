@@ -406,7 +406,7 @@ namespace VDF.Core {
 		async Task GatherInfos() {
 			try {
 				InitProgress(DatabaseUtils.Database.Count);
-				await Parallel.ForEachAsync(DatabaseUtils.Database, new ParallelOptions { CancellationToken = cancelationTokenSource.Token, MaxDegreeOfParallelism = Settings.MaxDegreeOfParallelism }, (entry, token) => {
+				await Parallel.ForEachAsync(DatabaseUtils.Database.Shuffle(), new ParallelOptions { CancellationToken = cancelationTokenSource.Token, MaxDegreeOfParallelism = Settings.MaxDegreeOfParallelism }, (entry, token) => {
 					while (pauseTokenSource.IsPaused) Thread.Sleep(50);
 
 					entry.invalid = InvalidEntry(entry, out bool reportProgress, out string? invalidReason);

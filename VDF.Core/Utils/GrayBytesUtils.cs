@@ -39,6 +39,7 @@ namespace VDF.Core.Utils {
 				if (data[i] <= BlackPixelLimit)
 					darkPixels++;
 			}
+
 			return 100d / data.Length * darkPixels < darkProcent;
 		}
 
@@ -50,8 +51,7 @@ namespace VDF.Core.Utils {
 			byte[] buffer = new byte[GrayByteValueLength];
 
 			int dark = 0;
-			img.ProcessPixelRows(accessor =>
-			{
+			img.ProcessPixelRows(accessor => {
 				for (int y = 0; y < Side; y++) {
 					Span<L8> row = accessor.GetRowSpan(y);
 					int baseIdx = y * Side;
@@ -67,6 +67,7 @@ namespace VDF.Core.Utils {
 			return darkP >= darkPercent ? null : buffer;
 
 		}
+
 		public static unsafe byte[]? GetGrayScaleValues16x16(Image original, double darkPercent = 80) {
 			const int graybyteLength = 256;
 			using var img = original.CloneAs<L8>();
@@ -91,8 +92,10 @@ namespace VDF.Core.Utils {
 			return darkP >= darkPercent ? null : buffer;
 
 		}
+
 		[MethodImpl(MethodImplOptions.AggressiveInlining)]
-		public static float PercentageDifferenceWithoutSpecificPixels(byte[] img1, byte[] img2, bool ignoreBlackPixels, bool ignoreWhitePixels) {
+		public static float PercentageDifferenceWithoutSpecificPixels(byte[] img1, byte[] img2, bool ignoreBlackPixels,
+			bool ignoreWhitePixels) {
 			Debug.Assert(img1.Length == img2.Length, "Images must be of the same size");
 			long diff = 0;
 			int counter = 0;
@@ -107,30 +110,50 @@ namespace VDF.Core.Utils {
 				diff += Math.Abs(img1[i] - img2[i]);
 				counter++;
 			}
+
 			return (float)diff / counter / brightnessScalePerPixel;
 		}
+
 		[MethodImpl(MethodImplOptions.AggressiveInlining)]
 		public static unsafe float PercentageDifference(byte[] img1, byte[] img2) {
 			Debug.Assert(img1.Length == img2.Length, "Images must be of the same size");
 			long diff = 0;
 			if (Avx2.IsSupported) {
+				int vecBytes = Vector256<byte>.Count;
+				int vecCount = img1.Length / vecBytes;
 				Vector256<ushort> vec = Vector256<ushort>.Zero;
-				Span<Vector256<byte>> vImg1 = MemoryMarshal.Cast<byte, Vector256<byte>>(img1);
-				Span<Vector256<byte>> vImg2 = MemoryMarshal.Cast<byte, Vector256<byte>>(img2);
 
-				for (int i = 0; i < vImg1.Length; i++)
-					vec = Avx2.Add(vec, Avx2.SumAbsoluteDifferences(vImg2[i], vImg1[i]));
+				ref byte r1 = ref MemoryMarshal.GetArrayDataReference(img1);
+				ref byte r2 = ref MemoryMarshal.GetArrayDataReference(img2);
+
+				for (int i = 0; i < vecCount; i++) {
+					ref byte aRef = ref Unsafe.Add(ref r1, i * vecBytes);
+					ref byte bRef = ref Unsafe.Add(ref r2, i * vecBytes);
+
+					Vector256<byte> v1 = Unsafe.ReadUnaligned<Vector256<byte>>(ref aRef);
+					Vector256<byte> v2 = Unsafe.ReadUnaligned<Vector256<byte>>(ref bRef);
+
+					vec = Avx2.Add(vec, Avx2.SumAbsoluteDifferences(v2, v1));
+				}
 
 				for (int i = 0; i < Vector256<ushort>.Count; i++)
 					diff += Math.Abs(vec.GetElement(i));
 			}
 			else if (Sse2.IsSupported) {
+				int vecBytes = Vector128<byte>.Count;
+				int vecCount = img1.Length / vecBytes;
 				Vector128<ushort> vec = Vector128<ushort>.Zero;
-				Span<Vector128<byte>> vImg1 = MemoryMarshal.Cast<byte, Vector128<byte>>(img1);
-				Span<Vector128<byte>> vImg2 = MemoryMarshal.Cast<byte, Vector128<byte>>(img2);
+				ref byte r1 = ref MemoryMarshal.GetArrayDataReference(img1);
+				ref byte r2 = ref MemoryMarshal.GetArrayDataReference(img2);
+				for (int i = 0; i < vecCount; i++) {
+					ref byte aRef = ref Unsafe.Add(ref r1, i * vecBytes);
+					ref byte bRef = ref Unsafe.Add(ref r2, i * vecBytes);
 
-				for (int i = 0; i < vImg1.Length; i++)
-					vec = Sse2.Add(vec, Sse2.SumAbsoluteDifferences(vImg2[i], vImg1[i]));
+					Vector128<byte> v1 = Unsafe.ReadUnaligned<Vector128<byte>>(ref aRef);
+					Vector128<byte> v2 = Unsafe.ReadUnaligned<Vector128<byte>>(ref bRef);
+
+					vec = Sse2.Add(vec, Sse2.SumAbsoluteDifferences(v2, v1));
+				}
 
 				for (int i = 0; i < Vector128<ushort>.Count; i++)
 					diff += Math.Abs(vec.GetElement(i));
@@ -139,13 +162,11 @@ namespace VDF.Core.Utils {
 				for (int i = 0; i < img1.Length; i++)
 					diff += Math.Abs(img1[i] - img2[i]);
 			}
+
 			return (float)diff / img1.Length / brightnessScalePerPixel;
 		}
 
-		static readonly byte[] shuffle16 =
-		{
-			15,14,13,12,11,10, 9, 8, 7, 6, 5, 4, 3, 2, 1, 0
-		};
+		static readonly byte[] shuffle16 = { 15, 14, 13, 12, 11, 10, 9, 8, 7, 6, 5, 4, 3, 2, 1, 0 };
 
 		[MethodImpl(MethodImplOptions.AggressiveInlining)]
 		public static byte[] FlipGrayScale(byte[] img) {
@@ -184,6 +205,7 @@ namespace VDF.Core.Utils {
 						Unsafe.WriteUnaligned(ref dst[left + 0], R_hi_rev);
 					}
 				}
+
 				return dst;
 			}
 
@@ -193,6 +215,7 @@ namespace VDF.Core.Utils {
 				Array.Copy(img, baseIdx, dst, baseIdx, side);
 				Array.Reverse(dst, baseIdx, side);
 			}
+
 			return dst;
 
 			// --- local helper for non-SSSE3 reverse16 ---
@@ -207,38 +230,75 @@ namespace VDF.Core.Utils {
 
 
 		readonly static byte[] flipp_shuf256 = {
-				15,14,13,12,11,10, 9, 8,   7, 6, 5, 4, 3, 2, 1, 0,
-				31,30,29,28,27,26,25,24,  23,22,21,20,19,18,17,16
+			15, 14, 13, 12, 11, 10, 9, 8, 7, 6, 5, 4, 3, 2, 1, 0, 31, 30, 29, 28, 27, 26, 25, 24, 23, 22, 21, 20, 19,
+			18, 17, 16
 		};
 
 		[MethodImpl(MethodImplOptions.AggressiveInlining)]
 		public static byte[] FlipGrayScale16x16(byte[] img) {
 			Debug.Assert((img.Length % 16) == 0, "Invalid img.Length");
 			byte[] flip_img;
+
 			if (Avx2.IsSupported) {
 				flip_img = new byte[img.Length];
-				Span<Vector256<byte>> vImg = MemoryMarshal.Cast<byte, Vector256<byte>>(img);
-				Span<Vector256<byte>> vImg_flipped = MemoryMarshal.Cast<byte, Vector256<byte>>(flip_img);
-				Span<Vector256<byte>> vFlipp_shuf = MemoryMarshal.Cast<byte, Vector256<byte>>(flipp_shuf256);
 
-				for (int i = 0; i < vImg.Length; i++)
-					vImg_flipped[i] = Avx2.Shuffle(vImg[i], vFlipp_shuf[0]);
+				int vecBytes = Vector256<byte>.Count; // 32
+				int vecCount = img.Length / vecBytes;
+
+				ref byte rSrc = ref MemoryMarshal.GetArrayDataReference(img);
+				ref byte rDst = ref MemoryMarshal.GetArrayDataReference(flip_img);
+				// flipp_shuf256 is assumed to be a byte[] containing one Vector256<byte> shuffle mask
+				ref byte rShuf = ref MemoryMarshal.GetArrayDataReference(flipp_shuf256);
+
+				// load shuffle mask once (unaligned read)
+				Vector256<byte> shuf = Unsafe.ReadUnaligned<Vector256<byte>>(ref rShuf);
+
+				for (int i = 0; i < vecCount; i++) {
+					ref byte srcRef = ref Unsafe.Add(ref rSrc, i * vecBytes);
+					ref byte dstRef = ref Unsafe.Add(ref rDst, i * vecBytes);
+
+					Vector256<byte> v = Unsafe.ReadUnaligned<Vector256<byte>>(ref srcRef);
+					Vector256<byte> res = Avx2.Shuffle(v, shuf);
+					Unsafe.WriteUnaligned(ref dstRef, res);
+				}
+
+				// handle any remaining bytes (if img.Length not multiple of Vector256<byte>.Count)
+				int processed = vecCount * vecBytes;
+				for (int i = processed; i < img.Length; i++)
+					flip_img[i] = img[i];
 			}
-			else if (Sse3.IsSupported) {
+			else if (Ssse3.IsSupported) // use Ssse3 for Shuffle
+			{
 				flip_img = new byte[img.Length];
-				Span<Vector128<byte>> vImg = MemoryMarshal.Cast<byte, Vector128<byte>>(img);
-				Span<Vector128<byte>> vImg_flipped = MemoryMarshal.Cast<byte, Vector128<byte>>(flip_img);
-				Span<Vector128<byte>> vFlipp_shuf = MemoryMarshal.Cast<byte, Vector128<byte>>(flipp_shuf256);
 
-				for (int i = 0; i < vImg.Length; i++)
-					vImg_flipped[i] = Ssse3.Shuffle(vImg[i], vFlipp_shuf[0]);
+				int vecBytes = Vector128<byte>.Count; // 16
+				int vecCount = img.Length / vecBytes;
+
+				ref byte rSrc = ref MemoryMarshal.GetArrayDataReference(img);
+				ref byte rDst = ref MemoryMarshal.GetArrayDataReference(flip_img);
+				ref byte rShuf = ref MemoryMarshal.GetArrayDataReference(flipp_shuf256);
+
+				Vector128<byte> shuf = Unsafe.ReadUnaligned<Vector128<byte>>(ref rShuf);
+
+				for (int i = 0; i < vecCount; i++) {
+					ref byte srcRef = ref Unsafe.Add(ref rSrc, i * vecBytes);
+					ref byte dstRef = ref Unsafe.Add(ref rDst, i * vecBytes);
+
+					Vector128<byte> v = Unsafe.ReadUnaligned<Vector128<byte>>(ref srcRef);
+					Vector128<byte> res = Ssse3.Shuffle(v, shuf);
+					Unsafe.WriteUnaligned(ref dstRef, res);
+				}
+
+				// no remaining bytes because we asserted length % 16 == 0
 			}
 			else {
 				flip_img = (byte[])img.Clone();
 				for (int i = 0; i < 16; i++)
 					Array.Reverse(flip_img, i * 16, 16);
 			}
+
 			return flip_img;
+
 		}
 	}
 }

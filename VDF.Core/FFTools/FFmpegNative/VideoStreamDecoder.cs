@@ -14,6 +14,7 @@
 // */
 //
 
+using System.Diagnostics;
 using FFmpeg.AutoGen;
 
 namespace VDF.Core.FFTools.FFmpegNative {
@@ -24,9 +25,19 @@ namespace VDF.Core.FFTools.FFmpegNative {
 		private readonly AVPacket* _pPacket;
 		private readonly AVFrame* _pReceivedFrame;
 		private readonly int _streamIndex;
+		private readonly AVIOInterruptCB_callback _interruptCbDelegate;
+		private readonly long _deadlineTicks;
 
-		public VideoStreamDecoder(string url, AVHWDeviceType HWDeviceType = AVHWDeviceType.AV_HWDEVICE_TYPE_NONE) {
+		public VideoStreamDecoder(string url, AVHWDeviceType HWDeviceType = AVHWDeviceType.AV_HWDEVICE_TYPE_NONE, int timeoutMs = 15_000) {
 			_pFormatContext = ffmpeg.avformat_alloc_context();
+
+			// Set up an interrupt callback so FFmpeg aborts blocking I/O when the
+			// timeout expires.  This lets Dispose() run normally and release the
+			// file handle — unlike killing a thread, which would leak it.
+			_deadlineTicks = Stopwatch.GetTimestamp() + (long)(timeoutMs / 1000.0 * Stopwatch.Frequency);
+			_interruptCbDelegate = _ => Stopwatch.GetTimestamp() > _deadlineTicks ? 1 : 0;
+			_pFormatContext->interrupt_callback = new AVIOInterruptCB { callback = _interruptCbDelegate };
+
 			_pReceivedFrame = ffmpeg.av_frame_alloc();
 			var pFormatContext = _pFormatContext;
 			ffmpeg.avformat_open_input(&pFormatContext, url, null, null).ThrowExceptionIfError();
@@ -85,28 +96,30 @@ namespace VDF.Core.FFTools.FFmpegNative {
 		public bool TryDecodeFrame(out AVFrame frame, TimeSpan position) {
 			ffmpeg.av_frame_unref(_pFrame);
 			ffmpeg.av_frame_unref(_pReceivedFrame);
-			int error;
 
 			AVRational timebase = _pFormatContext->streams[_streamIndex]->time_base;
-			float AV_TIME_BASE = (float)timebase.den / timebase.num;
-			long tc = Convert.ToInt64(position.TotalSeconds * AV_TIME_BASE);
+			double AV_TIME_BASE = (double)timebase.den / timebase.num;
+			long targetPts = Convert.ToInt64(position.TotalSeconds * AV_TIME_BASE);
 
-			if (ffmpeg.av_seek_frame(_pFormatContext, _streamIndex, tc, ffmpeg.AVSEEK_FLAG_BACKWARD) < 0)
-				ffmpeg.av_seek_frame(_pFormatContext, _streamIndex, tc, ffmpeg.AVSEEK_FLAG_ANY).ThrowExceptionIfError();
-			do {
+			if (ffmpeg.av_seek_frame(_pFormatContext, _streamIndex, targetPts, ffmpeg.AVSEEK_FLAG_BACKWARD) < 0)
+				ffmpeg.av_seek_frame(_pFormatContext, _streamIndex, targetPts, ffmpeg.AVSEEK_FLAG_ANY).ThrowExceptionIfError();
+
+			ffmpeg.avcodec_flush_buffers(_pCodecContext);
+
+			// Decode forward from keyframe until we reach the target PTS
+			while (true) {
+				int error;
+				do {
+					ffmpeg.av_packet_unref(_pPacket);
+					error = ffmpeg.av_read_frame(_pFormatContext, _pPacket);
+					if (error == ffmpeg.AVERROR_EOF) {
+						frame = *_pFrame;
+						return false;
+					}
+					error.ThrowExceptionIfError();
+				} while (_pPacket->stream_index != _streamIndex);
+
 				try {
-					do {
-						ffmpeg.av_packet_unref(_pPacket);
-						error = ffmpeg.av_read_frame(_pFormatContext, _pPacket);
-
-						if (error == ffmpeg.AVERROR_EOF) {
-							frame = *_pFrame;
-							return false;
-						}
-
-						error.ThrowExceptionIfError();
-					} while (_pPacket->stream_index != _streamIndex);
-
 					ffmpeg.avcodec_send_packet(_pCodecContext, _pPacket).ThrowExceptionIfError();
 				}
 				finally {
@@ -114,9 +127,20 @@ namespace VDF.Core.FFTools.FFmpegNative {
 				}
 
 				error = ffmpeg.avcodec_receive_frame(_pCodecContext, _pFrame);
-			} while (error == ffmpeg.AVERROR(ffmpeg.EAGAIN));
+				if (error == ffmpeg.AVERROR(ffmpeg.EAGAIN))
+					continue;
+				if (error < 0) {
+					frame = *_pFrame;
+					return false;
+				}
 
-			error.ThrowExceptionIfError();
+				// Check if we've reached or passed the target position
+				if (_pFrame->pts >= targetPts || _pFrame->pts == ffmpeg.AV_NOPTS_VALUE)
+					break;
+
+				// Not at target yet - discard this frame and decode the next
+				ffmpeg.av_frame_unref(_pFrame);
+			}
 
 			if (_pCodecContext->hw_device_ctx != null) {
 				ffmpeg.av_hwframe_transfer_data(_pReceivedFrame, _pFrame, 0).ThrowExceptionIfError();

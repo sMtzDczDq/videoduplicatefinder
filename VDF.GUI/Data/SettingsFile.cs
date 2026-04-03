@@ -16,7 +16,6 @@
 
 using System.Collections.ObjectModel;
 using System.Globalization;
-using System.Runtime.InteropServices;
 using System.Text.Json;
 using System.Text.Json.Serialization;
 using System.Xml.Linq;
@@ -24,6 +23,8 @@ using ReactiveUI;
 using VDF.Core.Utils;
 
 namespace VDF.GUI.Data {
+	public enum ThumbnailDoubleClickAction { OpenFile, OpenThumbnailComparer }
+
 	public class SettingsFile : ReactiveObject {
 		private static SettingsFile? instance;
 		private static string? settingsPath;
@@ -44,42 +45,7 @@ namespace VDF.GUI.Data {
 			if (!string.IsNullOrWhiteSpace(settingsPath))
 				return settingsPath;
 
-			if (CanWriteToDirectory(CoreUtils.CurrentFolder))
-				return FileUtils.SafePathCombine(CoreUtils.CurrentFolder, "Settings.json");
-
-			return FileUtils.SafePathCombine(GetDefaultSettingsFolder(), "Settings.json");
-		}
-
-		static string GetDefaultSettingsFolder() {
-			string? baseFolder;
-			if (CoreUtils.IsWindows) {
-				baseFolder = Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData);
-			}
-			else if (RuntimeInformation.IsOSPlatform(OSPlatform.OSX)) {
-				baseFolder = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.UserProfile), "Library", "Preferences");
-			}
-			else {
-				baseFolder = Environment.GetEnvironmentVariable("XDG_CONFIG_HOME");
-				if (string.IsNullOrWhiteSpace(baseFolder))
-					baseFolder = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.UserProfile), ".config");
-			}
-
-			var settingsFolder = Path.Combine(baseFolder, "VDF");
-			Directory.CreateDirectory(settingsFolder);
-			return settingsFolder;
-		}
-
-		static bool CanWriteToDirectory(string path) {
-			try {
-				Directory.CreateDirectory(path);
-				var testPath = Path.Combine(path, $".vdf_write_test_{Guid.NewGuid():N}");
-				using var stream = new FileStream(testPath, FileMode.CreateNew, FileAccess.Write, FileShare.None, 1, FileOptions.DeleteOnClose);
-				stream.WriteByte(0);
-				return true;
-			}
-			catch {
-				return false;
-			}
+			return FileUtils.SafePathCombine(CoreUtils.SettingsFolder, "Settings.json");
 		}
 		public class CustomActionCommands {
 			public string OpenItemInFolder { get; set; } = string.Empty;
@@ -104,6 +70,20 @@ namespace VDF.GUI.Data {
 		public ObservableCollection<string> ExpressionHistory {
 			get => _ExpressionHistory;
 			set => this.RaiseAndSetIfChanged(ref _ExpressionHistory, value);
+		}
+
+		ObservableCollection<ExpressionPreset> _ExpressionPresets = new();
+		[JsonPropertyName("ExpressionPresets")]
+		public ObservableCollection<ExpressionPreset> ExpressionPresets {
+			get => _ExpressionPresets;
+			set => this.RaiseAndSetIfChanged(ref _ExpressionPresets, value);
+		}
+
+		ObservableCollection<CustomSelectionPreset> _CustomSelectionPresets = new();
+		[JsonPropertyName("CustomSelectionPresets")]
+		public ObservableCollection<CustomSelectionPreset> CustomSelectionPresets {
+			get => _CustomSelectionPresets;
+			set => this.RaiseAndSetIfChanged(ref _CustomSelectionPresets, value);
 		}
 
 		string _LanguageCode = ResolveDefaultLanguageCode();
@@ -231,6 +211,22 @@ namespace VDF.GUI.Data {
 		public bool ScanAgainstEntireDatabase {
 			get => _ScanAgainstEntireDatabase;
 			set => this.RaiseAndSetIfChanged(ref _ScanAgainstEntireDatabase, value);
+		}
+		Core.FolderMatchMode _FolderMatchMode;
+		[JsonPropertyName("FolderMatchMode")]
+		public Core.FolderMatchMode FolderMatchMode {
+			get => _FolderMatchMode;
+			set {
+				this.RaiseAndSetIfChanged(ref _FolderMatchMode, value);
+				this.RaisePropertyChanged(nameof(IsFolderMatchModeActive));
+			}
+		}
+		public bool IsFolderMatchModeActive => FolderMatchMode != Core.FolderMatchMode.None;
+		int _SameFolderDepth = 1;
+		[JsonPropertyName("SameFolderDepth")]
+		public int SameFolderDepth {
+			get => _SameFolderDepth;
+			set => this.RaiseAndSetIfChanged(ref _SameFolderDepth, value);
 		}
 		bool _UsePHash;
 		[JsonPropertyName("UsePHash")]
@@ -366,6 +362,12 @@ namespace VDF.GUI.Data {
 			get => _ShowSimilarityColumn;
 			set => this.RaiseAndSetIfChanged(ref _ShowSimilarityColumn, value);
 		}
+		ThumbnailDoubleClickAction _ThumbnailDoubleClickAction = ThumbnailDoubleClickAction.OpenFile;
+		[JsonPropertyName("ThumbnailDoubleClickAction")]
+		public ThumbnailDoubleClickAction ThumbnailDoubleClickAction {
+			get => _ThumbnailDoubleClickAction;
+			set => this.RaiseAndSetIfChanged(ref _ThumbnailDoubleClickAction, value);
+		}
 		bool _FilterByFilePathContains;
 		[JsonPropertyName("FilterByFilePathContains")]
 		public bool FilterByFilePathContains {
@@ -409,6 +411,32 @@ namespace VDF.GUI.Data {
 			set => this.RaiseAndSetIfChanged(ref _MinimumFileSize, value);
 		}
 
+		bool _EnablePartialClipDetection;
+		[JsonPropertyName("EnablePartialClipDetection")]
+		public bool EnablePartialClipDetection {
+			get => _EnablePartialClipDetection;
+			set => this.RaiseAndSetIfChanged(ref _EnablePartialClipDetection, value);
+		}
+		int _PartialClipMinRatioPercent = 10;
+		[JsonPropertyName("PartialClipMinRatioPercent")]
+		public int PartialClipMinRatioPercent {
+			get => _PartialClipMinRatioPercent;
+			set => this.RaiseAndSetIfChanged(ref _PartialClipMinRatioPercent, value);
+		}
+		int _PartialClipSimilarityThresholdPercent = 80;
+		[JsonPropertyName("PartialClipSimilarityThresholdPercent")]
+		public int PartialClipSimilarityThresholdPercent {
+			get => _PartialClipSimilarityThresholdPercent;
+			set => this.RaiseAndSetIfChanged(ref _PartialClipSimilarityThresholdPercent, value);
+		}
+
+		List<string> _QualityCriteriaOrder = ["Duration", "Resolution", "FPS", "Bitrate", "Audio Bitrate"];
+		[JsonPropertyName("QualityCriteriaOrder")]
+		public List<string> QualityCriteriaOrder {
+			get => _QualityCriteriaOrder;
+			set => this.RaiseAndSetIfChanged(ref _QualityCriteriaOrder, value);
+		}
+
 		bool _EnableScheduledScan;
 		[JsonPropertyName("EnableScheduledScan")]
 		public bool EnableScheduledScan {
@@ -426,6 +454,19 @@ namespace VDF.GUI.Data {
 		public bool NotifyOnScheduledScanComplete {
 			get => _NotifyOnScheduledScanComplete;
 			set => this.RaiseAndSetIfChanged(ref _NotifyOnScheduledScanComplete, value);
+		}
+		bool _NotifyOnScanComplete;
+		[JsonPropertyName("NotifyOnScanComplete")]
+		public bool NotifyOnScanComplete {
+			get => _NotifyOnScanComplete;
+			set => this.RaiseAndSetIfChanged(ref _NotifyOnScanComplete, value);
+		}
+
+		Dictionary<string, string> _KeyboardShortcuts = new();
+		[JsonPropertyName("KeyboardShortcuts")]
+		public Dictionary<string, string> KeyboardShortcuts {
+			get => _KeyboardShortcuts;
+			set => this.RaiseAndSetIfChanged(ref _KeyboardShortcuts, value);
 		}
 
 		public static void LoadSettings(string? path = null) {

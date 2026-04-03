@@ -4,11 +4,12 @@
     xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
     xmlns:d="http://schemas.microsoft.com/expression/blend/2008"
     xmlns:mc="http://schemas.openxmlformats.org/markup-compatibility/2006"
-    xmlns:tdg="clr-namespace:Avalonia.Controls;assembly=Avalonia.Controls.TreeDataGrid"
     xmlns:app="clr-namespace:VDF.GUI"
     Title="{Binding Source={x:Static app:App.Lang}, Path=[RelocateFilesDialog.Title]}"
     Width="900"
     Height="600"
+    MinWidth="500"
+    MinHeight="300"
     d:DesignHeight="450"
     d:DesignWidth="800"
     WindowStartupLocation="CenterOwner"
@@ -85,11 +86,25 @@
         </Grid>
 
         <!--  Preview grid  -->
-        <TreeDataGrid
-            x:Name="treeDatatGrid"
+        <DataGrid
             Grid.Row="2"
             Margin="10,12,0,12"
-            Source="{Binding TreeSource}" />
+            CanUserResizeColumns="True"
+            ItemsSource="{Binding Preview}">
+            <DataGrid.Columns>
+                <DataGridTemplateColumn Header="{Binding Source={x:Static app:App.Lang}, Path=[Apply]}">
+                    <DataGridTemplateColumn.CellTemplate>
+                        <DataTemplate>
+                            <CheckBox IsChecked="{Binding Selected}" />
+                        </DataTemplate>
+                    </DataGridTemplateColumn.CellTemplate>
+                </DataGridTemplateColumn>
+                <DataGridTextColumn Width="2*" Binding="{Binding OldPath}" Header="{Binding Source={x:Static app:App.Lang}, Path=[Path]}" IsReadOnly="True" />
+                <DataGridTextColumn Width="2*" Binding="{Binding NewPath}" Header="{Binding Source={x:Static app:App.Lang}, Path=[NewPath]}" IsReadOnly="True" />
+                <DataGridTextColumn Width="*" Binding="{Binding ConfidenceString}" Header="{Binding Source={x:Static app:App.Lang}, Path=[Confidence]}" IsReadOnly="True" />
+                <DataGridTextColumn Width="*" Binding="{Binding Note}" Header="{Binding Source={x:Static app:App.Lang}, Path=[Note]}" IsReadOnly="True" />
+            </DataGrid.Columns>
+        </DataGrid>
 
         <!--  Buttons  -->
         <StackPanel

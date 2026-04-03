@@ -20,5 +20,6 @@ namespace VDF.Core {
 	{
 		None = 0,
 		Flipped = 1,
+		PartialClip = 2,  // This item is an audio-matched partial clip of another item in the same group
 	};
 }

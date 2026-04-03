@@ -78,7 +78,14 @@ namespace VDF.Core.Utils {
 					if (!recursive)
 						break;
 					foreach (DirectoryInfo subFolder in currentFolder.EnumerateDirectories("*", enumerationOptions)
-						.Where(d => !excludeFolders.Any(x => d.FullName.Equals(x, StringComparison.OrdinalIgnoreCase)))) {
+						.Where(d => !excludeFolders.Any(x => {
+							if (x.IndexOfAny(['*', '?']) < 0)
+								return d.FullName.Equals(x, StringComparison.OrdinalIgnoreCase);
+							bool hasSeparator = x.Contains(Path.DirectorySeparatorChar) || x.Contains(Path.AltDirectorySeparatorChar);
+							return hasSeparator
+								? System.IO.Enumeration.FileSystemName.MatchesSimpleExpression(x, d.FullName)
+								: System.IO.Enumeration.FileSystemName.MatchesSimpleExpression(x, d.Name);
+						}))) {
 						if (cancellationToken.IsCancellationRequested)
 							break;
 						subFolders.Enqueue(subFolder);
@@ -179,5 +186,125 @@ namespace VDF.Core.Utils {
 
 		[DllImport("shell32.dll", CharSet = CharSet.Auto)]
 		internal static extern int SHFileOperation(ref SHFILEOPSTRUCT FileOp);
+
+		/// <summary>
+		/// Moves a file to the system trash/recycle bin on Linux and macOS.
+		/// Returns true if the file was successfully moved to trash, false if trash is unavailable
+		/// (caller should fall back to permanent deletion).
+		/// Not intended for Windows — use SHFileOperation there.
+		/// </summary>
+		internal static bool MoveToTrash(string filePath) {
+			if (RuntimeInformation.IsOSPlatform(OSPlatform.OSX))
+				return MoveToTrashMacOS(filePath);
+			if (RuntimeInformation.IsOSPlatform(OSPlatform.Linux))
+				return MoveToTrashLinux(filePath);
+			return false;
+		}
+
+		static bool MoveToTrashLinux(string filePath) {
+			// Freedesktop.org Trash specification: https://specifications.freedesktop.org/trash-spec/
+			string dataHome = Environment.GetEnvironmentVariable("XDG_DATA_HOME")
+				?? Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.UserProfile), ".local", "share");
+			string filesDir = Path.Combine(dataHome, "Trash", "files");
+			string infoDir = Path.Combine(dataHome, "Trash", "info");
+
+			try {
+				Directory.CreateDirectory(filesDir);
+				Directory.CreateDirectory(infoDir);
+			}
+			catch {
+				return false;
+			}
+
+			// If the file is on a different filesystem (e.g. network share), skip trash
+			// to avoid downloading the entire file to the local trash directory.
+			if (!IsOnSameFileSystem(filePath, filesDir))
+				return false;
+
+			string fileName = Path.GetFileName(filePath);
+			string destPath = Path.Combine(filesDir, fileName);
+			string infoPath = Path.Combine(infoDir, fileName + ".trashinfo");
+
+			// Resolve name conflicts
+			int counter = 1;
+			while (File.Exists(destPath) || File.Exists(infoPath)) {
+				string newName = $"{Path.GetFileNameWithoutExtension(fileName)}_{counter++}{Path.GetExtension(fileName)}";
+				destPath = Path.Combine(filesDir, newName);
+				infoPath = Path.Combine(infoDir, newName + ".trashinfo");
+			}
+
+			string trashInfo = $"[Trash Info]\nPath={filePath}\nDeletionDate={DateTime.Now:yyyy-MM-ddTHH:mm:ss}\n";
+			try {
+				File.WriteAllText(infoPath, trashInfo);
+				File.Move(filePath, destPath);
+				return true;
+			}
+			catch {
+				try { File.Delete(infoPath); } catch { /* ignore */ }
+				return false;
+			}
+		}
+
+		/// <summary>
+		/// Checks whether two paths reside on the same mounted filesystem by comparing
+		/// their mount points from <see cref="DriveInfo.GetDrives"/>.
+		/// </summary>
+		internal static bool IsOnSameFileSystem(string path1, string path2) {
+			try {
+				string fullPath1 = Path.GetFullPath(path1);
+				string fullPath2 = Path.GetFullPath(path2);
+				var drives = DriveInfo.GetDrives();
+				return GetMountPoint(fullPath1, drives) == GetMountPoint(fullPath2, drives);
+			}
+			catch {
+				return true; // assume same filesystem on error — let File.Move decide
+			}
+		}
+
+		static string GetMountPoint(string fullPath, DriveInfo[] drives) {
+			string bestMatch = "/";
+			foreach (var drive in drives) {
+				if (fullPath.StartsWith(drive.Name, StringComparison.Ordinal) && drive.Name.Length > bestMatch.Length)
+					bestMatch = drive.Name;
+			}
+			return bestMatch;
+		}
+
+		static bool MoveToTrashMacOS(string filePath) {
+			// ~/.Trash is the standard macOS trash for the home volume.
+			// For files on other volumes, macOS uses <volume>/.Trashes/<uid>/ — but that
+			// requires cross-volume copy+delete. Fall back to permanent deletion in that case.
+			string trashDir = Path.Combine(
+				Environment.GetFolderPath(Environment.SpecialFolder.UserProfile), ".Trash");
+
+			try {
+				Directory.CreateDirectory(trashDir);
+			}
+			catch {
+				return false;
+			}
+
+			// If the file is on a different volume, skip trash to avoid cross-volume copy.
+			if (!IsOnSameFileSystem(filePath, trashDir))
+				return false;
+
+			string fileName = Path.GetFileName(filePath);
+			string destPath = Path.Combine(trashDir, fileName);
+
+			// Resolve name conflicts
+			int counter = 1;
+			while (File.Exists(destPath)) {
+				destPath = Path.Combine(trashDir,
+					$"{Path.GetFileNameWithoutExtension(fileName)}_{counter++}{Path.GetExtension(fileName)}");
+			}
+
+			try {
+				File.Move(filePath, destPath);
+				return true;
+			}
+			catch {
+				return false;
+			}
+		}
 	}
 }

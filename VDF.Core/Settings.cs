@@ -16,6 +16,8 @@
 
 
 namespace VDF.Core {
+	public enum FolderMatchMode { None, SameFolderOnly, DifferentFolderOnly }
+
 	public sealed class Settings {
 		public HashSet<string> IncludeList { get; } = new HashSet<string>();
 		public HashSet<string> BlackList { get; } = new HashSet<string>();
@@ -35,6 +37,8 @@ namespace VDF.Core {
 		public bool CompareHorizontallyFlipped;
 		public bool IncludeNonExistingFiles = true;
 		public bool ScanAgainstEntireDatabase;
+		public FolderMatchMode FolderMatchMode;
+		public int SameFolderDepth = 1;
 		public bool UsePHashing;
 		public bool UseExifCreationDate;
 		public string LanguageCode = "en";
@@ -61,5 +65,19 @@ namespace VDF.Core {
 		public bool FilterByFileSize;
 		public int MaximumFileSize;
 		public int MinimumFileSize;
+
+		// ── Partial clip detection ──────────────────────────────────────────────
+		/// <summary>Enable audio-fingerprint-based partial clip detection.</summary>
+		public bool EnablePartialClipDetection;
+		/// <summary>
+		/// Minimum ratio of clip-duration / source-duration for a pair to be a candidate.
+		/// Default 0.10 (clip must be at least 10% of the longer video).
+		/// </summary>
+		public double PartialClipMinRatio = 0.10;
+		/// <summary>
+		/// Minimum average Hamming similarity (0–1) for a sliding-window match to be
+		/// accepted as a partial clip.  Default 0.80.
+		/// </summary>
+		public double PartialClipSimilarityThreshold = 0.80;
 	}
 }

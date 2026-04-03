@@ -10,29 +10,13 @@
 //     MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
 //     GNU Affero General Public License for more details.
 //     You should have received a copy of the GNU Affero General Public License
-//     along with VideoDuplicateFinder.  If not, see <https://www.gnu.org/licenses/>.
+//     along with VideoDuplicateFinder.  If not, see <http://www.gnu.org/licenses/>.
 // */
 //
 
-using System;
-using System.Collections.Generic;
-using System.Linq;
-using System.Text;
-using System.Threading.Tasks;
-
-namespace VDF.GUI.Mvvm {
-	internal static class FluentExtensions {
-		public static T Also<T>(this T value, Action<T> action) {
-			action(value);
-			return value;
-		}
-
-		public static TResult Let<T, TResult>(this T value, Func<T, TResult> func)
-			=> func(value);
-
-		public static T? AlsoIfNotNull<T>(this T? value, Action<T> action) where T : class {
-			if (value is not null) action(value);
-			return value;
-		}
-	}
-}
+global using System;
+global using System.Collections.Generic;
+global using System.IO;
+global using System.Linq;
+global using System.Threading;
+global using System.Threading.Tasks;

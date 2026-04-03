@@ -63,12 +63,14 @@ namespace VDF.Core.ViewModels {
 					BitRateKbs = Math.Round((decimal)file.mediaInfo.Streams[i].BitRate / 1000);
 					FrameSize = file.mediaInfo.Streams[i].Width + "x" + file.mediaInfo.Streams[i].Height;
 					FrameSizeInt = file.mediaInfo.Streams[i].Width + file.mediaInfo.Streams[i].Height;
+					HdrFormat = file.mediaInfo.Streams[i].HdrFormat ?? string.Empty;
 				}
 				if (selAudio[0] >= 0) {
 					int i = selAudio[0];
 					AudioFormat = file.mediaInfo.Streams[i].CodecName ?? "<Unknown>";
 					AudioChannel = file.mediaInfo.Streams[i].ChannelLayout ?? "<Unknown>";
 					AudioSampleRate = file.mediaInfo.Streams[i].SampleRate;
+					AudioBitRateKbs = Math.Round((decimal)file.mediaInfo.Streams[i].BitRate / 1000);
 				}
 
 			}
@@ -123,8 +125,32 @@ namespace VDF.Core.ViewModels {
 		public int AudioSampleRate { get; private set; }
 		public bool IsBestAudioSampleRate { get; set; }
 		[JsonInclude]
+		public decimal AudioBitRateKbs { get; private set; }
+		public bool IsBestAudioBitRateKbs { get; set; }
+		[JsonInclude]
 		public decimal BitRateKbs { get; private set; }
 		public bool IsBestBitRateKbs { get; set; }
+		[JsonInclude]
+		public string HdrFormat { get; private set; } = string.Empty;
+		public bool IsBestHdrFormat { get; set; }
+		[JsonIgnore]
+		public int FolderDepth {
+			get {
+				var span = _Path.AsSpan();
+				int count = span.Count(System.IO.Path.DirectorySeparatorChar);
+				if (System.IO.Path.DirectorySeparatorChar != System.IO.Path.AltDirectorySeparatorChar)
+					count += span.Count(System.IO.Path.AltDirectorySeparatorChar);
+				return count;
+			}
+		}
+		[JsonIgnore]
+		public int HdrFormatRank => HdrFormat switch {
+			"Dolby Vision" => 4,
+			"HDR10+" => 3,
+			"HDR10" => 2,
+			"HLG" => 1,
+			_ => 0
+		};
 		[JsonInclude]
 		public float Fps { get; private set; }
 		public bool IsBestFps { get; set; }
@@ -135,6 +161,19 @@ namespace VDF.Core.ViewModels {
 
 		[JsonInclude]
 		public bool IsImage { get; private set; }
+		/// <summary>
+		/// For <see cref="DuplicateFlags.PartialClip"/> items: the time position within the
+		/// source (longer) video where this clip begins.  Zero for all other items.
+		/// </summary>
+		[JsonInclude]
+		public TimeSpan PartialClipOffset { get; set; }
+
+		[JsonIgnore]
+		public string PartialClipOffsetDisplay =>
+			Flags.HasFlag(DuplicateFlags.PartialClip) && PartialClipOffset > TimeSpan.Zero
+				? $"@ {PartialClipOffset:hh\\:mm\\:ss}"
+				: string.Empty;
+
 		[JsonIgnore]
 		public Action? ThumbnailsUpdated;
 		public void SetThumbnails(List<Image>? images, List<TimeSpan> timeSpans) {

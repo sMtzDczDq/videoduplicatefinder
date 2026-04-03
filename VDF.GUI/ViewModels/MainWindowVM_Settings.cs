@@ -14,6 +14,7 @@
 // */
 //
 
+using System.Collections.ObjectModel;
 using System.Diagnostics;
 using System.Globalization;
 using System.Linq;
@@ -35,6 +36,10 @@ namespace VDF.GUI.ViewModels {
 		public IEnumerable<Core.FFTools.FFHardwareAccelerationMode> HardwareAccelerationModes =>
 #pragma warning restore CA1822 // Mark members as static
 			Enum.GetValues<Core.FFTools.FFHardwareAccelerationMode>();
+#pragma warning disable CA1822 // Mark members as static
+		public IEnumerable<Core.FolderMatchMode> FolderMatchModes =>
+#pragma warning restore CA1822 // Mark members as static
+			Enum.GetValues<Core.FolderMatchMode>();
 		public record LanguageOption(string Code, string DisplayName);
 		public IReadOnlyList<LanguageOption> LanguageOptions { get; } = BuildLanguageOptions();
 		public LanguageOption? SelectedLanguageOption {
@@ -66,6 +71,23 @@ namespace VDF.GUI.ViewModels {
 				this.RaisePropertyChanged(nameof(IsMultiOpenInFolderSupported));
 			}
 		}
+		public ObservableCollection<ShortcutBindingVM> ShortcutBindings { get; } = BuildShortcutBindings();
+
+		static ObservableCollection<ShortcutBindingVM> BuildShortcutBindings() {
+			var collection = new ObservableCollection<ShortcutBindingVM>();
+			foreach (var id in KeyboardShortcutDefaults.MainWindowDefaults.Keys)
+				collection.Add(new ShortcutBindingVM(id, collection));
+			return collection;
+		}
+
+		public ReactiveCommand<Unit, Unit> ResetAllShortcutsCommand => ReactiveCommand.Create(() => {
+			KeyboardShortcutManager.Instance.ResetAll();
+			foreach (var binding in ShortcutBindings) {
+				binding.CurrentGesture = binding.DefaultGesture;
+				binding.ConflictText = null;
+			}
+		});
+
 		void Instance_LogItemAdded(string message) =>
 			Dispatcher.UIThread.InvokeAsync(() => {
 				if (string.IsNullOrEmpty(message)) return;
@@ -162,6 +184,14 @@ namespace VDF.GUI.ViewModels {
 					SettingsFile.Instance.Blacklists.Add(item);
 			}
 		});
+		
+		public ReactiveCommand<Unit, Unit> AddBlacklistPatternToListCommand => ReactiveCommand.CreateFromTask(async () => {
+			var result = await Views.InputBoxService.Show(App.Lang["Dialog.AddPatternPrompt"],
+				waterMark: "*.actors", title: App.Lang["Dialog.AddPattern"]);
+			if (string.IsNullOrWhiteSpace(result)) return;
+			if (!SettingsFile.Instance.Blacklists.Contains(result))
+				SettingsFile.Instance.Blacklists.Add(result);
+		});
 		public ReactiveCommand<ListBox, Action> RemoveBlacklistFromListCommand => ReactiveCommand.Create<ListBox, Action>(lbox => {
 			while (lbox.SelectedItems?.Count > 0)
 				SettingsFile.Instance.Blacklists.Remove((string)lbox.SelectedItems[0]!);
@@ -169,6 +199,13 @@ namespace VDF.GUI.ViewModels {
 		});
 		public ReactiveCommand<Unit, Unit> ClearLogCommand => ReactiveCommand.Create(() => {
 			LogItems.Clear();
+		});
+		public ReactiveCommand<System.Collections.IList, Unit> CopyLogSelectionCommand => ReactiveCommand.Create<System.Collections.IList>(selected => {
+			if (selected == null || selected.Count == 0) return;
+			var sb = new StringBuilder();
+			foreach (var item in selected)
+				sb.AppendLine(item?.ToString());
+			ApplicationHelpers.MainWindow.Clipboard?.SetTextAsync(sb.ToString());
 		});
 		public ReactiveCommand<Unit, Unit> SaveLogCommand => ReactiveCommand.CreateFromTask(async () => {
 			var result = await Utils.PickerDialogUtils.SaveFilePicker(new FilePickerSaveOptions() {

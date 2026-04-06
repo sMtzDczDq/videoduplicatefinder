@@ -23,47 +23,63 @@ using SixLabors.ImageSharp;
 using SixLabors.ImageSharp.Formats.Jpeg;
 using SixLabors.ImageSharp.PixelFormats;
 using SixLabors.ImageSharp.Processing;
+using Point = SixLabors.ImageSharp.Point;
+using Size = SixLabors.ImageSharp.Size;
 
 namespace VDF.GUI.Utils {
 	static class ImageUtils {
 		private static readonly JpegEncoder JpegEncoder = new() { Quality = 90 };
+
 		/// <summary>
-		/// Creates the UI bitmap and (optionally) writes a JPEG directly to the passed stream in parallel.
+		/// Creates the UI bitmap and (optionally) writes a JPEG
+		/// directly to the passed stream in parallel.
 		/// No additional byte arrays, no duplicate RAM.
 		/// </summary>
 		public static unsafe Bitmap? JoinImages(IReadOnlyList<Image> images, Stream? jpegOut = null) {
 			if (images == null || images.Count == 0) return null;
 
-			int height = images[0].Height;
+			// Grid layout: up to 4 thumbnails per row (minimal change from previous single-row behavior)
+			int maxPerRow = Math.Min(images.Count, 4);
+			int thumbnailHeight = images[0].Height;
+
+			// compute total width = width of the widest row (sum of widths of images in first row)
 			int width = 0;
-			for (int i = 0; i <= images.Count - 1; i++)
-				width += images[i].Width;
+			for (int i = 0; i < maxPerRow; i++) width += images[i].Width;
+
+			// compute number of rows and total height
+			int rows = (int)Math.Ceiling(images.Count / (double)maxPerRow);
+			int height = rows * thumbnailHeight;
 
 			using var img = new Image<Rgba32>(width, height);
 
 			img.Mutate(ctx => {
 				int offsetX = 0;
-				foreach (var img in images) {
-					ctx.DrawImage(img, new SixLabors.ImageSharp.Point(offsetX, 0), 1f);
-					offsetX += img.Width;
+				int offsetY = 0;
+				int idx = 0;
+				foreach (var src in images) {
+					ctx.DrawImage(src, new Point(offsetX, offsetY), 1f);
+					offsetX += src.Width;
+					idx++;
+					if (idx % maxPerRow == 0) {
+						offsetX = 0;
+						offsetY += thumbnailHeight;
+					}
 				}
 			});
 
-			// Resize-Limits
+			// Resize-Limits (keep original limits and behavior)
 			const int MaxDisplayableCompositeWidth = 4096; // UI-Limit
-			const int AbsoluteMaxWidth = 32767;            // Hard-Limit (z.B. Texture-Limits)
+			const int AbsoluteMaxWidth = 32767; // Hard-Limit
 
 			if (img.Width > AbsoluteMaxWidth) {
 				img.Mutate(x => x.Resize(new ResizeOptions {
-					Size = new SixLabors.ImageSharp.Size(AbsoluteMaxWidth, 0),
-					Mode = ResizeMode.Max,
-					Sampler = KnownResamplers.Lanczos3
+					Size = new Size(AbsoluteMaxWidth, 0), Mode = ResizeMode.Max, Sampler = KnownResamplers.Lanczos3
 				}));
 			}
 
 			if (img.Width > MaxDisplayableCompositeWidth) {
 				img.Mutate(x => x.Resize(new ResizeOptions {
-					Size = new SixLabors.ImageSharp.Size(MaxDisplayableCompositeWidth, 0),
+					Size = new Size(MaxDisplayableCompositeWidth, 0),
 					Mode = ResizeMode.Max,
 					Sampler = KnownResamplers.Lanczos3
 				}));
@@ -78,8 +94,8 @@ namespace VDF.GUI.Utils {
 				Span<byte> sourcePixelData = MemoryMarshal.AsBytes(pixelMemory.Span);
 
 				var writeableBitmap = new WriteableBitmap(
-					new Avalonia.PixelSize(bgraImage.Width, bgraImage.Height),
-					new Avalonia.Vector(96, 96),
+					new PixelSize(bgraImage.Width, bgraImage.Height),
+					new Vector(96, 96),
 					PixelFormat.Bgra8888,
 					AlphaFormat.Unpremul
 				);
@@ -92,7 +108,8 @@ namespace VDF.GUI.Utils {
 
 					int expectedSourceLength = bgraImage.Width * bgraImage.Height * 4;
 
-					if (sourcePixelData.Length == expectedSourceLength && destinationSpan.Length == expectedSourceLength) {
+					if (sourcePixelData.Length == expectedSourceLength &&
+					    destinationSpan.Length == expectedSourceLength) {
 						sourcePixelData.CopyTo(destinationSpan);
 					}
 					else if (sourcePixelData.Length == destinationSpan.Length) {
@@ -111,8 +128,15 @@ namespace VDF.GUI.Utils {
 
 				if (jpegOut != null) {
 					img.SaveAsJpeg(jpegOut, JpegEncoder);
-					try { jpegOut.Flush(); } catch { /* ignore */ }
-					if (jpegOut.CanSeek) { try { jpegOut.Position = 0; } catch { } }
+					try { jpegOut.Flush(); }
+					catch {
+						/* ignore */
+					}
+
+					if (jpegOut.CanSeek) {
+						try { jpegOut.Position = 0; }
+						catch { }
+					}
 				}
 
 				return writeableBitmap;
@@ -121,17 +145,17 @@ namespace VDF.GUI.Utils {
 				return null;
 			}
 		}
+
 		public static unsafe Bitmap? JoinImages(IReadOnlyList<Bitmap> images, Stream? jpegOut = null) {
 			if (images == null || images.Count == 0) return null;
 
 			int h = images[0].PixelSize.Height;
-			int w = 0; for (int i = 0; i < images.Count; i++) w += images[i].PixelSize.Width;
+			int w = 0;
+			for (int i = 0; i < images.Count; i++) w += images[i].PixelSize.Width;
 
 			RenderTargetBitmap rtb = new(new PixelSize(w, h));
 
 			using var dc = rtb.CreateDrawingContext();
-			//dc.FillRectangle(Brushes.Transparent, new Rect(0, 0, w, h));
-
 			double x = 0;
 			foreach (var bmp in images) {
 				var src = new Rect(0, 0, bmp.PixelSize.Width, bmp.PixelSize.Height);
@@ -139,6 +163,7 @@ namespace VDF.GUI.Utils {
 				dc.DrawImage(bmp, src, dst);
 				x += bmp.PixelSize.Width;
 			}
+
 			return rtb;
 		}
 
@@ -147,11 +172,11 @@ namespace VDF.GUI.Utils {
 			image.Save(ms);
 			return ms.ToArray();
 		}
-		public static byte[] ToByteArray(this SixLabors.ImageSharp.Image image) {
+
+		public static byte[] ToByteArray(this Image image) {
 			using MemoryStream ms = new();
 			image.Save(ms, JpegEncoder);
 			return ms.ToArray();
 		}
-
 	}
 }

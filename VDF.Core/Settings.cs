@@ -35,7 +35,7 @@ namespace VDF.Core {
 		public bool IgnoreBlackPixels;
 		public bool IgnoreWhitePixels;
 		public bool CompareHorizontallyFlipped;
-		public bool IncludeNonExistingFiles = true;
+		public bool IncludeNonExistingFiles;
 		public bool ScanAgainstEntireDatabase;
 		public FolderMatchMode FolderMatchMode;
 		public int SameFolderDepth = 1;
@@ -53,6 +53,8 @@ namespace VDF.Core {
 		public double MaxSamplingDurationSeconds;
 
 		public int ThumbnailCount = 1;
+		/// <summary>Maximum width in pixels for display thumbnails (0 = original resolution).</summary>
+		public int ThumbnailMaxWidth = 100;
 		public int MaxDegreeOfParallelism = 1;
 
 		public string CustomFFArguments = string.Empty;
@@ -79,5 +81,12 @@ namespace VDF.Core {
 		/// accepted as a partial clip.  Default 0.80.
 		/// </summary>
 		public double PartialClipSimilarityThreshold = 0.80;
+
+		// ── Database checkpoints ────────────────────────────────────────────
+		/// <summary>
+		/// Interval in minutes between automatic database saves during scanning.
+		/// 0 = disabled (only save at phase boundaries). Default 5.
+		/// </summary>
+		public int DatabaseCheckpointIntervalMinutes = 5;
 	}
 }

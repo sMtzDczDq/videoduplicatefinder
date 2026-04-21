@@ -18,9 +18,11 @@ using System.Collections.ObjectModel;
 using System.Globalization;
 using System.Text.Json;
 using System.Text.Json.Serialization;
+using System.Xml;
 using System.Xml.Linq;
 using ReactiveUI;
 using VDF.Core.Utils;
+using VDF.GUI.ViewModels;
 
 namespace VDF.GUI.Data {
 	public enum ThumbnailDoubleClickAction { OpenFile, OpenThumbnailComparer }
@@ -158,6 +160,12 @@ namespace VDF.GUI.Data {
 			get => _GeneratePreviewThumbnails;
 			set => this.RaiseAndSetIfChanged(ref _GeneratePreviewThumbnails, value);
 		}
+		int _ThumbnailMaxWidth = 100;
+		[JsonPropertyName("ThumbnailMaxWidth")]
+		public int ThumbnailMaxWidth {
+			get => _ThumbnailMaxWidth;
+			set => this.RaiseAndSetIfChanged(ref _ThumbnailMaxWidth, Math.Clamp(value, 48, 960));
+		}
 		bool _ExtendedFFToolsLogging;
 		[JsonPropertyName("ExtendedFFToolsLogging")]
 		public bool ExtendedFFToolsLogging {
@@ -284,6 +292,12 @@ namespace VDF.GUI.Data {
 			get => _CustomDatabaseFolder;
 			set => this.RaiseAndSetIfChanged(ref _CustomDatabaseFolder, value);
 		}
+		int _DatabaseCheckpointIntervalMinutes = 5;
+		[JsonPropertyName("DatabaseCheckpointIntervalMinutes")]
+		public int DatabaseCheckpointIntervalMinutes {
+			get => _DatabaseCheckpointIntervalMinutes;
+			set => this.RaiseAndSetIfChanged(ref _DatabaseCheckpointIntervalMinutes, Math.Max(0, value));
+		}
 
 		public static void SaveSettings(string? path = null) {
 			path = ResolveSettingsPath(path);
@@ -331,6 +345,12 @@ namespace VDF.GUI.Data {
 		public int? ThumbnailComparerWindowScreenIndex {
 			get => _ThumbnailComparerWindowScreenIndex;
 			set => this.RaiseAndSetIfChanged(ref _ThumbnailComparerWindowScreenIndex, value);
+		}
+		CompareMode _ThumbnailComparerMode = CompareMode.Swipe;
+		[JsonPropertyName("ThumbnailComparerMode")]
+		public CompareMode ThumbnailComparerMode {
+			get => _ThumbnailComparerMode;
+			set => this.RaiseAndSetIfChanged(ref _ThumbnailComparerMode, value);
 		}
 		bool _ShowPathColumn = true;
 		[JsonPropertyName("ShowPathColumn")]
@@ -482,7 +502,9 @@ namespace VDF.GUI.Data {
 		static bool LoadOldSettings(string? path) {
 			path ??= FileUtils.SafePathCombine(CoreUtils.CurrentFolder, "Settings.xml");
 			if (!File.Exists(path)) return false;
-			var xDoc = XDocument.Load(path);
+			var xmlSettings = new XmlReaderSettings { DtdProcessing = DtdProcessing.Prohibit };
+			using var reader = XmlReader.Create(path, xmlSettings);
+			var xDoc = XDocument.Load(reader);
 			foreach (var n in xDoc.Descendants("Include"))
 				Instance.Includes.Add(n.Value);
 			foreach (var n in xDoc.Descendants("Exclude"))

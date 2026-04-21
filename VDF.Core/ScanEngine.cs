@@ -26,6 +26,8 @@ using System.Globalization;
 using System.Linq;
 using System.Numerics;
 using System.Runtime.CompilerServices;
+using System.Runtime.InteropServices;
+using System.Runtime.Intrinsics;
 using System.Text.Json;
 using SixLabors.ImageSharp.Metadata.Profiles.Exif;
 using SixLabors.ImageSharp.Processing;
@@ -63,6 +65,8 @@ namespace VDF.Core {
 		const int maxExcludedLogsPerReason = 5;
 		readonly ConcurrentDictionary<string, int> excludedReasonCounts = new();
 		readonly ConcurrentDictionary<string, int> excludedReasonLoggedCounts = new();
+		DateTime lastCheckpointTime = DateTime.MinValue;
+		readonly object checkpointLock = new();
 
 		string T(string key, params object[] args) =>
 			LanguageService.Instance.Get(Settings.LanguageCode, key, args);
@@ -72,6 +76,7 @@ namespace VDF.Core {
 			scanProgressMaxValue = count;
 			processedFiles = 0;
 			lastProgressUpdate = DateTime.MinValue;
+			lastCheckpointTime = DateTime.UtcNow;
 		}
 		void ResetExcludedLogging() {
 			excludedReasonCounts.Clear();
@@ -115,6 +120,20 @@ namespace VDF.Core {
 								Remaining = timeRemaining,
 								MaxPosition = scanProgressMaxValue
 							});
+			TryDatabaseCheckpoint();
+		}
+
+		void TryDatabaseCheckpoint() {
+			if (Settings.DatabaseCheckpointIntervalMinutes <= 0) return;
+			var interval = TimeSpan.FromMinutes(Settings.DatabaseCheckpointIntervalMinutes);
+			if (DateTime.UtcNow - lastCheckpointTime < interval) return;
+			lock (checkpointLock) {
+				// Re-check after acquiring lock to avoid duplicate saves from racing threads
+				if (DateTime.UtcNow - lastCheckpointTime < interval) return;
+				lastCheckpointTime = DateTime.UtcNow;
+				DatabaseUtils.SaveDatabase();
+				Logger.Instance.Info(T("Log.DatabaseCheckpoint", DatabaseUtils.Database.Count));
+			}
 		}
 
 		public static bool FFmpegExists => !string.IsNullOrEmpty(FfmpegEngine.FFmpegPath);
@@ -468,6 +487,7 @@ namespace VDF.Core {
 								!entry.IsImage &&
 								!entry.Flags.Has(EntryFlags.NoAudioTrack) &&
 								!entry.Flags.Has(EntryFlags.AudioFingerprintError) &&
+								!entry.Flags.Has(EntryFlags.SilentAudioTrack) &&
 								entry.AudioFingerprint == null) {
 								ExtractAudioFingerprint(entry, cancelationTokenSource.Token);
 							}
@@ -508,6 +528,7 @@ namespace VDF.Core {
 						!entry.IsImage &&
 						!entry.Flags.Has(EntryFlags.NoAudioTrack) &&
 						!entry.Flags.Has(EntryFlags.AudioFingerprintError) &&
+						!entry.Flags.Has(EntryFlags.SilentAudioTrack) &&
 						entry.AudioFingerprint == null) {
 						ExtractAudioFingerprint(entry, cancelationTokenSource.Token);
 					}
@@ -535,9 +556,28 @@ namespace VDF.Core {
 			entry.Flags.Set(EntryFlags.NoAudioTrack);
 			entry.AudioFingerprint = Array.Empty<uint>();
 		}
+		else if (IsSilentFingerprint(fp)) {
+			// Silent tracks produce all-zero fingerprints, which Hamming-match any
+			// other silent track at 100% and cause false-positive partial-clip groups.
+			entry.Flags.Set(EntryFlags.SilentAudioTrack);
+			entry.AudioFingerprint = Array.Empty<uint>();
+		}
 		else {
 			entry.AudioFingerprint = fp;
 		}
+	}
+
+	/// <summary>
+	/// Returns true when every block in the fingerprint is zero. For silent or
+	/// near-silent audio the chroma bins collapse to equal values, and the 32
+	/// comparison pairs in <see cref="Chromaprint.Pipeline.FingerprintCalculator"/>
+	/// all resolve to the non-greater branch, producing uniformly zero blocks.
+	/// </summary>
+	internal static bool IsSilentFingerprint(uint[] fp) {
+		if (fp.Length == 0) return false;
+		for (int i = 0; i < fp.Length; i++)
+			if (fp[i] != 0u) return false;
+		return true;
 	}
 
 	Dictionary<double, byte[]?> CreateFlippedGrayBytes(FileEntry entry) {
@@ -844,6 +884,13 @@ namespace VDF.Core {
 							continue;
 						bool isDuplicate = TryCheckDuplicate(entry, compItem, flippedGrayBytes, out difference, out flags);
 
+						if (isDuplicate &&
+							entry.FileSize == compItem.FileSize &&
+							Settings.ExcludeHardLinks &&
+							HardLinkUtils.AreSameFile(entry.Path, compItem.Path)) {
+							isDuplicate = false;
+						}
+
 						if (isDuplicate)
 							MergeDuplicate(entry, compItem, difference, flags);
 					}
@@ -972,6 +1019,7 @@ namespace VDF.Core {
 		/// <summary>
 		/// Phase 2 comparison: find pairs where a shorter video is a partial clip of a longer one,
 		/// using audio fingerprint sliding-window matching.  Results are added to Duplicates.
+		/// The comparison loop runs in parallel; grouping is applied sequentially afterward.
 		/// </summary>
 		void ScanForPartialDuplicates() {
 			Logger.Instance.Info("Partial clip detection: building fingerprint index...");
@@ -982,9 +1030,14 @@ namespace VDF.Core {
 				CoreUtils.IsWindows ? StringComparer.OrdinalIgnoreCase : StringComparer.Ordinal);
 
 			// Collect eligible videos: not an image, has a usable fingerprint, not already grouped.
+			// Exclude silent/all-zero fingerprints: they Hamming-match any other silent track
+			// at 100% and produce meaningless partial-clip groups. Older scan databases written
+			// before this check may still contain all-zero fingerprints, so filter at read time.
 			var videos = DatabaseUtils.Database
 				.Where(e => !e.invalid && !e.IsImage &&
+						!e.Flags.Has(EntryFlags.SilentAudioTrack) &&
 						e.AudioFingerprint != null && e.AudioFingerprint.Length >= 2 &&
+						!IsSilentFingerprint(e.AudioFingerprint) &&
 						!alreadyGrouped.Contains(e.Path))
 				.OrderByDescending(e => e.mediaInfo?.Duration ?? TimeSpan.Zero)
 				.ToList();
@@ -996,69 +1049,78 @@ namespace VDF.Core {
 
 			Logger.Instance.Info($"Partial clip detection: comparing {videos.Count} video(s) (fingerprint blocks: min={videos.Min(e => e.AudioFingerprint!.Length)}, max={videos.Max(e => e.AudioFingerprint!.Length)})...");
 
-			// sourceGroupId: path of source → Guid of the group it anchors
+			float simThreshold = (float)Settings.PartialClipSimilarityThreshold;
+
+			// --- Parallel phase: compute all matches without mutating shared state ---
+			var matches = new ConcurrentBag<(int sourceIdx, int clipIdx, float sim, int offsetSec)>();
+			int pairsChecked = 0;
+
+			Parallel.For(0, videos.Count - 1,
+				new ParallelOptions {
+					CancellationToken = cancelationTokenSource.Token,
+					MaxDegreeOfParallelism = Math.Max(1, Environment.ProcessorCount)
+				},
+				i => {
+					FileEntry source = videos[i];
+					double sourceSec = (source.mediaInfo?.Duration ?? TimeSpan.Zero).TotalSeconds;
+					if (sourceSec < 1.0) return;
+
+					for (int j = i + 1; j < videos.Count; j++) {
+						if (cancelationTokenSource.IsCancellationRequested) break;
+						FileEntry clip = videos[j];
+						double clipSec = (clip.mediaInfo?.Duration ?? TimeSpan.Zero).TotalSeconds;
+						if (clipSec < 1.0) continue;
+
+						// Pre-filter 1: clip must be at least PartialClipMinRatio of source
+						if (clipSec / sourceSec < Settings.PartialClipMinRatio) continue;
+
+						// Pre-filter 2: clip must be shorter than 95% of source (visual dup handles the rest)
+						if (clipSec / sourceSec >= 0.95) continue;
+
+						// Fingerprint block sanity (each block ≈ 1 second)
+						uint[] fpSource = source.AudioFingerprint!;
+						uint[] fpClip = clip.AudioFingerprint!;
+						if (fpClip.Length >= fpSource.Length) continue;
+
+						Interlocked.Increment(ref pairsChecked);
+						var (sim, offsetSec) = SlidingWindowCompare(fpClip, fpSource, simThreshold);
+
+						if (sim >= simThreshold)
+							matches.Add((i, j, sim, offsetSec));
+					}
+				});
+
+			// --- Sequential phase: build groups from matches (preserving longest-source-first order) ---
 			var sourceGroupId = new Dictionary<string, Guid>(
 				CoreUtils.IsWindows ? StringComparer.OrdinalIgnoreCase : StringComparer.Ordinal);
-			// assignedClips: paths already assigned as clips (avoid adding same clip twice)
 			var assignedClips = new HashSet<string>(
 				CoreUtils.IsWindows ? StringComparer.OrdinalIgnoreCase : StringComparer.Ordinal);
-
-			int pairsChecked = 0;
 			int matchesFound = 0;
 
-			for (int i = 0; i < videos.Count - 1; i++) {
-				if (cancelationTokenSource.IsCancellationRequested) break;
-				FileEntry source = videos[i];
-				double sourceSec = (source.mediaInfo?.Duration ?? TimeSpan.Zero).TotalSeconds;
-				if (sourceSec < 1.0) continue;
+			foreach (var (si, ci, sim, offsetSec) in matches.OrderBy(m => m.sourceIdx).ThenBy(m => m.clipIdx)) {
+				FileEntry source = videos[si];
+				FileEntry clip = videos[ci];
+				matchesFound++;
 
-				for (int j = i + 1; j < videos.Count; j++) {
-					if (cancelationTokenSource.IsCancellationRequested) break;
-					FileEntry clip = videos[j];
-					double clipSec = (clip.mediaInfo?.Duration ?? TimeSpan.Zero).TotalSeconds;
-					if (clipSec < 1.0) continue;
+				if (Settings.ExtendedFFToolsLogging)
+					Logger.Instance.Info($"[Partial] {System.IO.Path.GetFileName(clip.Path)} in {System.IO.Path.GetFileName(source.Path)}: sim={sim:P1} @ {offsetSec}s (threshold {Settings.PartialClipSimilarityThreshold:P0}, fp {clip.AudioFingerprint!.Length}/{source.AudioFingerprint!.Length} blocks)");
 
-					// Pre-filter 1: clip must be at least PartialClipMinRatio of source
-					if (clipSec / sourceSec < Settings.PartialClipMinRatio) continue;
+				if (!sourceGroupId.TryGetValue(source.Path, out Guid groupId)) {
+					groupId = Guid.NewGuid();
+					sourceGroupId[source.Path] = groupId;
+					Duplicates.Add(new DuplicateItem(source, 0f, groupId, DuplicateFlags.None));
+				}
 
-					// Pre-filter 2: clip must be shorter than 95% of source (visual dup handles the rest)
-					if (clipSec / sourceSec >= 0.95) continue;
-
-					// Fingerprint block sanity (each block ≈ 1 second)
-					uint[] fpSource = source.AudioFingerprint!;
-					uint[] fpClip = clip.AudioFingerprint!;
-					if (fpClip.Length >= fpSource.Length) continue;
-
-					pairsChecked++;
-					var (sim, offsetSec) = SlidingWindowCompare(fpClip, fpSource);
-
-					if (sim < (float)Settings.PartialClipSimilarityThreshold) continue;
-
-					// We have a match: source[i] contains clip[j] at offsetSec.
-					if (Settings.ExtendedFFToolsLogging)
-						Logger.Instance.Info($"[Partial] {System.IO.Path.GetFileName(clip.Path)} in {System.IO.Path.GetFileName(source.Path)}: sim={sim:P1} @ {offsetSec}s (threshold {Settings.PartialClipSimilarityThreshold:P0}, fp {fpClip.Length}/{fpSource.Length} blocks)");
-					matchesFound++;
-
-					if (!sourceGroupId.TryGetValue(source.Path, out Guid groupId)) {
-						groupId = Guid.NewGuid();
-						sourceGroupId[source.Path] = groupId;
-						// Add the source as the anchor member (no PartialClip flag)
-						Duplicates.Add(new DuplicateItem(source, 0f, groupId, DuplicateFlags.None));
-					}
-
-					if (!assignedClips.Contains(clip.Path)) {
-						assignedClips.Add(clip.Path);
-						var clipItem = new DuplicateItem(clip, 1f - sim, groupId, DuplicateFlags.PartialClip) {
-							PartialClipOffset = TimeSpan.FromSeconds(offsetSec)
-						};
-						Duplicates.Add(clipItem);
-					}
-					else {
-						// Clip already belongs to another source group — update its GroupId to this one
-						// so everything lands in the same group (longest source wins as anchor).
-						var existing = Duplicates.FirstOrDefault(d => d.Path == clip.Path && d.Flags.HasFlag(DuplicateFlags.PartialClip));
-						if (existing != null) existing.GroupId = groupId;
-					}
+				if (!assignedClips.Contains(clip.Path)) {
+					assignedClips.Add(clip.Path);
+					var clipItem = new DuplicateItem(clip, 1f - sim, groupId, DuplicateFlags.PartialClip) {
+						PartialClipOffset = TimeSpan.FromSeconds(offsetSec)
+					};
+					Duplicates.Add(clipItem);
+				}
+				else {
+					var existing = Duplicates.FirstOrDefault(d => d.Path == clip.Path && d.Flags.HasFlag(DuplicateFlags.PartialClip));
+					if (existing != null) existing.GroupId = groupId;
 				}
 			}
 
@@ -1068,23 +1130,31 @@ namespace VDF.Core {
 		/// <summary>
 		/// Slides <paramref name="shorter"/> over <paramref name="longer"/> and returns the
 		/// best average Hamming similarity (0–1) and the offset (in seconds / blocks) at which
-		/// it occurs.
+		/// it occurs.  Uses SIMD-accelerated XOR where available and skips offsets early when
+		/// the accumulated Hamming distance already exceeds what could beat the current best.
 		/// </summary>
-		static (float similarity, int offsetBlocks) SlidingWindowCompare(uint[] shorter, uint[] longer) {
+		/// <param name="minSim">Minimum similarity the caller cares about (e.g. the user threshold).
+		/// Offsets that cannot reach this value are skipped via early exit.</param>
+		internal static (float similarity, int offsetBlocks) SlidingWindowCompare(uint[] shorter, uint[] longer, float minSim = 0f) {
 			int lenS = shorter.Length;
 			int lenL = longer.Length;
 			int maxOffset = lenL - lenS;
+			int totalBitsCapacity = lenS * 32;
 
 			float bestSim = 0f;
 			int bestOffset = 0;
 
 			for (int offset = 0; offset <= maxOffset; offset++) {
-				int totalBits = 0;
-				for (int k = 0; k < lenS; k++)
-					totalBits += BitOperations.PopCount(shorter[k] ^ longer[offset + k]);
-				// Average Hamming distance per block (max 32 bits each)
-				float avgDist = (float)totalBits / (lenS * 32);
-				float sim = 1f - avgDist;
+				// The maximum number of differing bits we can tolerate and still
+				// beat the current best (or the caller's minimum threshold).
+				int maxAllowedBits = (int)((1f - Math.Max(bestSim, minSim)) * totalBitsCapacity);
+
+				int totalBits = HammingDistance(shorter, longer, offset, lenS, maxAllowedBits);
+
+				if (totalBits > maxAllowedBits)
+					continue; // early exit triggered inside HammingDistance
+
+				float sim = 1f - (float)totalBits / totalBitsCapacity;
 				if (sim > bestSim) {
 					bestSim = sim;
 					bestOffset = offset;
@@ -1092,6 +1162,67 @@ namespace VDF.Core {
 			}
 
 			return (bestSim, bestOffset);
+		}
+
+		/// <summary>
+		/// Computes the Hamming distance (total differing bits) between
+		/// <paramref name="a"/>[0..len) and <paramref name="b"/>[offset..offset+len).
+		/// Uses 256-bit or 128-bit SIMD for the XOR when hardware support is available.
+		/// Returns early (with a value &gt; <paramref name="maxAllowedBits"/>) when the
+		/// running total exceeds the budget, avoiding unnecessary work on non-matching offsets.
+		/// </summary>
+		[MethodImpl(MethodImplOptions.AggressiveInlining)]
+		static int HammingDistance(uint[] a, uint[] b, int offset, int len, int maxAllowedBits) {
+			int totalBits = 0;
+			int k = 0;
+
+			// --- Vector256 path (8 × uint per iteration) ---
+			if (Vector256.IsHardwareAccelerated && len >= 8) {
+				ref uint aRef = ref MemoryMarshal.GetArrayDataReference(a);
+				ref uint bRef = ref Unsafe.Add(ref MemoryMarshal.GetArrayDataReference(b), offset);
+
+				for (; k + 8 <= len; k += 8) {
+					var va = Vector256.LoadUnsafe(ref aRef, (nuint)k);
+					var vb = Vector256.LoadUnsafe(ref bRef, (nuint)k);
+					var xored = va ^ vb;
+
+					totalBits += BitOperations.PopCount(xored.GetElement(0))
+							   + BitOperations.PopCount(xored.GetElement(1))
+							   + BitOperations.PopCount(xored.GetElement(2))
+							   + BitOperations.PopCount(xored.GetElement(3))
+							   + BitOperations.PopCount(xored.GetElement(4))
+							   + BitOperations.PopCount(xored.GetElement(5))
+							   + BitOperations.PopCount(xored.GetElement(6))
+							   + BitOperations.PopCount(xored.GetElement(7));
+
+					if (totalBits > maxAllowedBits) return totalBits;
+				}
+			}
+			// --- Vector128 path (4 × uint per iteration, e.g. ARM NEON) ---
+			else if (Vector128.IsHardwareAccelerated && len >= 4) {
+				ref uint aRef = ref MemoryMarshal.GetArrayDataReference(a);
+				ref uint bRef = ref Unsafe.Add(ref MemoryMarshal.GetArrayDataReference(b), offset);
+
+				for (; k + 4 <= len; k += 4) {
+					var va = Vector128.LoadUnsafe(ref aRef, (nuint)k);
+					var vb = Vector128.LoadUnsafe(ref bRef, (nuint)k);
+					var xored = va ^ vb;
+
+					totalBits += BitOperations.PopCount(xored.GetElement(0))
+							   + BitOperations.PopCount(xored.GetElement(1))
+							   + BitOperations.PopCount(xored.GetElement(2))
+							   + BitOperations.PopCount(xored.GetElement(3));
+
+					if (totalBits > maxAllowedBits) return totalBits;
+				}
+			}
+
+			// --- Scalar remainder ---
+			for (; k < len; k++) {
+				totalBits += BitOperations.PopCount(a[k] ^ b[offset + k]);
+			}
+
+			return totalBits;
 		}
 
 		/// <summary>
@@ -1298,6 +1429,48 @@ namespace VDF.Core {
 		public static void ClearDatabase() => DatabaseUtils.ClearDatabase();
 		public static bool ExportDataBaseToJson(string jsonFile, JsonSerializerOptions options) => DatabaseUtils.ExportDatabaseToJson(jsonFile, options);
 		public static bool ImportDataBaseFromJson(string jsonFile, JsonSerializerOptions options) => DatabaseUtils.ImportDatabaseFromJson(jsonFile, options);
+
+		/// <summary>
+		/// Extracts a single JPEG thumbnail from a video or image file on demand.
+		/// Intended for web endpoints that need higher resolution than the default 100px scan thumbnails.
+		/// </summary>
+		/// <param name="filePath">Absolute path to the media file.</param>
+		/// <param name="position">Seek position (ignored for images).</param>
+		/// <param name="maxWidth">Target width in pixels. 0 = original resolution.</param>
+		/// <returns>JPEG bytes, or null on failure.</returns>
+		public static byte[]? ExtractThumbnailJpeg(string filePath, TimeSpan position, int maxWidth = 0) {
+			if (string.IsNullOrEmpty(filePath) || !File.Exists(filePath)) return null;
+
+			// For images, load and resize directly
+			var ext = Path.GetExtension(filePath);
+			if (IsImageExtension(ext)) {
+				try {
+					using var image = Image.Load(filePath);
+					if (maxWidth > 0 && image.Width > maxWidth) {
+						int h = (int)(image.Height * ((double)maxWidth / image.Width));
+						image.Mutate(x => x.Resize(maxWidth, h));
+					}
+					using var ms = new MemoryStream();
+					image.Save(ms, new SixLabors.ImageSharp.Formats.Jpeg.JpegEncoder { Quality = 90 });
+					return ms.ToArray();
+				}
+				catch { return null; }
+			}
+
+			// For videos, delegate to FFmpeg
+			return FfmpegEngine.ExtractThumbnailJpeg(filePath, position, maxWidth);
+		}
+
+		static bool IsImageExtension(string ext) =>
+			ext.Equals(".jpg", StringComparison.OrdinalIgnoreCase) ||
+			ext.Equals(".jpeg", StringComparison.OrdinalIgnoreCase) ||
+			ext.Equals(".png", StringComparison.OrdinalIgnoreCase) ||
+			ext.Equals(".bmp", StringComparison.OrdinalIgnoreCase) ||
+			ext.Equals(".gif", StringComparison.OrdinalIgnoreCase) ||
+			ext.Equals(".webp", StringComparison.OrdinalIgnoreCase) ||
+			ext.Equals(".tiff", StringComparison.OrdinalIgnoreCase) ||
+			ext.Equals(".tif", StringComparison.OrdinalIgnoreCase);
+
 		public async Task RetrieveThumbnailsForItems(IEnumerable<DuplicateItem> items) {
 			var dupList = items.Where(d => d.ImageList == null || d.ImageList.Count == 0).ToList();
 			try {
@@ -1305,6 +1478,7 @@ namespace VDF.Core {
 					List<Image>? list = null;
 					bool needsThumbnails = !Settings.IncludeNonExistingFiles || File.Exists(entry.Path);
 					List<TimeSpan>? timeStamps = null;
+					int maxDim = Settings.ThumbnailMaxWidth > 0 ? Settings.ThumbnailMaxWidth : 100;
 
 					if (needsThumbnails && entry.IsImage) {
 						timeStamps = new(0);
@@ -1312,9 +1486,9 @@ namespace VDF.Core {
 						try {
 							Image bitmapImage = Image.Load(entry.Path);
 							float resizeFactor = 1f;
-							if (bitmapImage.Width > 100 || bitmapImage.Height > 100) {
-								float widthFactor = bitmapImage.Width / 100f;
-								float heightFactor = bitmapImage.Height / 100f;
+							if (bitmapImage.Width > maxDim || bitmapImage.Height > maxDim) {
+								float widthFactor = bitmapImage.Width / (float)maxDim;
+								float heightFactor = bitmapImage.Height / (float)maxDim;
 								resizeFactor = Math.Max(widthFactor, heightFactor);
 							}
 							int width = Convert.ToInt32(bitmapImage.Width / resizeFactor);
@@ -1333,11 +1507,7 @@ namespace VDF.Core {
 						for (int j = 0; j < positionList.Count; j++) {
 							var timestamp = TimeSpan.FromSeconds(entry.Duration.TotalSeconds * positionList[j]);
 							timeStamps.Add(timestamp);
-							var b = FfmpegEngine.GetThumbnail(new FfmpegSettings {
-								File = entry.Path,
-								Position = timestamp,
-								GrayScale = 0,
-							}, Settings.ExtendedFFToolsLogging);
+							var b = FfmpegEngine.ExtractThumbnailJpeg(entry.Path, timestamp, maxDim, Settings.ExtendedFFToolsLogging);
 							if (b == null || b.Length == 0) return ValueTask.CompletedTask;
 							using var byteStream = new MemoryStream(b);
 							var bitmapImage = Image.Load(byteStream);
@@ -1372,6 +1542,8 @@ namespace VDF.Core {
 							ThumbnailProgress?.Invoke(current, total);
 						}
 
+					int maxDim = Settings.ThumbnailMaxWidth > 0 ? Settings.ThumbnailMaxWidth : 100;
+
 					if (needsThumbnails && entry.IsImage) {
 						//For images it doesn't make sense to load the actual image more than once
 						timeStamps = new(0);
@@ -1379,9 +1551,9 @@ namespace VDF.Core {
 						try {
 							Image bitmapImage = Image.Load(entry.Path);
 							float resizeFactor = 1f;
-							if (bitmapImage.Width > 100 || bitmapImage.Height > 100) {
-								float widthFactor = bitmapImage.Width / 100f;
-								float heightFactor = bitmapImage.Height / 100f;
+							if (bitmapImage.Width > maxDim || bitmapImage.Height > maxDim) {
+								float widthFactor = bitmapImage.Width / (float)maxDim;
+								float heightFactor = bitmapImage.Height / (float)maxDim;
 								resizeFactor = Math.Max(widthFactor, heightFactor);
 
 							}
@@ -1402,11 +1574,7 @@ namespace VDF.Core {
 						for (int j = 0; j < positionList.Count; j++) {
 							var timestamp = TimeSpan.FromSeconds(entry.Duration.TotalSeconds * positionList[j]);
 							timeStamps.Add(timestamp);
-							var b = FfmpegEngine.GetThumbnail(new FfmpegSettings {
-								File = entry.Path,
-								Position = timestamp,
-								GrayScale = 0,
-							}, Settings.ExtendedFFToolsLogging);
+							var b = FfmpegEngine.ExtractThumbnailJpeg(entry.Path, timestamp, maxDim, Settings.ExtendedFFToolsLogging);
 							if (b == null || b.Length == 0) return ValueTask.CompletedTask;
 							using var byteStream = new MemoryStream(b);
 							var bitmapImage = Image.Load(byteStream);

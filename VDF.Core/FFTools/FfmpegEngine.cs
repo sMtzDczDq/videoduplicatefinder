@@ -21,6 +21,8 @@ using System.Globalization;
 using System.Linq;
 using System.Runtime.InteropServices;
 using FFmpeg.AutoGen;
+using SixLabors.ImageSharp;
+using SixLabors.ImageSharp.Processing;
 using VDF.Core.FFTools.FFmpegNative;
 using VDF.Core.Utils;
 
@@ -61,10 +63,24 @@ namespace VDF.Core.FFTools {
 					};
 
 					using var vsd = new VideoStreamDecoder(settings.File, HWDevice);
-					if (vsd.PixelFormat < 0 || vsd.PixelFormat >= AVPixelFormat.AV_PIX_FMT_NB)
-						throw new Exception($"Invalid source pixel format");
 
 					Size sourceSize = vsd.FrameSize;
+
+					// Decode first so we know the real source pixel format. For HW decode
+					// we can't know this up front — the downloaded sw_format depends on
+					// the stream's bit depth (NV12 for 8-bit, P010LE for 10-bit HEVC, etc.).
+					if (!vsd.TryDecodeFrame(out var srcFrame, settings.Position))
+						throw new Exception($"TryDecodeFrame failed at pos={settings.Position} for '{settings.File}'. size={sourceSize.Width}x{sourceSize.Height}");
+
+					AVPixelFormat srcPixFmt = vsd.IsHardwareDecode
+						? (AVPixelFormat)srcFrame.format
+						: vsd.PixelFormat;
+					if (srcPixFmt < 0 || srcPixFmt >= AVPixelFormat.AV_PIX_FMT_NB)
+						throw new Exception($"Invalid source pixel format {srcPixFmt}");
+
+					if (sourceSize.Width <= 0 || sourceSize.Height <= 0)
+						throw new Exception($"Invalid source frame dimensions {sourceSize.Width}x{sourceSize.Height}.");
+
 					Size destinationSize = isGrayByte ? new Size(N, N) :
 						settings.Fullsize == 1 ?
 							sourceSize :
@@ -75,15 +91,13 @@ namespace VDF.Core.FFTools {
 						AVPixelFormat.AV_PIX_FMT_BGRA;
 
 					using var vfc = new VideoFrameConverter(
-										sourceSize: vsd.FrameSize,
-										sourcePixelFormat: vsd.PixelFormat,
+										sourceSize: sourceSize,
+										sourcePixelFormat: srcPixFmt,
 										destinationSize: destinationSize,
 										destinationPixelFormat: destinationPixelFrmt,
 										quality: VideoFrameConverter.ScaleQuality.Bicubic,
 										bitExact: false);
 
-					if (!vsd.TryDecodeFrame(out var srcFrame, settings.Position))
-						throw new Exception($"TryDecodeFrame failed at pos={settings.Position} for '{settings.File}'. srcPixFmt={vsd.PixelFormat} size={sourceSize.Width}x{sourceSize.Height}");
 					AVFrame convertedFrame = vfc.Convert(srcFrame);
 
 					if (convertedFrame.data[0] == null)
@@ -114,9 +128,16 @@ namespace VDF.Core.FFTools {
 					else {
 						int width = convertedFrame.width;
 						int height = convertedFrame.height;
-						var totalBytes = width * height * 4;
+						if (width <= 0 || height <= 0)
+							throw new Exception($"Invalid converted frame dimensions {width}x{height}.");
+						long totalBytesLong = (long)width * height * 4;
+						if (totalBytesLong > 200_000_000) // ~200 MB sanity cap
+							throw new Exception($"Frame too large: {width}x{height} ({totalBytesLong} bytes).");
+						var totalBytes = (int)totalBytesLong;
 						var rgbaBytes = new byte[totalBytes];
 						int stride = convertedFrame.linesize[0];
+						if (stride < width * 4)
+							throw new Exception($"Invalid stride ({stride}) for width {width}.");
 						fixed (byte* destPtr = rgbaBytes) {
 							byte* sourcePtr = convertedFrame.data[0];
 							if (stride == width * 4) {
@@ -316,6 +337,34 @@ namespace VDF.Core.FFTools {
 			if (current.Length > 0)
 				tokens.Add(current.ToString());
 			return tokens;
+		}
+
+		/// <summary>
+		/// Extracts a single JPEG thumbnail from a video file at the given position.
+		/// Returns null if extraction fails.
+		/// </summary>
+		public static byte[]? ExtractThumbnailJpeg(string filePath, TimeSpan position, int maxWidth = 0, bool extendedLogging = false) {
+			var settings = new FfmpegSettings {
+				File = filePath,
+				Position = position,
+				GrayScale = 0,
+				Fullsize = (byte)(maxWidth == 0 ? 1 : 0),
+			};
+			var raw = GetThumbnail(maxWidth == 0 ? settings : settings with { Fullsize = 1 }, extendedLogging);
+			if (raw == null || raw.Length == 0) return null;
+
+			if (maxWidth > 0) {
+				using var ms = new MemoryStream(raw);
+				using var image = Image.Load(ms);
+				if (image.Width > maxWidth) {
+					int h = (int)(image.Height * ((double)maxWidth / image.Width));
+					image.Mutate(x => x.Resize(maxWidth, h));
+				}
+				using var outMs = new MemoryStream();
+				image.Save(outMs, new SixLabors.ImageSharp.Formats.Jpeg.JpegEncoder { Quality = 90 });
+				return outMs.ToArray();
+			}
+			return raw;
 		}
 	}
 

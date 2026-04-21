@@ -72,22 +72,10 @@ namespace VDF.Web.Services {
 				Notify();
 			};
 			_engine.ScanDone += (_, _) => {
-				State = ScanState.RetrievingThumbnails;
-				LastProgress = null;
-				ThumbnailCurrent = 0;
-				ThumbnailMax = _engine.Duplicates.Count;
-				Notify();
-				try { _engine.RetrieveThumbnails(); }
-				catch (Exception ex) { SetError(ex); }
-			};
-			_engine.ThumbnailProgress += (current, max) => {
-				ThumbnailCurrent = current;
-				ThumbnailMax = max;
-				Notify();
-			};
-			_engine.ThumbnailsRetrieved += (_, _) => {
-				ThumbnailCurrent = ThumbnailMax;
+				// Skip low-res thumbnail retrieval — WebUI loads HQ thumbnails on demand
+				// via the /thumbnail/hq endpoint. This makes results available immediately.
 				State = ScanState.Done;
+				LastProgress = null;
 				Notify();
 			};
 			_engine.ScanAborted += (_, _) => {
@@ -156,7 +144,7 @@ namespace VDF.Web.Services {
 			Notify();
 		}
 
-		/// <summary>Deletes files from disk and removes them from results.</summary>
+		/// <summary>Deletes files from disk and removes them from results and the scan database.</summary>
 		public (int Deleted, int Failed, List<string> Errors) DeleteItems(IEnumerable<DuplicateItem> items, bool permanent) {
 			int deleted = 0, failed = 0;
 			var errors = new List<string>();
@@ -167,6 +155,7 @@ namespace VDF.Web.Services {
 					else
 						MoveToTrash(item.Path);
 					_engine.Duplicates.Remove(item);
+					ScanEngine.RemoveFromDatabase(new FileEntry(item.Path));
 					deleted++;
 				}
 				catch (Exception ex) {
@@ -174,6 +163,8 @@ namespace VDF.Web.Services {
 					failed++;
 				}
 			}
+			if (deleted > 0)
+				ScanEngine.SaveDatabase();
 			Notify();
 			return (deleted, failed, errors);
 		}
@@ -253,6 +244,25 @@ namespace VDF.Web.Services {
 				dest = Path.Combine(folder, $"{fileName}_{n++}{ext}");
 			return dest;
 		}
+
+		/// <summary>Removes database entries for files that no longer exist or have errors.</summary>
+		public async Task<int> CleanDatabaseAsync() {
+			await ScanEngine.LoadDatabase();
+			int before = DatabaseEntryCount;
+			await Task.Run(() => _engine.CleanupDatabase());
+			return before - DatabaseEntryCount;
+		}
+
+		/// <summary>Wipes all entries from the scan database.</summary>
+		public async Task ClearDatabaseAsync() {
+			await ScanEngine.LoadDatabase();
+			ScanEngine.ClearDatabase();
+			_engine.Duplicates.Clear();
+			Notify();
+		}
+
+		/// <summary>Number of file entries currently stored in the scan database.</summary>
+		public int DatabaseEntryCount => VDF.Core.Utils.DatabaseUtils.Database.Count;
 
 		void Notify() => StateChanged?.Invoke();
 

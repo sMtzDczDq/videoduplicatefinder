@@ -26,6 +26,9 @@ namespace VDF.Web.Services {
 		public int Max { get; init; }
 		public TimeSpan Elapsed { get; init; }
 		public TimeSpan Remaining { get; init; }
+		public string CurrentStage { get; init; } = string.Empty;
+		public int StageCurrent { get; init; }
+		public int StageMax { get; init; }
 	}
 
 	/// <summary>
@@ -67,7 +70,10 @@ namespace VDF.Web.Services {
 					Current = e.CurrentPosition,
 					Max = e.MaxPosition,
 					Elapsed = e.Elapsed,
-					Remaining = e.Remaining
+					Remaining = e.Remaining,
+					CurrentStage = e.CurrentStage ?? string.Empty,
+					StageCurrent = e.StageCurrent,
+					StageMax = e.StageMax,
 				};
 				Notify();
 			};
@@ -141,7 +147,20 @@ namespace VDF.Web.Services {
 		public void RemoveFromResults(IEnumerable<DuplicateItem> items) {
 			foreach (var item in items.ToList())
 				_engine.Duplicates.Remove(item);
+			DropSingletonGroups();
 			Notify();
+		}
+
+		/// <summary>Drops groups that have shrunk to a single item — a group of one is not a duplicate.</summary>
+		void DropSingletonGroups() {
+			var keep = _engine.Duplicates
+				.GroupBy(d => d.GroupId)
+				.Where(g => g.Count() > 1)
+				.Select(g => g.Key)
+				.ToHashSet();
+			foreach (var d in _engine.Duplicates.ToList())
+				if (!keep.Contains(d.GroupId))
+					_engine.Duplicates.Remove(d);
 		}
 
 		/// <summary>Deletes files from disk and removes them from results and the scan database.</summary>
@@ -165,6 +184,7 @@ namespace VDF.Web.Services {
 			}
 			if (deleted > 0)
 				ScanEngine.SaveDatabase();
+			DropSingletonGroups();
 			Notify();
 			return (deleted, failed, errors);
 		}
@@ -194,6 +214,7 @@ namespace VDF.Web.Services {
 					failed++;
 				}
 			}
+			DropSingletonGroups();
 			Notify();
 			return (moved, failed, errors);
 		}

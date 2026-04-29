@@ -713,6 +713,12 @@ namespace VDF.GUI.ViewModels {
 				await using var js = json.Open();
 				var items = await JsonSerializer.DeserializeAsync<List<DuplicateItemVM>>(js, JsonOptions) ?? new();
 
+				int skipped = items.RemoveAll(it => it?.ItemInfo == null);
+				if (skipped > 0)
+					Logger.Instance.Info($"Skipped {skipped} corrupt scan result entries (missing ItemInfo)");
+				if (items.Count == 0)
+					throw new JsonException("All scan result entries were corrupt");
+
 				TempDirectory = TempExtractionManager.Register(new("VDF-"));
 
 				// Validate ZIP entry paths to prevent path traversal (Zip Slip)
@@ -1323,7 +1329,12 @@ Non-Windows setup:
 			foreach (var dub in toDelete) {
 				try {
 					var fe = new FileEntry(dub.ItemInfo.Path);
-					if (fromDisk) {
+					if (fromDisk && !File.Exists(dub.ItemInfo.Path)) {
+						// File is already gone — treat as successfully deleted
+						// so the entry is still removed from the list and database.
+						Logger.Instance.Info($"'{dub.ItemInfo.Path}' no longer exists on disk; removing entry only.");
+					}
+					else if (fromDisk) {
 						if (createSymbolLinksInstead) {
 							var keeper = keepByGroup.TryGetValue(dub.ItemInfo.GroupId, out var k) ? k : null;
 							if (keeper == null)

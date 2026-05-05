@@ -127,8 +127,8 @@ namespace VDF.Core.Utils {
 				Vector256<ushort> diffVec = Vector256<ushort>.Zero;
 				Vector256<ushort> countVec = Vector256<ushort>.Zero;
 
-				Span<Vector256<byte>> vImg1 = MemoryMarshal.Cast<byte, Vector256<byte>>(img1);
-				Span<Vector256<byte>> vImg2 = MemoryMarshal.Cast<byte, Vector256<byte>>(img2);
+				ReadOnlySpan<Vector256<byte>> vImg1 = MemoryMarshal.Cast<byte, Vector256<byte>>(img1);
+				ReadOnlySpan<Vector256<byte>> vImg2 = MemoryMarshal.Cast<byte, Vector256<byte>>(img2);
 
 				for (int i = 0; i < vImg1.Length; i++) {
 					var v1 = vImg1[i];

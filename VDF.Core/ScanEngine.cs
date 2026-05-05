@@ -38,7 +38,7 @@ using VDF.Core.ViewModels;
 namespace VDF.Core {
 	public sealed class ScanEngine {
 		public HashSet<DuplicateItem> Duplicates { get; set; } = new HashSet<DuplicateItem>();
-		public Settings Settings { get; } = new Settings();
+		public Settings Settings { get; set; } = new Settings();
 		public event EventHandler<ScanProgressChangedEventArgs>? Progress;
 		public event EventHandler? BuildingHashesDone;
 		public event EventHandler? ScanDone;
@@ -450,127 +450,142 @@ namespace VDF.Core {
 				await Parallel.ForEachAsync(DatabaseUtils.Database.Shuffle(), new ParallelOptions { CancellationToken = cancelationTokenSource.Token, MaxDegreeOfParallelism = Settings.MaxDegreeOfParallelism }, (entry, token) => {
 					while (pauseTokenSource.IsPaused) Thread.Sleep(50);
 
-					entry.invalid = InvalidEntry(entry, out bool reportProgress, out string? invalidReason);
-					if (entry.invalid && invalidReason != null)
-						LogExcludedFile(entry, invalidReason);
+					try {
+						entry.invalid = InvalidEntry(entry, out bool reportProgress, out string? invalidReason);
+						if (entry.invalid && invalidReason != null)
+							LogExcludedFile(entry, invalidReason);
 
-					bool wasInvalid = entry.invalid;
-					bool skipEntry = false;
-					string? skipReason = null;
-					skipEntry |= entry.invalid;
-					if (!skipEntry && entry.Flags.Has(EntryFlags.ThumbnailError) && !Settings.AlwaysRetryFailedSampling) {
-						skipEntry = true;
-						skipReason = "previous thumbnail sampling failed and retry is disabled";
-					}
+						bool wasInvalid = entry.invalid;
+						bool skipEntry = false;
+						string? skipReason = null;
+						skipEntry |= entry.invalid;
+						if (!skipEntry && entry.Flags.Has(EntryFlags.ThumbnailError) && !Settings.AlwaysRetryFailedSampling) {
+							skipEntry = true;
+							skipReason = "previous thumbnail sampling failed and retry is disabled";
+						}
 
-					if (!skipEntry && !Settings.ScanAgainstEntireDatabase) {
-						if (Settings.IncludeSubDirectories == false) {
-							if (!Settings.IncludeList.Contains(entry.Folder)) {
+						if (!skipEntry && !Settings.ScanAgainstEntireDatabase) {
+							if (Settings.IncludeSubDirectories == false) {
+								if (!Settings.IncludeList.Contains(entry.Folder)) {
+									skipEntry = true;
+									skipReason = "path is not in the included directories list";
+								}
+							}
+							else if (!Settings.IncludeList.Any(f => {
+								if (!entry.Folder.StartsWith(f))
+									return false;
+								if (entry.Folder.Length == f.Length)
+									return true;
+								//Reason: https://github.com/0x90d/videoduplicatefinder/issues/249
+								string relativePath = Path.GetRelativePath(f, entry.Folder);
+								return !relativePath.StartsWith('.') && !Path.IsPathRooted(relativePath);
+							})) {
 								skipEntry = true;
 								skipReason = "path is not in the included directories list";
 							}
 						}
-						else if (!Settings.IncludeList.Any(f => {
-							if (!entry.Folder.StartsWith(f))
-								return false;
-							if (entry.Folder.Length == f.Length)
-								return true;
-							//Reason: https://github.com/0x90d/videoduplicatefinder/issues/249
-							string relativePath = Path.GetRelativePath(f, entry.Folder);
-							return !relativePath.StartsWith('.') && !Path.IsPathRooted(relativePath);
-						})) {
-							skipEntry = true;
-							skipReason = "path is not in the included directories list";
-						}
-					}
 
-					if (skipEntry) {
-						entry.invalid = true;
-						if (!wasInvalid && skipReason != null)
-							LogExcludedFile(entry, skipReason);
-						if (reportProgress)
-							IncrementProgress(entry.Path);
+						if (skipEntry) {
+							entry.invalid = true;
+							if (!wasInvalid && skipReason != null)
+								LogExcludedFile(entry, skipReason);
+							if (reportProgress)
+								IncrementProgress(entry.Path);
+							return ValueTask.CompletedTask;
+						}
+						if (Settings.IncludeNonExistingFiles && entry.grayBytes?.Count > 0) {
+							bool hasAllInformation = entry.IsImage;
+							if (!hasAllInformation) {
+								hasAllInformation = true;
+								for (int i = 0; i < positionList.Count; i++) {
+									if (entry.grayBytes.ContainsKey(GetGrayBytesIndex(entry, positionList[i])))
+										continue;
+									hasAllInformation = false;
+									break;
+								}
+							}
+							if (hasAllInformation) {
+								// Thumbnails are cached but audio fingerprint might still be needed
+								if (Settings.EnablePartialClipDetection &&
+									!entry.IsImage &&
+									!entry.Flags.Has(EntryFlags.NoAudioTrack) &&
+									!entry.Flags.Has(EntryFlags.AudioFingerprintError) &&
+									!entry.Flags.Has(EntryFlags.SilentAudioTrack) &&
+									entry.AudioFingerprint == null) {
+									string cachedAudioPath = entry.Path;
+									string audioStageLabel = T("Scan.Stage.AudioFingerprint");
+									ReportStage(cachedAudioPath, audioStageLabel);
+									ExtractAudioFingerprint(entry, cancelationTokenSource.Token,
+										onProgress: p => ReportStage(cachedAudioPath, audioStageLabel, (int)(p * 100), 100));
+								}
+								IncrementProgress(entry.Path);
+								return ValueTask.CompletedTask;
+							}
+						}
+
+						if (entry.mediaInfo == null && !entry.IsImage) {
+							ReportStage(entry.Path, T("Scan.Stage.Probing"));
+							MediaInfo? info = FFProbeEngine.GetMediaInfo(entry.Path, Settings.ExtendedFFToolsLogging);
+							if (info == null) {
+								entry.invalid = true;
+								entry.Flags.Set(EntryFlags.MetadataError);
+								IncrementProgress(entry.Path);
+								return ValueTask.CompletedTask;
+							}
+
+							entry.mediaInfo = info;
+						}
+						// This is for people upgrading from an older VDF version
+						// Or if you create a new database, start and immediately stop the scan and then try to scan again
+						entry.grayBytes ??= new Dictionary<double, byte[]?>();
+						entry.PHashes ??= new Dictionary<double, ulong?>();
+
+
+						if (entry.IsImage && entry.grayBytes.Count == 0) {
+							if (!GetGrayBytesFromImage(entry, Settings.UseExifCreationDate))
+								entry.invalid = true;
+						}
+						else if (!entry.IsImage) {
+							string entryPath = entry.Path;
+							int totalSamples = positionList.Count;
+							string samplingLabel = T("Scan.Stage.SamplingFrames");
+							if (!FfmpegEngine.GetGrayBytesFromVideo(entry, positionList, Settings.MaxSamplingDurationSeconds,
+									Settings.ExtendedFFToolsLogging,
+									onSampleComplete: (done) => ReportStage(entryPath, samplingLabel, done, totalSamples)))
+								entry.invalid = true;
+						}
+
+						// Audio fingerprint — videos only, only when enabled,
+						// skipped if already cached or flagged as having no audio track.
+						if (Settings.EnablePartialClipDetection &&
+							!entry.IsImage &&
+							!entry.Flags.Has(EntryFlags.NoAudioTrack) &&
+							!entry.Flags.Has(EntryFlags.AudioFingerprintError) &&
+							!entry.Flags.Has(EntryFlags.SilentAudioTrack) &&
+							entry.AudioFingerprint == null) {
+							string audioPath = entry.Path;
+							string audioLabel = T("Scan.Stage.AudioFingerprint");
+							ReportStage(audioPath, audioLabel);
+							ExtractAudioFingerprint(entry, cancelationTokenSource.Token,
+								onProgress: p => ReportStage(audioPath, audioLabel, (int)(p * 100), 100));
+						}
+
+						IncrementProgress(entry.Path);
 						return ValueTask.CompletedTask;
 					}
-					if (Settings.IncludeNonExistingFiles && entry.grayBytes?.Count > 0) {
-						bool hasAllInformation = entry.IsImage;
-						if (!hasAllInformation) {
-							hasAllInformation = true;
-							for (int i = 0; i < positionList.Count; i++) {
-								if (entry.grayBytes.ContainsKey(GetGrayBytesIndex(entry, positionList[i])))
-									continue;
-								hasAllInformation = false;
-								break;
-							}
-						}
-						if (hasAllInformation) {
-							// Thumbnails are cached but audio fingerprint might still be needed
-							if (Settings.EnablePartialClipDetection &&
-								!entry.IsImage &&
-								!entry.Flags.Has(EntryFlags.NoAudioTrack) &&
-								!entry.Flags.Has(EntryFlags.AudioFingerprintError) &&
-								!entry.Flags.Has(EntryFlags.SilentAudioTrack) &&
-								entry.AudioFingerprint == null) {
-								string cachedAudioPath = entry.Path;
-								string audioStageLabel = T("Scan.Stage.AudioFingerprint");
-								ReportStage(cachedAudioPath, audioStageLabel);
-								ExtractAudioFingerprint(entry, cancelationTokenSource.Token,
-									onProgress: p => ReportStage(cachedAudioPath, audioStageLabel, (int)(p * 100), 100));
-							}
-							IncrementProgress(entry.Path);
-							return ValueTask.CompletedTask;
-						}
+					catch (OperationCanceledException) {
+						throw;
 					}
-
-					if (entry.mediaInfo == null && !entry.IsImage) {
-						ReportStage(entry.Path, T("Scan.Stage.Probing"));
-						MediaInfo? info = FFProbeEngine.GetMediaInfo(entry.Path, Settings.ExtendedFFToolsLogging);
-						if (info == null) {
-							entry.invalid = true;
-							entry.Flags.Set(EntryFlags.MetadataError);
-							IncrementProgress(entry.Path);
-							return ValueTask.CompletedTask;
-						}
-
-						entry.mediaInfo = info;
+					catch (Exception ex) {
+						// One bad file must not tear down a multi-hour scan. Flag the entry
+						// so it's skipped on subsequent runs (unless AlwaysRetryFailedSampling)
+						// and log enough detail to identify the culprit.
+						Logger.Instance.Info($"Unhandled error processing '{entry.Path}': {ex}");
+						entry.invalid = true;
+						entry.Flags.Set(EntryFlags.ThumbnailError);
+						IncrementProgress(entry.Path);
+						return ValueTask.CompletedTask;
 					}
-					// This is for people upgrading from an older VDF version
-					// Or if you create a new database, start and immediately stop the scan and then try to scan again
-					entry.grayBytes ??= new Dictionary<double, byte[]?>();
-					entry.PHashes ??= new Dictionary<double, ulong?>();
-
-
-					if (entry.IsImage && entry.grayBytes.Count == 0) {
-						if (!GetGrayBytesFromImage(entry, Settings.UseExifCreationDate))
-							entry.invalid = true;
-					}
-					else if (!entry.IsImage) {
-						string entryPath = entry.Path;
-						int totalSamples = positionList.Count;
-						string samplingLabel = T("Scan.Stage.SamplingFrames");
-						if (!FfmpegEngine.GetGrayBytesFromVideo(entry, positionList, Settings.MaxSamplingDurationSeconds,
-								Settings.ExtendedFFToolsLogging,
-								onSampleComplete: (done) => ReportStage(entryPath, samplingLabel, done, totalSamples)))
-							entry.invalid = true;
-					}
-
-					// Audio fingerprint — videos only, only when enabled,
-					// skipped if already cached or flagged as having no audio track.
-					if (Settings.EnablePartialClipDetection &&
-						!entry.IsImage &&
-						!entry.Flags.Has(EntryFlags.NoAudioTrack) &&
-						!entry.Flags.Has(EntryFlags.AudioFingerprintError) &&
-						!entry.Flags.Has(EntryFlags.SilentAudioTrack) &&
-						entry.AudioFingerprint == null) {
-						string audioPath = entry.Path;
-						string audioLabel = T("Scan.Stage.AudioFingerprint");
-						ReportStage(audioPath, audioLabel);
-						ExtractAudioFingerprint(entry, cancelationTokenSource.Token,
-							onProgress: p => ReportStage(audioPath, audioLabel, (int)(p * 100), 100));
-					}
-
-					IncrementProgress(entry.Path);
-					return ValueTask.CompletedTask;
 				});
 			}
 			catch (OperationCanceledException) { }
@@ -1117,40 +1132,54 @@ namespace VDF.Core {
 				});
 
 			// --- Sequential phase: build groups from matches (preserving longest-source-first order) ---
-			var sourceGroupId = new Dictionary<string, Guid>(
-				CoreUtils.IsWindows ? StringComparer.OrdinalIgnoreCase : StringComparer.Ordinal);
-			var assignedClips = new HashSet<string>(
-				CoreUtils.IsWindows ? StringComparer.OrdinalIgnoreCase : StringComparer.Ordinal);
-			int matchesFound = 0;
+			// A clip is kept with its first (longest) matching source. Sources whose only
+			// candidate clips are already claimed are skipped entirely - adding them would
+			// produce singleton groups in the result list.
+			var assignments = AssignPartialClipGroups(matches);
+			var addedSources = new HashSet<int>();
 
-			foreach (var (si, ci, sim, offsetSec) in matches.OrderBy(m => m.sourceIdx).ThenBy(m => m.clipIdx)) {
+			foreach (var (si, ci, sim, offsetSec, groupId) in assignments) {
 				FileEntry source = videos[si];
 				FileEntry clip = videos[ci];
-				matchesFound++;
 
 				if (Settings.ExtendedFFToolsLogging)
 					Logger.Instance.Info($"[Partial] {System.IO.Path.GetFileName(clip.Path)} in {System.IO.Path.GetFileName(source.Path)}: sim={sim:P1} @ {offsetSec}s (threshold {Settings.PartialClipSimilarityThreshold:P0}, fp {clip.AudioFingerprint!.Length}/{source.AudioFingerprint!.Length} blocks)");
 
-				if (!sourceGroupId.TryGetValue(source.Path, out Guid groupId)) {
-					groupId = Guid.NewGuid();
-					sourceGroupId[source.Path] = groupId;
+				if (addedSources.Add(si))
 					Duplicates.Add(new DuplicateItem(source, 0f, groupId, DuplicateFlags.None));
-				}
 
-				if (!assignedClips.Contains(clip.Path)) {
-					assignedClips.Add(clip.Path);
-					var clipItem = new DuplicateItem(clip, 1f - sim, groupId, DuplicateFlags.PartialClip) {
-						PartialClipOffset = TimeSpan.FromSeconds(offsetSec)
-					};
-					Duplicates.Add(clipItem);
-				}
-				else {
-					var existing = Duplicates.FirstOrDefault(d => d.Path == clip.Path && d.Flags.HasFlag(DuplicateFlags.PartialClip));
-					if (existing != null) existing.GroupId = groupId;
-				}
+				Duplicates.Add(new DuplicateItem(clip, 1f - sim, groupId, DuplicateFlags.PartialClip) {
+					PartialClipOffset = TimeSpan.FromSeconds(offsetSec)
+				});
 			}
 
-			Logger.Instance.Info($"Partial clip detection: checked {pairsChecked} pair(s), found {matchesFound} match(es).");
+			Logger.Instance.Info($"Partial clip detection: checked {pairsChecked} pair(s), found {matches.Count} candidate match(es), formed {assignments.Count} clip-source assignment(s).");
+		}
+
+		/// <summary>
+		/// Resolves overlapping partial-clip matches into deterministic group assignments.
+		/// Matches are processed in (sourceIdx ASC, clipIdx ASC) order - since callers sort
+		/// videos by duration descending, this means each clip is bound to the longest
+		/// source that contains it. Subsequent matches for an already-assigned clip are
+		/// dropped, and their would-be source is omitted unless it has unclaimed clips of
+		/// its own. This prevents singleton groups in the output.
+		/// </summary>
+		internal static List<(int sourceIdx, int clipIdx, float sim, int offsetSec, Guid groupId)>
+			AssignPartialClipGroups(IEnumerable<(int sourceIdx, int clipIdx, float sim, int offsetSec)> matches) {
+			var sourceGroupId = new Dictionary<int, Guid>();
+			var assignedClips = new HashSet<int>();
+			var assignments = new List<(int, int, float, int, Guid)>();
+
+			foreach (var (si, ci, sim, offsetSec) in matches.OrderBy(m => m.sourceIdx).ThenBy(m => m.clipIdx)) {
+				if (!assignedClips.Add(ci)) continue;
+
+				if (!sourceGroupId.TryGetValue(si, out Guid groupId)) {
+					groupId = Guid.NewGuid();
+					sourceGroupId[si] = groupId;
+				}
+				assignments.Add((si, ci, sim, offsetSec, groupId));
+			}
+			return assignments;
 		}
 
 		/// <summary>
@@ -1532,12 +1561,24 @@ namespace VDF.Core {
 						timeStamps = new List<TimeSpan>(positionList.Count);
 						for (int j = 0; j < positionList.Count; j++) {
 							var timestamp = TimeSpan.FromSeconds(entry.Duration.TotalSeconds * positionList[j]);
-							timeStamps.Add(timestamp);
 							var b = FfmpegEngine.ExtractThumbnailJpeg(entry.Path, timestamp, maxDim, Settings.ExtendedFFToolsLogging);
-							if (b == null || b.Length == 0) return ValueTask.CompletedTask;
-							using var byteStream = new MemoryStream(b);
-							var bitmapImage = Image.Load(byteStream);
-							list.Add(bitmapImage);
+							if (b == null || b.Length == 0) {
+								Logger.Instance.Info($"Failed extracting thumbnail at {timestamp} for '{entry.Path}', skipping that position.");
+								continue;
+							}
+							try {
+								using var byteStream = new MemoryStream(b);
+								var bitmapImage = Image.Load(byteStream);
+								list.Add(bitmapImage);
+								timeStamps.Add(timestamp);
+							}
+							catch (Exception ex) {
+								Logger.Instance.Info($"Failed decoding thumbnail bytes at {timestamp} for '{entry.Path}', reason: {ex.Message}");
+							}
+						}
+						if (list.Count == 0 && NoThumbnailImage != null) {
+							list.Add(NoThumbnailImage);
+							timeStamps.Add(TimeSpan.Zero);
 						}
 					}
 					Debug.Assert(timeStamps != null);
@@ -1599,12 +1640,24 @@ namespace VDF.Core {
 						timeStamps = new List<TimeSpan>(positionList.Count);
 						for (int j = 0; j < positionList.Count; j++) {
 							var timestamp = TimeSpan.FromSeconds(entry.Duration.TotalSeconds * positionList[j]);
-							timeStamps.Add(timestamp);
 							var b = FfmpegEngine.ExtractThumbnailJpeg(entry.Path, timestamp, maxDim, Settings.ExtendedFFToolsLogging);
-							if (b == null || b.Length == 0) return ValueTask.CompletedTask;
-							using var byteStream = new MemoryStream(b);
-							var bitmapImage = Image.Load(byteStream);
-							list.Add(bitmapImage);
+							if (b == null || b.Length == 0) {
+								Logger.Instance.Info($"Failed extracting thumbnail at {timestamp} for '{entry.Path}', skipping that position.");
+								continue;
+							}
+							try {
+								using var byteStream = new MemoryStream(b);
+								var bitmapImage = Image.Load(byteStream);
+								list.Add(bitmapImage);
+								timeStamps.Add(timestamp);
+							}
+							catch (Exception ex) {
+								Logger.Instance.Info($"Failed decoding thumbnail bytes at {timestamp} for '{entry.Path}', reason: {ex.Message}");
+							}
+						}
+						if (list.Count == 0 && NoThumbnailImage != null) {
+							list.Add(NoThumbnailImage);
+							timeStamps.Add(TimeSpan.Zero);
 						}
 					}
 					Debug.Assert(timeStamps != null);

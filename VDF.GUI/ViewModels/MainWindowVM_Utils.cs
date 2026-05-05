@@ -16,27 +16,24 @@
 
 using System.Linq;
 using ReactiveUI;
+using VDF.Core.Utils;
 
 namespace VDF.GUI.ViewModels {
 	public partial class MainWindowVM : ReactiveObject {
 
-		static bool HasTieOn(string lastCriterion, List<DuplicateItemVM> list, DuplicateItemVM keep) => lastCriterion switch {
-			"Duration" => list.Count(d => d.ItemInfo.Duration == keep.ItemInfo.Duration) > 1,
-			"Resolution" => list.Count(d => d.ItemInfo.FrameSizeInt == keep.ItemInfo.FrameSizeInt) > 1,
-			"FPS" => list.Count(d => d.ItemInfo.Fps == keep.ItemInfo.Fps) > 1,
-			"Bitrate" => list.Count(d => d.ItemInfo.BitRateKbs == keep.ItemInfo.BitRateKbs) > 1,
-			"Audio Bitrate" => list.Count(d => d.ItemInfo.AudioSampleRate == keep.ItemInfo.AudioSampleRate) > 1,
-			_ => false
+		static readonly Dictionary<string, QualityRanker.Criterion<DuplicateItemVM>> QualityCriteriaMap = new() {
+			["Duration"] = new("Duration", d => d.ItemInfo.Duration, videoOnly: true),
+			["Resolution"] = new("Resolution", d => d.ItemInfo.FrameSizeInt, videoOnly: false),
+			["FPS"] = new("FPS", d => d.ItemInfo.Fps, videoOnly: true),
+			["Bitrate"] = new("Bitrate", d => d.ItemInfo.BitRateKbs, videoOnly: true),
+			["Audio Bitrate"] = new("Audio Bitrate", d => d.ItemInfo.AudioSampleRate, videoOnly: true),
 		};
 
-		static DuplicateItemVM ApplyCriterion(string criterion, List<DuplicateItemVM> list) => criterion switch {
-			"Duration" => list.OrderByDescending(d => d.ItemInfo.Duration).First(),
-			"Resolution" => list.OrderByDescending(d => d.ItemInfo.FrameSizeInt).First(),
-			"FPS" => list.OrderByDescending(d => d.ItemInfo.Fps).First(),
-			"Bitrate" => list.OrderByDescending(d => d.ItemInfo.BitRateKbs).First(),
-			"Audio Bitrate" => list.OrderByDescending(d => d.ItemInfo.AudioSampleRate).First(),
-			_ => list[0]
-		};
+		static IEnumerable<QualityRanker.Criterion<DuplicateItemVM>> ResolveCriteria(IEnumerable<string> names) {
+			foreach (var name in names)
+				if (QualityCriteriaMap.TryGetValue(name, out var c))
+					yield return c;
+		}
 	}
 
 	sealed class ReferenceEqualityComparer<T> : IEqualityComparer<T> where T : class {

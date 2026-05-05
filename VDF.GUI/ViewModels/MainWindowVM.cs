@@ -1266,20 +1266,10 @@ Non-Windows setup:
 			var groupItems = Duplicates.Where(d => d.ItemInfo.GroupId == groupId).ToList();
 			if (groupItems.Count < 2) return;
 
-			var keep = groupItems[0];
-			bool anyApplied = false;
-			string? lastCriterion = null;
-
-			foreach (var criterion in QualityCriteriaOrder) {
-				if (criterion is ("Duration" or "FPS" or "Bitrate" or "Audio Bitrate") && keep.ItemInfo.IsImage)
-					continue;
-				bool tieOnLast = anyApplied && HasTieOn(lastCriterion!, groupItems, keep);
-				if (!anyApplied || tieOnLast) {
-					keep = ApplyCriterion(criterion, groupItems);
-					anyApplied = true;
-					lastCriterion = criterion;
-				}
-			}
+			var keep = VDF.Core.Utils.QualityRanker.PickKeeper(
+				groupItems,
+				ResolveCriteria(QualityCriteriaOrder),
+				d => d.ItemInfo.IsImage);
 
 			keep.Checked = false;
 			foreach (var item in groupItems)

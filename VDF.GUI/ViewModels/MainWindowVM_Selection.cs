@@ -212,23 +212,10 @@ namespace VDF.GUI.ViewModels {
 
 				dupMods.Insert(0, first);
 
-				var keep = dupMods[0];
-
-				bool anyApplied = false;
-				string? lastCriterion = null;
-
-				foreach (var criterion in QualityCriteriaOrder) {
-					if (criterion is ("Duration" or "FPS" or "Bitrate" or "Audio Bitrate") && keep.ItemInfo.IsImage)
-						continue;
-
-					bool tieOnLast = anyApplied && HasTieOn(lastCriterion!, dupMods, keep);
-
-					if (!anyApplied || tieOnLast) {
-						keep = ApplyCriterion(criterion, dupMods);
-						anyApplied = true;
-						lastCriterion = criterion;
-					}
-				}
+				var keep = VDF.Core.Utils.QualityRanker.PickKeeper(
+					dupMods,
+					ResolveCriteria(QualityCriteriaOrder),
+					d => d.ItemInfo.IsImage);
 
 				keep.Checked = false;
 				for (int i = 0; i < dupMods.Count; i++)

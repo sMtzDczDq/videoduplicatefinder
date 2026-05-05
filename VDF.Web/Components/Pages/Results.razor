@@ -758,43 +758,16 @@ else {
         }
     }
 
-    static DuplicateItem PickHighestQuality(List<DuplicateItem> items) {
-        string[] criteria = { "Duration", "Resolution", "Bitrate", "FPS", "Audio Bitrate" };
-        var keep = items[0];
-        bool anyApplied = false;
-        string? lastCriterion = null;
-
-        foreach (var criterion in criteria) {
-            if (criterion is "Duration" or "FPS" or "Bitrate" or "Audio Bitrate" && keep.IsImage)
-                continue;
-
-            bool tieOnLast = anyApplied && HasTie(lastCriterion!, items, keep);
-            if (!anyApplied || tieOnLast) {
-                keep = ApplyCriterion(criterion, items);
-                anyApplied = true;
-                lastCriterion = criterion;
-            }
-        }
-        return keep;
-    }
-
-    static bool HasTie(string criterion, List<DuplicateItem> items, DuplicateItem keep) => criterion switch {
-        "Duration"     => items.Count(d => d.Duration == keep.Duration) > 1,
-        "Resolution"   => items.Count(d => d.FrameSizeInt == keep.FrameSizeInt) > 1,
-        "FPS"          => items.Count(d => d.Fps == keep.Fps) > 1,
-        "Bitrate"      => items.Count(d => d.BitRateKbs == keep.BitRateKbs) > 1,
-        "Audio Bitrate"=> items.Count(d => d.AudioSampleRate == keep.AudioSampleRate) > 1,
-        _              => false
+    static readonly VDF.Core.Utils.QualityRanker.Criterion<DuplicateItem>[] WebCriteria = {
+        new("Duration",      d => d.Duration,        videoOnly: true),
+        new("Resolution",    d => d.FrameSizeInt,    videoOnly: false),
+        new("Bitrate",       d => d.BitRateKbs,      videoOnly: true),
+        new("FPS",           d => d.Fps,             videoOnly: true),
+        new("Audio Bitrate", d => d.AudioSampleRate, videoOnly: true),
     };
 
-    static DuplicateItem ApplyCriterion(string criterion, List<DuplicateItem> items) => criterion switch {
-        "Duration"     => items.OrderByDescending(d => d.Duration).First(),
-        "Resolution"   => items.OrderByDescending(d => d.FrameSizeInt).First(),
-        "FPS"          => items.OrderByDescending(d => d.Fps).First(),
-        "Bitrate"      => items.OrderByDescending(d => d.BitRateKbs).First(),
-        "Audio Bitrate"=> items.OrderByDescending(d => d.AudioSampleRate).First(),
-        _              => items[0]
-    };
+    static DuplicateItem PickHighestQuality(List<DuplicateItem> items) =>
+        VDF.Core.Utils.QualityRanker.PickKeeper(items, WebCriteria, d => d.IsImage);
 
     static string FormatSize(long bytes) {
         if (bytes < 0) return "?";

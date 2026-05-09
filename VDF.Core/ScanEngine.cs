@@ -65,6 +65,11 @@ namespace VDF.Core {
 		const int maxExcludedLogsPerReason = 5;
 		readonly ConcurrentDictionary<string, int> excludedReasonCounts = new();
 		readonly ConcurrentDictionary<string, int> excludedReasonLoggedCounts = new();
+		// Files whose stored pHash for the comparison position is null. Dedupes the
+		// per-pair log spam from #754: one bad file otherwise produces a line per
+		// candidate it's compared against (thousands of lines from a handful of files).
+		readonly ConcurrentDictionary<string, byte> missingPHashFiles = new(
+			CoreUtils.IsWindows ? StringComparer.OrdinalIgnoreCase : StringComparer.Ordinal);
 		DateTime lastCheckpointTime = DateTime.MinValue;
 		readonly object checkpointLock = new();
 
@@ -359,6 +364,11 @@ namespace VDF.Core {
 			if (!Settings.IncludeNonExistingFiles && !File.Exists(entry.Path))
 			{
 				reason = "file does not exist";
+				return true;
+			}
+			if (!FileUtils.IsPathFFmpegSafe(entry.Path)) {
+				entry.Flags.Set(EntryFlags.MetadataError);
+				reason = "path contains characters not encodable to UTF-8 (e.g. lone surrogate from a mangled emoji) — FFmpeg cannot open it";
 				return true;
 			}
 
@@ -675,6 +685,11 @@ namespace VDF.Core {
 		return true;
 	}
 
+	void LogMissingPHash(string path) {
+			if (missingPHashFiles.TryAdd(path, 0))
+				Logger.Instance.Info($"Missing pHash data for '{path}' — file will be skipped in pHash comparisons. Re-scan to repopulate.");
+		}
+
 	bool CheckIfDuplicate(FileEntry entry, Dictionary<double, byte[]?>? grayBytes, FileEntry compItem, out float difference) {
 			grayBytes ??= entry.grayBytes;
 			float differenceLimit = 1.0f - Settings.Percent / 100f;
@@ -699,7 +714,12 @@ namespace VDF.Core {
 				if (!compItem.PHashes.TryGetValue(compIndex, out ulong? phash_comp))
 					phash_comp = pHash.PerceptualHash.ComputePHashFromGray32x32(compItem.grayBytes[compIndex]);
 				if (phash == null || phash_comp == null) {
-					Logger.Instance.Info($"Failed to compute pHash for {entry.Path} or {compItem.Path}");
+					// Log per-file (deduplicated) rather than per-pair: a single file with
+					// a stored-null pHash entry would otherwise emit one line for every
+					// candidate it's compared against. The summary line at end of
+					// ScanForDuplicates reports how many distinct files were affected.
+					if (phash == null) LogMissingPHash(entry.Path);
+					if (phash_comp == null) LogMissingPHash(compItem.Path);
 					difference = 1f;
 					return false;
 				}
@@ -734,6 +754,7 @@ namespace VDF.Core {
 			// Used to prevent merging groups whose representatives aren't similar.
 			Dictionary<Guid, FileEntry> groupRepresentatives = new();
 			int mergesBlocked = 0;
+			missingPHashFiles.Clear();
 
 			//Exclude existing database entries which not met current scan settings
 			List<FileEntry> ScanList = new();
@@ -1052,6 +1073,8 @@ namespace VDF.Core {
 			catch (OperationCanceledException) { }
 			if (mergesBlocked > 0)
 				Logger.Instance.Info($"Group merge validation: blocked {mergesBlocked} merge(s) where group representatives were not similar");
+			if (missingPHashFiles.Count > 0)
+				Logger.Instance.Info($"pHash comparison: {missingPHashFiles.Count} file(s) had missing pHash data and were skipped in pHash comparisons. Delete the database (or rescan with 'Always retry failed sampling') to recompute.");
 			Duplicates = new HashSet<DuplicateItem>(duplicateDict.Values);
 			SplitDaisyChainGroups();
 		}
@@ -1136,6 +1159,35 @@ namespace VDF.Core {
 			// candidate clips are already claimed are skipped entirely - adding them would
 			// produce singleton groups in the result list.
 			var assignments = AssignPartialClipGroups(matches);
+
+			// Optional visual gate: drop pairs that match audio but differ visually at the
+			// matched offset (e.g. videos sharing a backing track but otherwise unrelated).
+			// Uses pHash when Settings.UsePHashing is on, else 32x32 grayscale percentage diff.
+			if (Settings.PartialClipRequireVisualMatch && assignments.Count > 0) {
+				int beforeCount = assignments.Count;
+				int dropped = 0;
+				var verified = new ConcurrentBag<(int, int, float, int, Guid)>();
+				try {
+					Parallel.ForEach(assignments, new ParallelOptions {
+						CancellationToken = cancelationTokenSource.Token,
+						MaxDegreeOfParallelism = Math.Max(1, Environment.ProcessorCount)
+					}, a => {
+						bool pass = VerifyPartialClipVisually(videos[a.sourceIdx], videos[a.clipIdx], a.offsetSec, out float visualSim);
+						if (pass) {
+							verified.Add(a);
+						}
+						else {
+							Interlocked.Increment(ref dropped);
+							if (Settings.ExtendedFFToolsLogging)
+								Logger.Instance.Info($"[Partial] Visual gate dropped {System.IO.Path.GetFileName(videos[a.clipIdx].Path)} in {System.IO.Path.GetFileName(videos[a.sourceIdx].Path)}: visualSim={visualSim:P1} (threshold {Settings.PartialClipVisualThreshold:P0})");
+						}
+					});
+				}
+				catch (OperationCanceledException) { }
+				assignments = verified.OrderBy(a => a.Item1).ThenBy(a => a.Item2).ToList();
+				Logger.Instance.Info($"Partial clip detection: visual gate kept {assignments.Count}/{beforeCount} assignment(s), dropped {dropped}");
+			}
+
 			var addedSources = new HashSet<int>();
 
 			foreach (var (si, ci, sim, offsetSec, groupId) in assignments) {
@@ -1154,6 +1206,77 @@ namespace VDF.Core {
 			}
 
 			Logger.Instance.Info($"Partial clip detection: checked {pairsChecked} pair(s), found {matches.Count} candidate match(es), formed {assignments.Count} clip-source assignment(s).");
+		}
+
+		/// <summary>
+		/// On-demand visual check for a partial-clip candidate. Decodes 1-3 frames from the
+		/// clip and the source at the matched audio offset and compares them. Returns true
+		/// when the average similarity meets <see cref="Settings.PartialClipVisualThreshold"/>,
+		/// or when no frames could be sampled (in which case audio alone decides). Uses pHash
+		/// when <see cref="Settings.UsePHashing"/> is enabled, otherwise grayscale percent diff.
+		/// </summary>
+		bool VerifyPartialClipVisually(FileEntry source, FileEntry clip, int offsetSec, out float visualSim) {
+			visualSim = 0f;
+			double sourceSec = (source.mediaInfo?.Duration ?? TimeSpan.Zero).TotalSeconds;
+			double clipSec = (clip.mediaInfo?.Duration ?? TimeSpan.Zero).TotalSeconds;
+			if (sourceSec <= 0 || clipSec <= 0) return true;
+
+			// Sample times in clip-local seconds. Avoid the very edges so intros/outros
+			// (often black or text-only) don't dominate the result.
+			var clipTimes = new List<double>(3);
+			if (clipSec >= 9.0) {
+				clipTimes.Add(clipSec * 0.25);
+				clipTimes.Add(clipSec * 0.50);
+				clipTimes.Add(clipSec * 0.75);
+			}
+			else if (clipSec >= 3.0) {
+				clipTimes.Add(clipSec * 0.33);
+				clipTimes.Add(clipSec * 0.66);
+			}
+			else {
+				clipTimes.Add(clipSec * 0.5);
+			}
+
+			bool useP = Settings.UsePHashing;
+			double threshold = Settings.PartialClipVisualThreshold;
+			int comparisons = 0;
+			float simSum = 0f;
+
+			foreach (double t in clipTimes) {
+				double srcAt = offsetSec + t;
+				if (srcAt >= sourceSec - 0.1 || t >= clipSec - 0.1) continue;
+
+				byte[]? srcFrame = FfmpegEngine.GetThumbnail(new FfmpegSettings {
+					File = source.Path,
+					Position = TimeSpan.FromSeconds(srcAt),
+					GrayScale = 1
+				}, Settings.ExtendedFFToolsLogging);
+				if (srcFrame == null) continue;
+
+				byte[]? clipFrame = FfmpegEngine.GetThumbnail(new FfmpegSettings {
+					File = clip.Path,
+					Position = TimeSpan.FromSeconds(t),
+					GrayScale = 1
+				}, Settings.ExtendedFFToolsLogging);
+				if (clipFrame == null) continue;
+
+				float pairSim;
+				if (useP) {
+					ulong hSrc = pHash.PerceptualHash.ComputePHashFromGray32x32(srcFrame);
+					ulong hClip = pHash.PerceptualHash.ComputePHashFromGray32x32(clipFrame);
+					pHash.PHashCompare.IsDuplicateByPercent(hSrc, hClip, out pairSim, threshold, strict: true);
+				}
+				else {
+					float diff = GrayBytesUtils.PercentageDifference(srcFrame, clipFrame);
+					pairSim = 1f - diff;
+				}
+				simSum += pairSim;
+				comparisons++;
+			}
+
+			if (comparisons == 0) return true;
+			visualSim = simSum / comparisons;
+			return visualSim >= threshold;
 		}
 
 		/// <summary>
@@ -1526,8 +1649,27 @@ namespace VDF.Core {
 			ext.Equals(".tiff", StringComparison.OrdinalIgnoreCase) ||
 			ext.Equals(".tif", StringComparison.OrdinalIgnoreCase);
 
+		/// <summary>
+		/// Whether an item should be (re)processed for thumbnails. Items with no thumbnails
+		/// load on first pass; items whose sole image is the NoThumbnailImage placeholder
+		/// represent a prior extraction failure and must remain eligible for explicit retry,
+		/// otherwise a "Load thumbnails for group" click silently no-ops on the very items
+		/// the user is trying to recover (issue #748).
+		/// </summary>
+		internal static bool ShouldRetryThumbnails(DuplicateItem item, Image? placeholder) {
+			if (item.ImageList == null || item.ImageList.Count == 0) return true;
+			if (placeholder != null && item.ImageList.Count == 1 && ReferenceEquals(item.ImageList[0], placeholder)) return true;
+			return false;
+		}
+
 		public async Task RetrieveThumbnailsForItems(IEnumerable<DuplicateItem> items) {
-			var dupList = items.Where(d => d.ImageList == null || d.ImageList.Count == 0).ToList();
+			var dupList = items.Where(d => ShouldRetryThumbnails(d, NoThumbnailImage)).ToList();
+			if (dupList.Count == 0) {
+				Logger.Instance.Info("Explicit thumbnail retry: nothing to do (all selected items already have thumbnails).");
+				return;
+			}
+			Logger.Instance.Info($"Explicit thumbnail retry: starting for {dupList.Count} item(s).");
+			int loaded = 0, placeholders = 0, skippedMissing = 0;
 			try {
 				await Parallel.ForEachAsync(dupList, new ParallelOptions { MaxDegreeOfParallelism = Settings.MaxDegreeOfParallelism }, (entry, cancellationToken) => {
 					List<Image>? list = null;
@@ -1535,7 +1677,10 @@ namespace VDF.Core {
 					List<TimeSpan>? timeStamps = null;
 					int maxDim = Settings.ThumbnailMaxWidth > 0 ? Settings.ThumbnailMaxWidth : 100;
 
-					if (needsThumbnails && entry.IsImage) {
+					if (!needsThumbnails) {
+						Interlocked.Increment(ref skippedMissing);
+					}
+					else if (entry.IsImage) {
 						timeStamps = new(0);
 						list = new List<Image>(1);
 						try {
@@ -1550,19 +1695,22 @@ namespace VDF.Core {
 							int height = Convert.ToInt32(bitmapImage.Height / resizeFactor);
 							bitmapImage.Mutate(i => i.Resize(width, height));
 							list.Add(bitmapImage);
+							Interlocked.Increment(ref loaded);
 						}
 						catch (Exception ex) {
 							Logger.Instance.Info($"Failed loading image from file: '{entry.Path}', reason: {ex.Message}, stacktrace {ex.StackTrace}");
 							return ValueTask.CompletedTask;
 						}
 					}
-					else if (needsThumbnails) {
+					else {
 						list = new List<Image>(positionList.Count);
 						timeStamps = new List<TimeSpan>(positionList.Count);
+						int failedPositions = 0;
 						for (int j = 0; j < positionList.Count; j++) {
 							var timestamp = TimeSpan.FromSeconds(entry.Duration.TotalSeconds * positionList[j]);
 							var b = FfmpegEngine.ExtractThumbnailJpeg(entry.Path, timestamp, maxDim, Settings.ExtendedFFToolsLogging);
 							if (b == null || b.Length == 0) {
+								failedPositions++;
 								Logger.Instance.Info($"Failed extracting thumbnail at {timestamp} for '{entry.Path}', skipping that position.");
 								continue;
 							}
@@ -1573,12 +1721,22 @@ namespace VDF.Core {
 								timeStamps.Add(timestamp);
 							}
 							catch (Exception ex) {
+								failedPositions++;
 								Logger.Instance.Info($"Failed decoding thumbnail bytes at {timestamp} for '{entry.Path}', reason: {ex.Message}");
 							}
 						}
 						if (list.Count == 0 && NoThumbnailImage != null) {
 							list.Add(NoThumbnailImage);
 							timeStamps.Add(TimeSpan.Zero);
+							Logger.Instance.Info($"Using placeholder for '{entry.Path}' — all {positionList.Count} sample position(s) failed.");
+							Interlocked.Increment(ref placeholders);
+						}
+						else if (list.Count > 0 && failedPositions > 0) {
+							Logger.Instance.Info($"Loaded {list.Count}/{positionList.Count} thumbnail(s) for '{entry.Path}' ({failedPositions} position(s) failed).");
+							Interlocked.Increment(ref loaded);
+						}
+						else if (list.Count > 0) {
+							Interlocked.Increment(ref loaded);
 						}
 					}
 					Debug.Assert(timeStamps != null);
@@ -1588,13 +1746,17 @@ namespace VDF.Core {
 				});
 			}
 			catch (OperationCanceledException) { }
+			Logger.Instance.Info($"Explicit thumbnail retry complete: {loaded} fully loaded, {placeholders} placeholder, {skippedMissing} skipped (missing on disk).");
 		}
 		public async void RetrieveThumbnails() {
-			var dupList = Duplicates.Where(d => d.ImageList == null || d.ImageList.Count == 0).ToList();
+			var dupList = Duplicates.Where(d => ShouldRetryThumbnails(d, NoThumbnailImage)).ToList();
 			int total = dupList.Count;
 			int done = 0;
 			int lastNotified = 0;
+			int loaded = 0, placeholders = 0, skippedMissing = 0;
+			Logger.Instance.Info($"Thumbnail loading: starting for {total} item(s).");
 
+			var totalSw = Stopwatch.StartNew();
 			var sw = Stopwatch.StartNew();
 			try {
 				await Parallel.ForEachAsync(dupList, new ParallelOptions { CancellationToken = cancelationTokenSource.Token, MaxDegreeOfParallelism = Settings.MaxDegreeOfParallelism }, (entry, cancellationToken) => {
@@ -1611,7 +1773,10 @@ namespace VDF.Core {
 
 					int maxDim = Settings.ThumbnailMaxWidth > 0 ? Settings.ThumbnailMaxWidth : 100;
 
-					if (needsThumbnails && entry.IsImage) {
+					if (!needsThumbnails) {
+						Interlocked.Increment(ref skippedMissing);
+					}
+					else if (entry.IsImage) {
 						//For images it doesn't make sense to load the actual image more than once
 						timeStamps = new(0);
 						list = new List<Image>(1);
@@ -1628,6 +1793,7 @@ namespace VDF.Core {
 							int height = Convert.ToInt32(bitmapImage.Height / resizeFactor);
 							bitmapImage.Mutate(i => i.Resize(width, height));
 							list.Add(bitmapImage);
+							Interlocked.Increment(ref loaded);
 						}
 						catch (Exception ex) {
 							Logger.Instance.Info($"Failed loading image from file: '{entry.Path}', reason: {ex.Message}, stacktrace {ex.StackTrace}");
@@ -1635,13 +1801,15 @@ namespace VDF.Core {
 						}
 
 					}
-					else if (needsThumbnails) {
+					else {
 						list = new List<Image>(positionList.Count);
 						timeStamps = new List<TimeSpan>(positionList.Count);
+						int failedPositions = 0;
 						for (int j = 0; j < positionList.Count; j++) {
 							var timestamp = TimeSpan.FromSeconds(entry.Duration.TotalSeconds * positionList[j]);
 							var b = FfmpegEngine.ExtractThumbnailJpeg(entry.Path, timestamp, maxDim, Settings.ExtendedFFToolsLogging);
 							if (b == null || b.Length == 0) {
+								failedPositions++;
 								Logger.Instance.Info($"Failed extracting thumbnail at {timestamp} for '{entry.Path}', skipping that position.");
 								continue;
 							}
@@ -1652,12 +1820,22 @@ namespace VDF.Core {
 								timeStamps.Add(timestamp);
 							}
 							catch (Exception ex) {
+								failedPositions++;
 								Logger.Instance.Info($"Failed decoding thumbnail bytes at {timestamp} for '{entry.Path}', reason: {ex.Message}");
 							}
 						}
 						if (list.Count == 0 && NoThumbnailImage != null) {
 							list.Add(NoThumbnailImage);
 							timeStamps.Add(TimeSpan.Zero);
+							Logger.Instance.Info($"Using placeholder for '{entry.Path}' — all {positionList.Count} sample position(s) failed.");
+							Interlocked.Increment(ref placeholders);
+						}
+						else if (list.Count > 0 && failedPositions > 0) {
+							Logger.Instance.Info($"Loaded {list.Count}/{positionList.Count} thumbnail(s) for '{entry.Path}' ({failedPositions} position(s) failed).");
+							Interlocked.Increment(ref loaded);
+						}
+						else if (list.Count > 0) {
+							Interlocked.Increment(ref loaded);
 						}
 					}
 					Debug.Assert(timeStamps != null);
@@ -1667,6 +1845,7 @@ namespace VDF.Core {
 				});
 			}
 			catch (OperationCanceledException) { }
+			Logger.Instance.Info($"Thumbnail loading complete: {loaded} fully loaded, {placeholders} placeholder, {skippedMissing} skipped (missing on disk) in {totalSw.Elapsed.TotalSeconds:F1}s.");
 			ThumbnailsRetrieved?.Invoke(this, new EventArgs());
 		}
 

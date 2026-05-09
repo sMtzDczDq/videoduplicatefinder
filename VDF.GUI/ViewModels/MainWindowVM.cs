@@ -46,6 +46,28 @@ namespace VDF.GUI.ViewModels {
 		List<HashSet<string>> GroupBlacklist = new();
 		public string BackupScanResultsFile =>
 			Path.Combine(CoreUtils.ResolveDatabaseFolder(SettingsFile.Instance.CustomDatabaseFolder), "backup.scanresults");
+		public string BlacklistedGroupsFile =>
+			Path.Combine(CoreUtils.ResolveDatabaseFolder(SettingsFile.Instance.CustomDatabaseFolder), "BlacklistedGroups.json");
+
+		// Older builds wrote BlacklistedGroups.json next to the executable; current
+		// code keeps it alongside the rest of the per-user database state. Move
+		// the file once if a legacy copy is present and the new location is empty.
+		void MigrateLegacyBlacklistLocation() {
+			try {
+				string legacy = Path.Combine(CoreUtils.CurrentFolder, "BlacklistedGroups.json");
+				string current = BlacklistedGroupsFile;
+				var cmp = OperatingSystem.IsWindows() ? StringComparison.OrdinalIgnoreCase : StringComparison.Ordinal;
+				if (string.Equals(Path.GetFullPath(legacy), Path.GetFullPath(current), cmp)) return;
+				if (File.Exists(legacy) && !File.Exists(current)) {
+					Directory.CreateDirectory(Path.GetDirectoryName(current)!);
+					File.Move(legacy, current);
+					Logger.Instance.Info($"Migrated BlacklistedGroups.json from {legacy} to {current}");
+				}
+			}
+			catch (Exception ex) {
+				Logger.Instance.Info($"Failed to migrate BlacklistedGroups.json: {ex.Message}");
+			}
+		}
 
 		public AvaloniaList<DuplicateItemVM> Duplicates { get; } = new();
 
@@ -192,11 +214,8 @@ namespace VDF.GUI.ViewModels {
 #endif
 
 		public MainWindowVM() {
-			FileInfo groupBlacklistFile = new(FileUtils.SafePathCombine(CoreUtils.CurrentFolder, "BlacklistedGroups.json"));
-			if (groupBlacklistFile.Exists && groupBlacklistFile.Length > 0) {
-				using var stream = new FileStream(groupBlacklistFile.FullName, FileMode.Open);
-				GroupBlacklist = JsonSerializer.Deserialize<List<HashSet<string>>>(stream)!;
-			}
+			MigrateLegacyBlacklistLocation();
+			GroupBlacklist = BlacklistStore.Load(BlacklistedGroupsFile, msg => Logger.Instance.Info(msg));
 			_FileType = TypeFilters[0];
 			Scanner.ScanAborted += Scanner_ScanAborted;
 			Scanner.ScanDone += Scanner_ScanDone;
@@ -390,7 +409,7 @@ namespace VDF.GUI.ViewModels {
 		}
 
 		void TryStartScheduledScan() {
-			if (IsScanning) return;
+			if (IsScanning || IsBusy) return;
 			if (!string.IsNullOrEmpty(SettingsFile.Instance.CustomDatabaseFolder) && !Directory.Exists(SettingsFile.Instance.CustomDatabaseFolder)) {
 				Logger.Instance.Info(App.Lang["Log.ScheduledScanSkippedMissingDatabaseFolder"]);
 				return;
@@ -452,20 +471,10 @@ namespace VDF.GUI.ViewModels {
 				var completedScheduledScan = scheduledScanInProgress;
 				scheduledScanInProgress = false;
 
-				Scanner.Duplicates.RemoveWhere(a => {
-					foreach (HashSet<string> blackListedGroup in GroupBlacklist) {
-						if (!blackListedGroup.Contains(a.Path)) continue;
-						bool isBlacklisted = true;
-						foreach (DuplicateItem blackListItem in Scanner.Duplicates.Where(b => b.GroupId == a.GroupId)) {
-							if (!blackListedGroup.Contains(blackListItem.Path)) {
-								isBlacklisted = false;
-								break;
-							}
-						}
-						if (isBlacklisted) return true;
-					}
-					return false;
-				});
+				var blacklistedGids = ComputeBlacklistedGroupIds(
+					Scanner.Duplicates.Select(d => (d.GroupId, d.Path)));
+				if (blacklistedGids.Count > 0)
+					Scanner.Duplicates.RemoveWhere(d => blacklistedGids.Contains(d.GroupId));
 
 				foreach (var item in Scanner.Duplicates)
 					Duplicates.Add(new DuplicateItemVM(item));
@@ -614,6 +623,21 @@ namespace VDF.GUI.ViewModels {
 			IncludeFields = true,
 		};
 
+		// Accepts both the v1 envelope ({version, items}) and the legacy raw array
+		// shape produced by older builds. Returns the items list.
+		private static List<DuplicateItemVM> ReadScanResultsItems(JsonElement root) {
+			if (root.ValueKind == JsonValueKind.Array)
+				return root.Deserialize<List<DuplicateItemVM>>(JsonOptions) ?? new();
+
+			if (root.ValueKind == JsonValueKind.Object &&
+				root.TryGetProperty("items", out var itemsEl) &&
+				itemsEl.ValueKind == JsonValueKind.Array) {
+				return itemsEl.Deserialize<List<DuplicateItemVM>>(JsonOptions) ?? new();
+			}
+
+			throw new JsonException("Unknown scan results format");
+		}
+
 		async Task ExportScanResults(string? path = null, bool includeThumbnails = true, int thumbMaxEdge = 160, JsonSerializerOptions? serializerOptions = null) {
 			path ??= await Utils.PickerDialogUtils.SaveFilePicker(new FilePickerSaveOptions() {
 				SuggestedStartLocation = await ApplicationHelpers.MainWindow.StorageProvider.TryGetFolderFromPathAsync(CoreUtils.CurrentFolder),
@@ -630,10 +654,11 @@ namespace VDF.GUI.ViewModels {
 
 			try {
 				var snapshot = Duplicates.ToList();
+				var envelope = new ScanResultsEnvelope { Version = ScanResultsEnvelope.CurrentVersion, Items = snapshot };
 
 				if (!includeThumbnails) {
 					await using var fs = new FileStream(tmp, FileMode.Create, FileAccess.Write, FileShare.None, 128 * 1024, useAsync: true);
-					await JsonSerializer.SerializeAsync(fs, snapshot, serializerOptions ?? JsonOptions);
+					await JsonSerializer.SerializeAsync(fs, envelope, serializerOptions ?? JsonOptions);
 				}
 				else {
 					await using var fs = new FileStream(tmp, FileMode.Create, FileAccess.Write, FileShare.None, 128 * 1024, useAsync: true);
@@ -641,7 +666,7 @@ namespace VDF.GUI.ViewModels {
 					var jsonEntry = zip.CreateEntry("scan.json", CompressionLevel.NoCompression);
 
 					await using (var es = jsonEntry.Open()) {
-						await JsonSerializer.SerializeAsync(es, snapshot, serializerOptions ?? JsonOptions);
+						await JsonSerializer.SerializeAsync(es, envelope, serializerOptions ?? JsonOptions);
 						await es.FlushAsync();
 					}
 
@@ -710,14 +735,26 @@ namespace VDF.GUI.ViewModels {
 
 				using var zip = ZipFile.OpenRead(path);
 				var json = zip.GetEntry("scan.json") ?? throw new Exception("scan.json missing");
-				await using var js = json.Open();
-				var items = await JsonSerializer.DeserializeAsync<List<DuplicateItemVM>>(js, JsonOptions) ?? new();
+				List<DuplicateItemVM> items;
+				await using (var js = json.Open()) {
+					using var doc = await JsonDocument.ParseAsync(js);
+					items = ReadScanResultsItems(doc.RootElement);
+				}
 
 				int skipped = items.RemoveAll(it => it?.ItemInfo == null);
 				if (skipped > 0)
 					Logger.Instance.Info($"Skipped {skipped} corrupt scan result entries (missing ItemInfo)");
 				if (items.Count == 0)
 					throw new JsonException("All scan result entries were corrupt");
+
+				// Apply not-a-match blacklist; saved results may pre-date marks made just before a crash.
+				var importBlacklistedGids = ComputeBlacklistedGroupIds(
+					items.Select(i => (i.ItemInfo.GroupId, i.ItemInfo.Path)));
+				if (importBlacklistedGids.Count > 0) {
+					int removed = items.RemoveAll(i => importBlacklistedGids.Contains(i.ItemInfo.GroupId));
+					if (removed > 0)
+						Logger.Instance.Info($"Filtered out {removed} items in {importBlacklistedGids.Count} blacklisted groups during import");
+				}
 
 				TempDirectory = TempExtractionManager.Register(new("VDF-"));
 
@@ -1168,6 +1205,8 @@ Non-Windows setup:
 			Scanner.Settings.EnablePartialClipDetection = SettingsFile.Instance.EnablePartialClipDetection;
 			Scanner.Settings.PartialClipMinRatio = SettingsFile.Instance.PartialClipMinRatioPercent / 100.0;
 			Scanner.Settings.PartialClipSimilarityThreshold = SettingsFile.Instance.PartialClipSimilarityThresholdPercent / 100.0;
+			Scanner.Settings.PartialClipRequireVisualMatch = SettingsFile.Instance.PartialClipRequireVisualMatch;
+			Scanner.Settings.PartialClipVisualThreshold = SettingsFile.Instance.PartialClipVisualThresholdPercent / 100.0;
 			Scanner.Settings.IncludeList.Clear();
 			foreach (var s in SettingsFile.Instance.Includes)
 				Scanner.Settings.IncludeList.Add(s);
@@ -1184,7 +1223,7 @@ Non-Windows setup:
 			else {
 				Scanner.StartCompare();
 			}
-		});
+		}, this.WhenAnyValue(x => x.IsBusy, busy => !busy));
 
 		public ReactiveCommand<Unit, Unit> PauseScanCommand => ReactiveCommand.Create(() => {
 			Scanner.Pause();
@@ -1203,24 +1242,23 @@ Non-Windows setup:
 			Scanner.Stop();
 		}, this.WhenAnyValue(x => x.IsScanning));
 
-		public ReactiveCommand<Unit, Unit> MarkGroupAsNotAMatchCommand => ReactiveCommand.Create(() => {
-			Dispatcher.UIThread.InvokeAsync(async () => {
+		public ReactiveCommand<Unit, Unit> MarkGroupAsNotAMatchCommand => ReactiveCommand.CreateFromTask(async () => {
+			try {
 				if (GetSelectedDuplicateItem() is not DuplicateItemVM data) return;
 
 				var gid = data.ItemInfo.GroupId;
 
-				HashSet<string> blacklist = new HashSet<string>();
+				HashSet<string> blacklist = new HashSet<string>(PathComparer.ForCurrentPlatform);
 				foreach (DuplicateItemVM duplicateItem in Duplicates.Where(d => d.ItemInfo.GroupId == gid))
 					blacklist.Add(duplicateItem.ItemInfo.Path);
 				GroupBlacklist.Add(blacklist);
 				try {
-					using var stream = new FileStream(FileUtils.SafePathCombine(CoreUtils.CurrentFolder,
-					"BlacklistedGroups.json"), FileMode.Create);
-					await JsonSerializer.SerializeAsync(stream, GroupBlacklist);
+					await BlacklistStore.SaveAsync(BlacklistedGroupsFile, GroupBlacklist);
 				}
 				catch (Exception e) {
 					GroupBlacklist.Remove(blacklist);
 					await MessageBoxService.Show(e.Message);
+					return;
 				}
 
 				// Remove all items in this group from the list
@@ -1233,7 +1271,24 @@ Non-Windows setup:
 				DropSingletonGroups();
 				RefreshGroupStats();
 				view?.Refresh();
-			});
+
+				// Mirror the deletion path: keep backup.scanresults in sync so the mark
+				// survives a crash before the user gets to a clean exit.
+				if (SettingsFile.Instance.BackupAfterListChanged)
+					await ExportScanResults(BackupScanResultsFile);
+			}
+			catch (Exception ex) {
+				Logger.Instance.Info($"MarkGroupAsNotAMatch failed: {ex}");
+			}
+		});
+
+		private HashSet<Guid> ComputeBlacklistedGroupIds(IEnumerable<(Guid GroupId, string Path)> items) =>
+			GroupBlacklistFilter.ComputeBlacklistedGroupIds(items, GroupBlacklist);
+
+		public ReactiveCommand<Unit, Unit> OpenBlacklistManagerCommand => ReactiveCommand.Create(() => {
+			var vm = new BlacklistManagerVM(GroupBlacklist,
+				() => BlacklistStore.SaveAsync(BlacklistedGroupsFile, GroupBlacklist));
+			new BlacklistManagerView(vm).Show();
 		});
 
 		public ReactiveCommand<Unit, Unit> ShowGroupInThumbnailComparerCommand => ReactiveCommand.Create(() => {
@@ -1289,7 +1344,7 @@ Non-Windows setup:
 		await Scanner.RetrieveThumbnailsForItems(items);
 	});
 
-		List<DuplicateItemVM> CheckedItemsToDelete => Duplicates.Where(d => d.Checked && d.IsVisibleInFilter).ToList();
+		List<DuplicateItemVM> CheckedItemsToDelete => ScopedDuplicates().Where(d => d.Checked && d.IsVisibleInFilter).ToList();
 
 		async void DeleteInternal(bool fromDisk,
 									List<DuplicateItemVM>? toDelete = null,

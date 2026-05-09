@@ -17,6 +17,7 @@
 using System.Linq;
 using System.Reactive;
 using System.Text.Json;
+using System.Text.RegularExpressions;
 using Avalonia.Platform.Storage;
 using Avalonia.Threading;
 using DynamicExpresso;
@@ -37,7 +38,8 @@ namespace VDF.GUI.ViewModels {
 		}
 
 		// When more than one row is highlighted in the grid, scope Selection-menu
-		// commands to those rows; otherwise fall back to the full list.
+		// and checked-items commands (delete/remove/blacklist/symlink/dry-run) to
+		// those rows; otherwise fall back to the full list.
 		List<DuplicateItemVM> ScopedDuplicates() {
 			var selected = GetSelectedDuplicates();
 			return selected.Count > 1 ? selected : Duplicates.ToList();
@@ -71,6 +73,7 @@ namespace VDF.GUI.ViewModels {
 				interpreter = new Interpreter(InterpreterOptions.PrimitiveTypes | InterpreterOptions.SystemKeywords)
 					.Reference(typeof(TimeSpan))
 					.Reference(typeof(Math))
+					.Reference(typeof(Regex))
 					.ParseAsDelegate<Func<DuplicateItem, bool>>(SettingsFile.Instance.LastCustomSelectExpression, shortIdentifier);
 			}
 			catch (Exception ex) {
@@ -265,7 +268,8 @@ namespace VDF.GUI.ViewModels {
 				return;
 			}
 			MessageBoxButtons? dlgResult = await MessageBoxService.Show(App.Lang["Message.DeleteFromDiskPrompt"],
-				MessageBoxButtons.Yes | MessageBoxButtons.No | MessageBoxButtons.Cancel);
+				MessageBoxButtons.Yes | MessageBoxButtons.No | MessageBoxButtons.Cancel,
+				defaultButton: MessageBoxButtons.Cancel);
 			if (dlgResult == MessageBoxButtons.Yes)
 #pragma warning disable CS4014
 				Dispatcher.UIThread.InvokeAsync(() => {

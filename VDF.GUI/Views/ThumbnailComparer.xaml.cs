@@ -1,5 +1,5 @@
 // /*
-//     Copyright (C) 2025 0x90d
+//     Copyright (C) 2026 0x90d
 //     This file is part of VideoDuplicateFinder
 //     VideoDuplicateFinder is free software: you can redistribute it and/or modify
 //     it under the terms of the GNU Affero General Public License as published by
@@ -28,8 +28,13 @@ namespace VDF.GUI.Views {
 	public class ThumbnailComparer : Window {
 		//Designer need this
 		public ThumbnailComparer() => InitializeComponent();
-		public ThumbnailComparer(List<LargeThumbnailDuplicateItem> duplicateItemVMs) {
-			DataContext = new ThumbnailComparerVM(duplicateItemVMs);
+		public ThumbnailComparer(List<LargeThumbnailDuplicateItem> duplicateItemVMs)
+			: this(duplicateItemVMs, null, null) { }
+		public ThumbnailComparer(
+			List<LargeThumbnailDuplicateItem> duplicateItemVMs,
+			Guid? currentGroupId,
+			Func<Guid, bool, (Guid GroupId, List<LargeThumbnailDuplicateItem> Items)?>? groupNavigator) {
+			DataContext = new ThumbnailComparerVM(duplicateItemVMs, currentGroupId, groupNavigator);
 			InitializeComponent();
 			Owner = ApplicationHelpers.MainWindow;
 			this.Loaded += ThumbnailComparer_Loaded;

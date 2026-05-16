@@ -1,5 +1,5 @@
 // /*
-//     Copyright (C) 2025 0x90d
+//     Copyright (C) 2026 0x90d
 //     This file is part of VideoDuplicateFinder
 //     VideoDuplicateFinder is free software: you can redistribute it and/or modify
 //     it under the terms of the GNU Affero General Public License as published by
@@ -20,33 +20,36 @@ using Avalonia;
 using Avalonia.Media.Imaging;
 using Avalonia.Platform;
 using SixLabors.ImageSharp;
-using SixLabors.ImageSharp.Formats.Jpeg;
 using SixLabors.ImageSharp.PixelFormats;
 using SixLabors.ImageSharp.Processing;
+using VDF.Core.Utils;
 using Point = SixLabors.ImageSharp.Point;
 using Size = SixLabors.ImageSharp.Size;
 
 namespace VDF.GUI.Utils {
 	static class ImageUtils {
-		private static readonly JpegEncoder JpegEncoder = new() { Quality = 90 };
-
 		/// <summary>
-		/// Creates the UI bitmap and (optionally) writes a JPEG
-		/// directly to the passed stream in parallel.
-		/// No additional byte arrays, no duplicate RAM.
+		/// Composes <paramref name="images"/> into a grid (up to 4 per row) thumbnail and
+		/// returns a WriteableBitmap for immediate UI use. If <paramref name="jpegOut"/> is
+		/// supplied, the JPEG is written there FIRST, before the WriteableBitmap is built —
+		/// that way a failure on the Avalonia side (e.g. WriteableBitmap creation,
+		/// multi-buffer pixel-row layouts) still produces a valid cache entry. Reversing
+		/// this order is what caused issue #751: ImageSharp returns multi-buffer pixel
+		/// storage above ~4 MB per Bgra32 image, so 5×500-wide portrait composites tripped
+		/// the old early-null return before SaveAsJpeg ran, leaving the on-disk cache full
+		/// of empty entries.
 		/// </summary>
 		public static unsafe Bitmap? JoinImages(IReadOnlyList<Image> images, Stream? jpegOut = null) {
 			if (images == null || images.Count == 0) return null;
 
-			// Grid layout: up to 4 thumbnails per row (minimal change from previous single-row behavior)
+			// Grid layout: up to 4 thumbnails per row
 			int maxPerRow = Math.Min(images.Count, 4);
 			int thumbnailHeight = images[0].Height;
 
-			// compute total width = width of the widest row (sum of widths of images in first row)
+			// total width = sum of widths of images in the first row
 			int width = 0;
 			for (int i = 0; i < maxPerRow; i++) width += images[i].Width;
 
-			// compute number of rows and total height
 			int rows = (int)Math.Ceiling(images.Count / (double)maxPerRow);
 			int height = rows * thumbnailHeight;
 
@@ -67,31 +70,33 @@ namespace VDF.GUI.Utils {
 				}
 			});
 
-			// Resize-Limits (keep original limits and behavior)
-			const int MaxDisplayableCompositeWidth = 4096; // UI-Limit
-			const int AbsoluteMaxWidth = 32767; // Hard-Limit
-
-			if (img.Width > AbsoluteMaxWidth) {
+			if (img.Width > JpegCompositor.AbsoluteMaxWidth) {
 				img.Mutate(x => x.Resize(new ResizeOptions {
-					Size = new Size(AbsoluteMaxWidth, 0), Mode = ResizeMode.Max, Sampler = KnownResamplers.Lanczos3
-				}));
-			}
-
-			if (img.Width > MaxDisplayableCompositeWidth) {
-				img.Mutate(x => x.Resize(new ResizeOptions {
-					Size = new Size(MaxDisplayableCompositeWidth, 0),
+					Size = new Size(JpegCompositor.AbsoluteMaxWidth, 0),
 					Mode = ResizeMode.Max,
 					Sampler = KnownResamplers.Lanczos3
 				}));
 			}
 
+			if (img.Width > JpegCompositor.MaxDisplayableCompositeWidth) {
+				img.Mutate(x => x.Resize(new ResizeOptions {
+					Size = new Size(JpegCompositor.MaxDisplayableCompositeWidth, 0),
+					Mode = ResizeMode.Max,
+					Sampler = KnownResamplers.Lanczos3
+				}));
+			}
+
+			if (jpegOut != null) {
+				try {
+					img.SaveAsJpeg(jpegOut, JpegCompositor.SharedEncoder);
+					try { jpegOut.Flush(); } catch { /* ignore */ }
+					if (jpegOut.CanSeek) { try { jpegOut.Position = 0; } catch { /* ignore */ } }
+				}
+				catch { /* the cache write is best-effort; UI bitmap below is independent */ }
+			}
+
 			try {
 				using var bgraImage = img.CloneAs<Bgra32>();
-
-				if (!bgraImage.DangerousTryGetSinglePixelMemory(out var pixelMemory))
-					return null;
-
-				Span<byte> sourcePixelData = MemoryMarshal.AsBytes(pixelMemory.Span);
 
 				var writeableBitmap = new WriteableBitmap(
 					new PixelSize(bgraImage.Width, bgraImage.Height),
@@ -101,42 +106,22 @@ namespace VDF.GUI.Utils {
 				);
 
 				using (var lockedFramebuffer = writeableBitmap.Lock()) {
-					Span<byte> destinationSpan = new Span<byte>(
-						(void*)lockedFramebuffer.Address,
-						lockedFramebuffer.Size.Height * lockedFramebuffer.RowBytes
-					);
+					byte* destBase = (byte*)lockedFramebuffer.Address;
+					int destStride = lockedFramebuffer.RowBytes;
+					int rowBytes = bgraImage.Width * 4;
 
-					int expectedSourceLength = bgraImage.Width * bgraImage.Height * 4;
-
-					if (sourcePixelData.Length == expectedSourceLength &&
-					    destinationSpan.Length == expectedSourceLength) {
-						sourcePixelData.CopyTo(destinationSpan);
-					}
-					else if (sourcePixelData.Length == destinationSpan.Length) {
-						int sourceStride = bgraImage.Width * 4;
-						int destStride = lockedFramebuffer.RowBytes;
-						for (int y = 0; y < bgraImage.Height; y++) {
-							Span<byte> sourceRow = sourcePixelData.Slice(y * sourceStride, sourceStride);
-							Span<byte> destRow = destinationSpan.Slice(y * destStride, sourceStride);
-							sourceRow.CopyTo(destRow);
+					// ProcessPixelRows is buffer-layout-agnostic — works whether ImageSharp
+					// stored the image as a single contiguous span or split it across
+					// multiple internal buffers (the latter happens above ~4 MB Bgra32,
+					// which is exactly the case that broke before).
+					bgraImage.ProcessPixelRows(accessor => {
+						for (int y = 0; y < accessor.Height; y++) {
+							Span<Bgra32> srcRow = accessor.GetRowSpan(y);
+							Span<byte> srcBytes = MemoryMarshal.AsBytes(srcRow);
+							Span<byte> destRow = new Span<byte>(destBase + (y * destStride), rowBytes);
+							srcBytes.CopyTo(destRow);
 						}
-					}
-					else {
-						return null; // sizes do not fit
-					}
-				}
-
-				if (jpegOut != null) {
-					img.SaveAsJpeg(jpegOut, JpegEncoder);
-					try { jpegOut.Flush(); }
-					catch {
-						/* ignore */
-					}
-
-					if (jpegOut.CanSeek) {
-						try { jpegOut.Position = 0; }
-						catch { }
-					}
+					});
 				}
 
 				return writeableBitmap;
@@ -175,7 +160,7 @@ namespace VDF.GUI.Utils {
 
 		public static byte[] ToByteArray(this Image image) {
 			using MemoryStream ms = new();
-			image.Save(ms, JpegEncoder);
+			image.Save(ms, JpegCompositor.SharedEncoder);
 			return ms.ToArray();
 		}
 	}

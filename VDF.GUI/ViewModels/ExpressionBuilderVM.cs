@@ -1,5 +1,5 @@
 // /*
-//     Copyright (C) 2025 0x90d
+//     Copyright (C) 2026 0x90d
 //     This file is part of VideoDuplicateFinder
 //     VideoDuplicateFinder is free software: you can redistribute it and/or modify
 //     it under the terms of the GNU Affero General Public License as published by
@@ -42,7 +42,7 @@ namespace VDF.GUI.ViewModels {
 			sb.AppendLine($"Example: item.{nameof(DuplicateItem.IsImage)} && arg.{nameof(DuplicateItemVM.ItemInfo)}.{nameof(DuplicateItem.SizeLong)} > 3000");
 			sb.AppendLine($"Example: item.{nameof(DuplicateItem.Path)}.Contains(\"imageFolder\")");
 			sb.AppendLine($"Example: item.{nameof(DuplicateItem.Duration)}.Minute > 15");
-			sb.AppendLine($"Example: Regex.IsMatch(item.{nameof(DuplicateItem.Path)}, @\"S\\d+E\\d+\")");
+			sb.AppendLine($"Example: Regex.IsMatch(item.{nameof(DuplicateItem.Path)}, \"S\\\\d+E\\\\d+\")");
 			sb.AppendLine("Note: Expression uses 'Dynamic Expresso' library which understands C# syntax");
 
 			AvailableProperties = sb.ToString();

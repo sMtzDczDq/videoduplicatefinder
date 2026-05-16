@@ -1,5 +1,5 @@
 // /*
-//     Copyright (C) 2025 0x90d
+//     Copyright (C) 2026 0x90d
 //     This file is part of VideoDuplicateFinder
 //     VideoDuplicateFinder is free software: you can redistribute it and/or modify
 //     it under the terms of the GNU Affero General Public License as published by
@@ -28,7 +28,12 @@ namespace VDF.GUI.ViewModels {
 		public ReactiveCommand<int, Unit> MoveDownCommand { get; }
 
 		public QualityOrderVM() {
-			CriteriaOrder = new ObservableCollection<string>(ApplicationHelpers.MainWindowDataContext.QualityCriteriaOrder);
+			var saved = ApplicationHelpers.MainWindowDataContext.QualityCriteriaOrder;
+			var merged = new List<string>(saved);
+			foreach (var name in MainWindowVM.QualityCriteriaMap.Keys)
+				if (!merged.Contains(name))
+					merged.Add(name);
+			CriteriaOrder = new ObservableCollection<string>(merged);
 			MoveUpCommand = ReactiveCommand.Create<int>(MoveUp);
 			MoveDownCommand = ReactiveCommand.Create<int>(MoveDown);
 			_selectedItem = CriteriaOrder[0];

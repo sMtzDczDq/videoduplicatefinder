@@ -1,5 +1,5 @@
 // /*
-//     Copyright (C) 2025 0x90d
+//     Copyright (C) 2026 0x90d
 //     This file is part of VideoDuplicateFinder
 //     VideoDuplicateFinder is free software: you can redistribute it and/or modify
 //     it under the terms of the GNU Affero General Public License as published by
@@ -26,7 +26,9 @@ namespace VDF.Core.Utils {
 			".gif",
 			".bmp",
 			".tiff",
-			".webp"};
+			".webp",
+			".heic",
+			".heif"};
 		static readonly string[] VideoExtensions = {
 			".mp4",
 			".wmv",

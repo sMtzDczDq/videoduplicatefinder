@@ -21,20 +21,70 @@ using System.Globalization;
 using System.Linq;
 using System.Runtime.InteropServices;
 using FFmpeg.AutoGen;
-using SixLabors.ImageSharp;
-using SixLabors.ImageSharp.Processing;
 using VDF.Core.FFTools.FFmpegNative;
 using VDF.Core.Utils;
 
 namespace VDF.Core.FFTools {
 	internal static class FfmpegEngine {
-		public static readonly string FFmpegPath;
+		static string _FFmpegPath = string.Empty;
+		// Re-probes when unresolved (or the binary vanished): a once-only static cache made
+		// an FFmpeg installed/downloaded while the app was running invisible until restart,
+		// so the GUI kept offering the download forever (issue #788).
+		public static string FFmpegPath {
+			get {
+				if (_FFmpegPath.Length == 0 || !File.Exists(_FFmpegPath))
+					_FFmpegPath = FFToolsUtils.GetPath(FFToolsUtils.FFTool.FFmpeg) ?? string.Empty;
+				return _FFmpegPath;
+			}
+		}
 		const int TimeoutDuration = 15_000; //15 seconds
 		public static FFHardwareAccelerationMode HardwareAccelerationMode;
 		public static string CustomFFArguments = string.Empty;
-		public static bool UseNativeBinding;
-		private static readonly SixLabors.ImageSharp.Formats.Jpeg.JpegEncoder jpegEncoder = new();
-		static FfmpegEngine() => FFmpegPath = FFToolsUtils.GetPath(FFToolsUtils.FFTool.FFmpeg) ?? string.Empty;
+
+		static bool _useNativeBinding;
+		public static bool UseNativeBinding {
+			get => _useNativeBinding;
+			set {
+				_useNativeBinding = value;
+				// Reset the per-scan native-health state whenever native binding is (re)configured,
+				// i.e. at the start of each scan.
+				_nativeConsecutiveFailures = 0;
+				_nativeDisabledForSession = false;
+			}
+		}
+
+		// Native-binding health. When the libraries load but native operations keep failing
+		// (e.g. a hardware-decode mismatch — issue #795), fall back to process mode for the
+		// rest of the scan after a few consecutive failures, with one summary message instead
+		// of a per-file stack-trace storm. A native success resets the counter so an isolated
+		// bad file doesn't disable native for the whole library.
+		static int _nativeConsecutiveFailures;
+		static bool _nativeDisabledForSession;
+		const int NativeFailureThreshold = 5;
+
+		/// <summary>True when a native FFmpeg operation should be attempted.</summary>
+		static bool ShouldUseNativeBinding =>
+			UseNativeBinding && !_nativeDisabledForSession && FFmpegNative.FFmpegHelper.CanLoadNativeLibraries;
+
+		static void RecordNativeSuccess() => _nativeConsecutiveFailures = 0;
+
+		static void RecordNativeFailure(string file, Exception e) {
+			if (_nativeDisabledForSession)
+				return;
+			int n = ++_nativeConsecutiveFailures;
+			if (n >= NativeFailureThreshold) {
+				_nativeDisabledForSession = true;
+				Logger.Instance.Info(
+					$"Native FFmpeg binding failed on {n} consecutive files; using process mode for the rest of this scan. " +
+					$"Last error on '{file}': {e.GetType().Name}: {e.Message}. " +
+					$"If this persists, set hardware acceleration to 'none' or disable 'Use native FFmpeg binding'.");
+			}
+			else {
+				Logger.Instance.Info($"Failed using native FFmpeg binding on '{file}', switching to process mode. Exception: {e}");
+			}
+		}
+
+		const int DefaultJpegQuality = 90;
 
 
 		static AVHWDeviceType GetConfiguredHardwareDeviceType() => HardwareAccelerationMode switch {
@@ -163,12 +213,81 @@ namespace VDF.Core.FFTools {
 				finally {
 					converter?.Dispose();
 				}
+				RecordNativeSuccess();
 				return true;
 			}
 			catch (Exception e) {
-				Logger.Instance.Info($"Native batch graybytes failed on '{videoFile.Path}', falling back to per-sample path. Exception: {e}");
+				// One failure recorded per video file (not per position) so the session
+				// circuit breaker reflects per-file native health (issues #793/#795). The
+				// per-sample fallback below still re-attempts native but does not record.
+				RecordNativeFailure(videoFile.Path, e);
 				return false;
 			}
+		}
+
+		/// <summary>
+		/// Extracts one 32x32 grayscale frame per position, opening a single decoder and
+		/// reusing one sws context for the whole file instead of paying the open/seek/teardown
+		/// cost per frame. Returns an array aligned with <paramref name="positionsSeconds"/>;
+		/// entries are null when that frame could not be decoded. Positions the native batch
+		/// could not produce (or all of them, without the native binding) fall back to the
+		/// per-frame <see cref="GetThumbnail"/> path, which itself falls back to the FFmpeg process.
+		/// </summary>
+		internal static unsafe byte[]?[] GetGrayFrames(string filePath, IReadOnlyList<double> positionsSeconds, bool extendedLogging) {
+			const int N = 32;
+			var frames = new byte[]?[positionsSeconds.Count];
+			if (ShouldUseNativeBinding) {
+				try {
+					using var vsd = new VideoStreamDecoder(filePath, GetConfiguredHardwareDeviceType());
+					VideoFrameConverter? converter = null;
+					Size converterSourceSize = default;
+					AVPixelFormat converterSrcFmt = AVPixelFormat.AV_PIX_FMT_NONE;
+					try {
+						for (int i = 0; i < positionsSeconds.Count; i++) {
+							if (!vsd.TryDecodeFrame(out var srcFrame, TimeSpan.FromSeconds(positionsSeconds[i])))
+								continue;
+
+							Size sourceSize = new(
+								srcFrame.width > 0 ? srcFrame.width : vsd.FrameSize.Width,
+								srcFrame.height > 0 ? srcFrame.height : vsd.FrameSize.Height);
+							AVPixelFormat srcPixFmt = vsd.IsHardwareDecode ? (AVPixelFormat)srcFrame.format : vsd.PixelFormat;
+							if (srcPixFmt < 0 || srcPixFmt >= AVPixelFormat.AV_PIX_FMT_NB ||
+								sourceSize.Width <= 0 || sourceSize.Height <= 0)
+								continue;
+
+							if (converter == null || sourceSize != converterSourceSize || srcPixFmt != converterSrcFmt) {
+								converter?.Dispose();
+								converter = new VideoFrameConverter(
+									sourceSize, srcPixFmt,
+									new Size(N, N), AVPixelFormat.AV_PIX_FMT_GRAY8,
+									VideoFrameConverter.ScaleQuality.Bicubic, bitExact: false);
+								converterSourceSize = sourceSize;
+								converterSrcFmt = srcPixFmt;
+							}
+
+							frames[i] = ExtractGray32FromFrame(converter.Convert(srcFrame));
+						}
+					}
+					finally {
+						converter?.Dispose();
+					}
+					RecordNativeSuccess();
+				}
+				catch (Exception e) {
+					// One failure recorded per video file; the per-frame fallback below still
+					// re-attempts native but does not record (issues #793/#795).
+					RecordNativeFailure(filePath, e);
+				}
+			}
+
+			for (int i = 0; i < positionsSeconds.Count; i++) {
+				frames[i] ??= GetThumbnail(new FfmpegSettings {
+					File = filePath,
+					Position = TimeSpan.FromSeconds(positionsSeconds[i]),
+					GrayScale = 1
+				}, extendedLogging);
+			}
+			return frames;
 		}
 
 		public static unsafe byte[]? GetThumbnail(FfmpegSettings settings, bool extendedLogging) {
@@ -178,10 +297,12 @@ namespace VDF.Core.FFTools {
 			bool isGrayByte = settings.GrayScale == 1;
 
 			try {
-				if (UseNativeBinding) {
+				if (ShouldUseNativeBinding) {
 
 
-					AVHWDeviceType HWDevice = GetConfiguredHardwareDeviceType();
+					AVHWDeviceType HWDevice = settings.SoftwareDecodeOnly
+						? AVHWDeviceType.AV_HWDEVICE_TYPE_NONE
+						: GetConfiguredHardwareDeviceType();
 
 					using var vsd = new VideoStreamDecoder(settings.File, HWDevice);
 
@@ -205,11 +326,11 @@ namespace VDF.Core.FFTools {
 					Size destinationSize = isGrayByte ? new Size(N, N) :
 						settings.Fullsize == 1 ?
 							sourceSize :
-							new Size(100, Convert.ToInt32(sourceSize.Height * (100 / (double)sourceSize.Width)));
+							ScaleToMaxWidth(sourceSize, settings.MaxWidth > 0 ? settings.MaxWidth : 100);
 
 					AVPixelFormat destinationPixelFrmt = isGrayByte ?
 						AVPixelFormat.AV_PIX_FMT_GRAY8 :
-						AVPixelFormat.AV_PIX_FMT_BGRA;
+						AVPixelFormat.AV_PIX_FMT_YUVJ420P;
 
 					using var vfc = new VideoFrameConverter(
 										sourceSize: sourceSize,
@@ -247,34 +368,10 @@ namespace VDF.Core.FFTools {
 						return outBuf;
 					}
 					else {
-						int width = convertedFrame.width;
-						int height = convertedFrame.height;
-						if (width <= 0 || height <= 0)
-							throw new Exception($"Invalid converted frame dimensions {width}x{height}.");
-						long totalBytesLong = (long)width * height * 4;
-						if (totalBytesLong > 200_000_000) // ~200 MB sanity cap
-							throw new Exception($"Frame too large: {width}x{height} ({totalBytesLong} bytes).");
-						var totalBytes = (int)totalBytesLong;
-						var rgbaBytes = new byte[totalBytes];
-						int stride = convertedFrame.linesize[0];
-						if (stride < width * 4)
-							throw new Exception($"Invalid stride ({stride}) for width {width}.");
-						fixed (byte* destPtr = rgbaBytes) {
-							byte* sourcePtr = convertedFrame.data[0];
-							if (stride == width * 4) {
-								Buffer.MemoryCopy(sourcePtr, destPtr, totalBytes, totalBytes);
-							}
-							else {
-								var byteWidth = width * 4;
-								for (var y = 0; y < height; y++) {
-									Buffer.MemoryCopy(sourcePtr + (y * stride), destPtr + (y * byteWidth), byteWidth, byteWidth);
-								}
-							}
-						}
-						var image = Image.LoadPixelData<SixLabors.ImageSharp.PixelFormats.Bgra32>(rgbaBytes, width, height);
-						using MemoryStream stream = new();
-						image.Save(stream, jpegEncoder);
-						return stream.ToArray();
+						if (convertedFrame.width <= 0 || convertedFrame.height <= 0)
+							throw new Exception($"Invalid converted frame dimensions {convertedFrame.width}x{convertedFrame.height}.");
+						return JpegFrameEncoder.Encode(convertedFrame,
+							settings.JpegQuality > 0 ? settings.JpegQuality : DefaultJpegQuality);
 					}
 				}
 			}
@@ -288,16 +385,19 @@ namespace VDF.Core.FFTools {
 				RedirectStandardInput = false,
 				RedirectStandardOutput = true,
 				WorkingDirectory = Path.GetDirectoryName(FFmpegPath)!,
-				RedirectStandardError = extendedLogging,
+				// Always capture stderr: when FFmpeg fails, its error output is the only
+				// diagnostic there is. Logged on failure regardless of the logging setting
+				// (issue #780 — 'exited with: 134' with no further detail is undebuggable).
+				RedirectStandardError = true,
 				WindowStyle = ProcessWindowStyle.Hidden
 			};
 
 			psi.ArgumentList.Add("-hide_banner");
-			psi.ArgumentList.Add("-loglevel"); psi.ArgumentList.Add((extendedLogging ? "error" : "quiet"));
+			psi.ArgumentList.Add("-loglevel"); psi.ArgumentList.Add("error");
 
 			psi.ArgumentList.Add("-nostdin");
 
-			if (HardwareAccelerationMode != FFHardwareAccelerationMode.none) {
+			if (HardwareAccelerationMode != FFHardwareAccelerationMode.none && !settings.SoftwareDecodeOnly) {
 				psi.ArgumentList.Add("-hwaccel");
 				psi.ArgumentList.Add(HardwareAccelerationMode.ToString());
 			}
@@ -331,7 +431,10 @@ namespace VDF.Core.FFTools {
 			}
 			else {
 				if (settings.Fullsize != 1) {
-					string vfChain = "scale=100:-1";
+					int maxW = settings.MaxWidth > 0 ? settings.MaxWidth : 100;
+					// Downscale-only fit into a maxW x maxW bounding box (matching the native
+					// path and the old resize semantics) — small sources keep their size.
+					string vfChain = $"scale=min({maxW}\\,iw):min({maxW}\\,ih):force_original_aspect_ratio=decrease";
 					if (userVfFilter != null) vfChain = $"{vfChain},{userVfFilter}";
 					psi.ArgumentList.Add("-vf"); psi.ArgumentList.Add(vfChain);
 				}
@@ -339,6 +442,10 @@ namespace VDF.Core.FFTools {
 					psi.ArgumentList.Add("-vf"); psi.ArgumentList.Add(userVfFilter);
 				}
 				psi.ArgumentList.Add("-f"); psi.ArgumentList.Add("mjpeg");
+				// Map 1-100 quality onto MJPEG's 2-31 qscale (lower = better), same curve
+				// as JpegFrameEncoder so CLI and native output comparable quality.
+				int quality = settings.JpegQuality > 0 ? settings.JpegQuality : DefaultJpegQuality;
+				psi.ArgumentList.Add("-q:v"); psi.ArgumentList.Add(Math.Clamp(2 + (100 - quality) / 10, 2, 31).ToString(CultureInfo.InvariantCulture));
 			}
 
 			psi.ArgumentList.Add("-frames:v"); psi.ArgumentList.Add("1");
@@ -367,31 +474,29 @@ namespace VDF.Core.FFTools {
 			try {
 				process.EnableRaisingEvents = true;
 				process.Start();
-				if (extendedLogging) {
-					process.ErrorDataReceived += new DataReceivedEventHandler((sender, e) => {
-						if (e.Data?.Length > 0) {
-							if (e.Data == lastErrLine) {
-								repeatCount++;
-							}
-							else {
-								if (repeatCount > 0) {
-									errOut += $" (repeated {repeatCount} more time{(repeatCount == 1 ? string.Empty : "s")})";
-									repeatCount = 0;
-								}
-								errOut += Environment.NewLine + e.Data;
-								lastErrLine = e.Data;
-							}
+				process.ErrorDataReceived += new DataReceivedEventHandler((sender, e) => {
+					if (e.Data?.Length > 0) {
+						if (e.Data == lastErrLine) {
+							repeatCount++;
 						}
-					});
-					process.BeginErrorReadLine();
-				}
+						else {
+							if (repeatCount > 0) {
+								errOut += $" (repeated {repeatCount} more time{(repeatCount == 1 ? string.Empty : "s")})";
+								repeatCount = 0;
+							}
+							errOut += Environment.NewLine + e.Data;
+							lastErrLine = e.Data;
+						}
+					}
+				});
+				process.BeginErrorReadLine();
 				using var ms = new MemoryStream();
 				process.StandardOutput.BaseStream.CopyTo(ms);
 
 				if (!process.WaitForExit(TimeoutDuration)) {
 					throw new TimeoutException($"FFmpeg timed out on file: {settings.File}");
 				}
-				else if (extendedLogging)
+				else
 					process.WaitForExit(); // Because of asynchronous event handlers, see: https://github.com/dotnet/runtime/issues/18789
 
 				if (process.ExitCode != 0)
@@ -416,7 +521,9 @@ namespace VDF.Core.FFTools {
 			}
 			if (repeatCount > 0)
 				errOut += $" (repeated {repeatCount} more time{(repeatCount == 1 ? string.Empty : "s")})";
-			if (bytes == null || errOut.Length > 0) {
+			// Failures always log (including FFmpeg's stderr); success-with-warnings only
+			// when extended logging is enabled, to avoid noise from benign decoder chatter.
+			if (bytes == null || (extendedLogging && errOut.Length > 0)) {
 				string message = $"{((bytes == null) ? "ERROR: Failed to retrieve" : "WARNING: Problems while retrieving")} {(isGrayByte ? "graybytes" : "thumbnail")} from: {settings.File}";
 				if (extendedLogging) {
 					var args = string.Join(" ", psi.ArgumentList);
@@ -442,7 +549,7 @@ namespace VDF.Core.FFTools {
 			// Native batch path: open file + decoder + sws context once, walk all positions.
 			// The for-loop fallback below recreates them per position, so on a 4-position scan
 			// this avoids ~3x of the per-file FFmpeg setup cost.
-			if (UseNativeBinding && TryGetGrayBytesFromVideoNativeBatch(videoFile, positions, maxSamplingDurationSeconds, ref tooDarkCounter, onSampleComplete)) {
+			if (ShouldUseNativeBinding && TryGetGrayBytesFromVideoNativeBatch(videoFile, positions, maxSamplingDurationSeconds, ref tooDarkCounter, onSampleComplete)) {
 				if (tooDarkCounter == missingPositions) {
 					videoFile.Flags.Set(EntryFlags.TooDark);
 					Logger.Instance.Info($"ERROR: Graybytes too dark of: {videoFile.Path}");
@@ -511,31 +618,163 @@ namespace VDF.Core.FFTools {
 		}
 
 		/// <summary>
-		/// Extracts a single JPEG thumbnail from a video file at the given position.
+		/// Extracts a single JPEG thumbnail from a video or image file at the given
+		/// position (ignored for images). FFmpeg does the scaling and encoding directly.
 		/// Returns null if extraction fails.
 		/// </summary>
-		public static byte[]? ExtractThumbnailJpeg(string filePath, TimeSpan position, int maxWidth = 0, bool extendedLogging = false) {
-			var settings = new FfmpegSettings {
+		public static byte[]? ExtractThumbnailJpeg(string filePath, TimeSpan position, int maxWidth = 0, bool extendedLogging = false, int jpegQuality = 0) {
+			return GetThumbnail(new FfmpegSettings {
 				File = filePath,
 				Position = position,
 				GrayScale = 0,
 				Fullsize = (byte)(maxWidth == 0 ? 1 : 0),
-			};
-			var raw = GetThumbnail(maxWidth == 0 ? settings : settings with { Fullsize = 1 }, extendedLogging);
-			if (raw == null || raw.Length == 0) return null;
+				MaxWidth = maxWidth,
+				JpegQuality = jpegQuality,
+			}, extendedLogging);
+		}
 
-			if (maxWidth > 0) {
-				using var ms = new MemoryStream(raw);
-				using var image = Image.Load(ms);
-				if (image.Width > maxWidth) {
-					int h = (int)(image.Height * ((double)maxWidth / image.Width));
-					image.Mutate(x => x.Resize(maxWidth, h));
-				}
-				using var outMs = new MemoryStream();
-				image.Save(outMs, new SixLabors.ImageSharp.Formats.Jpeg.JpegEncoder { Quality = 90 });
-				return outMs.ToArray();
+		/// <summary>Downscale-only fit into a maxDim x maxDim bounding box, preserving aspect ratio.</summary>
+		static Size ScaleToMaxWidth(Size source, int maxDim) {
+			if (source.Width <= maxDim && source.Height <= maxDim)
+				return source;
+			double factor = Math.Max(source.Width / (double)maxDim, source.Height / (double)maxDim);
+			return new Size(
+				Math.Max(1, (int)Math.Round(source.Width / factor)),
+				Math.Max(1, (int)Math.Round(source.Height / factor)));
+		}
+
+		/// <summary>
+		/// Native fast path for hashing a still image: decodes the (single) frame once and
+		/// returns both the 32x32 gray bytes and the source dimensions, avoiding a separate
+		/// ffprobe call. Returns false when the native binding is unavailable or decoding
+		/// fails — callers fall back to the CLI path.
+		/// </summary>
+		internal static unsafe bool TryGetImageInfoAndGrayBytes(string path, out byte[]? grayBytes, out int width, out int height, bool extendedLogging) {
+			const int N = 32;
+			grayBytes = null;
+			width = 0;
+			height = 0;
+			if (!ShouldUseNativeBinding)
+				return false;
+			try {
+				// Stills never benefit from HW decoders (and some HW paths reject them).
+				using var vsd = new VideoStreamDecoder(path);
+				if (!vsd.TryDecodeFrame(out var srcFrame, TimeSpan.Zero))
+					throw new Exception($"TryDecodeFrame failed for image '{path}'");
+
+				Size sourceSize = new(
+					srcFrame.width > 0 ? srcFrame.width : vsd.FrameSize.Width,
+					srcFrame.height > 0 ? srcFrame.height : vsd.FrameSize.Height);
+				AVPixelFormat srcPixFmt = vsd.IsHardwareDecode ? (AVPixelFormat)srcFrame.format : vsd.PixelFormat;
+				if (srcPixFmt < 0 || srcPixFmt >= AVPixelFormat.AV_PIX_FMT_NB)
+					throw new Exception($"Invalid source pixel format {srcPixFmt}");
+				if (sourceSize.Width <= 0 || sourceSize.Height <= 0)
+					throw new Exception($"Invalid source dimensions {sourceSize.Width}x{sourceSize.Height}");
+
+				using var converter = new VideoFrameConverter(
+					sourceSize, srcPixFmt,
+					new Size(N, N), AVPixelFormat.AV_PIX_FMT_GRAY8,
+					VideoFrameConverter.ScaleQuality.Bicubic, bitExact: false);
+				AVFrame convertedFrame = converter.Convert(srcFrame);
+				grayBytes = ExtractGray32FromFrame(convertedFrame);
+				width = sourceSize.Width;
+				height = sourceSize.Height;
+				return true;
 			}
-			return raw;
+			catch (Exception e) {
+				if (extendedLogging)
+					Logger.Instance.Info($"Native image decode failed on '{path}', falling back to process mode. Exception: {e}");
+				return false;
+			}
+		}
+
+		/// <summary>
+		/// Encodes raw BGRA pixels into a JPEG, optionally downscaling to
+		/// <paramref name="maxWidth"/>. Used by the GUI to encode composed thumbnail
+		/// strips for the on-disk cache. Native binding preferred; falls back to an
+		/// FFmpeg process fed via stdin.
+		/// </summary>
+		public static unsafe byte[]? EncodeJpegFromBgra(byte[] bgra, int width, int height, int maxWidth = 0, int quality = 0) {
+			if (bgra == null || width <= 0 || height <= 0 || bgra.Length < (long)width * height * 4)
+				return null;
+			if (quality <= 0) quality = DefaultJpegQuality;
+			Size destSize = maxWidth > 0 ? ScaleToMaxWidth(new Size(width, height), maxWidth) : new Size(width, height);
+
+			if (ShouldUseNativeBinding) {
+				try {
+					AVFrame* srcFrame = ffmpeg.av_frame_alloc();
+					if (srcFrame == null) throw new FFInvalidExitCodeException("Failed to allocate AVFrame.");
+					try {
+						srcFrame->format = (int)AVPixelFormat.AV_PIX_FMT_BGRA;
+						srcFrame->width = width;
+						srcFrame->height = height;
+						ffmpeg.av_frame_get_buffer(srcFrame, 0).ThrowExceptionIfError();
+						int srcStride = srcFrame->linesize[0];
+						int rowBytes = width * 4;
+						fixed (byte* src = bgra) {
+							for (int y = 0; y < height; y++)
+								Buffer.MemoryCopy(src + (long)y * rowBytes, srcFrame->data[0] + (long)y * srcStride, rowBytes, rowBytes);
+						}
+						using var converter = new VideoFrameConverter(
+							new Size(width, height), AVPixelFormat.AV_PIX_FMT_BGRA,
+							destSize, AVPixelFormat.AV_PIX_FMT_YUVJ420P,
+							VideoFrameConverter.ScaleQuality.Bicubic, bitExact: false);
+						AVFrame converted = converter.Convert(*srcFrame);
+						return JpegFrameEncoder.Encode(converted, quality);
+					}
+					finally {
+						ffmpeg.av_frame_free(&srcFrame);
+					}
+				}
+				catch (Exception e) {
+					Logger.Instance.Info($"Native BGRA->JPEG encode failed, falling back to process mode. Exception: {e}");
+				}
+			}
+
+			// CLI fallback: raw BGRA via stdin -> mjpeg via stdout.
+			var psi = new ProcessStartInfo {
+				FileName = FFmpegPath,
+				CreateNoWindow = true,
+				RedirectStandardInput = true,
+				RedirectStandardOutput = true,
+				WorkingDirectory = Path.GetDirectoryName(FFmpegPath)!,
+				WindowStyle = ProcessWindowStyle.Hidden
+			};
+			psi.ArgumentList.Add("-hide_banner");
+			psi.ArgumentList.Add("-loglevel"); psi.ArgumentList.Add("quiet");
+			psi.ArgumentList.Add("-f"); psi.ArgumentList.Add("rawvideo");
+			psi.ArgumentList.Add("-pix_fmt"); psi.ArgumentList.Add("bgra");
+			psi.ArgumentList.Add("-video_size"); psi.ArgumentList.Add($"{width}x{height}");
+			psi.ArgumentList.Add("-i"); psi.ArgumentList.Add("pipe:0");
+			if (destSize.Width != width)
+				{ psi.ArgumentList.Add("-vf"); psi.ArgumentList.Add($"scale={destSize.Width}:-1"); }
+			psi.ArgumentList.Add("-f"); psi.ArgumentList.Add("mjpeg");
+			psi.ArgumentList.Add("-q:v"); psi.ArgumentList.Add(Math.Clamp(2 + (100 - quality) / 10, 2, 31).ToString(CultureInfo.InvariantCulture));
+			psi.ArgumentList.Add("-frames:v"); psi.ArgumentList.Add("1");
+			psi.ArgumentList.Add("pipe:1");
+
+			using var process = new Process { StartInfo = psi };
+			try {
+				process.Start();
+				using var ms = new MemoryStream();
+				// Write input and read output concurrently to avoid pipe-buffer deadlocks.
+				var readTask = process.StandardOutput.BaseStream.CopyToAsync(ms);
+				process.StandardInput.BaseStream.Write(bgra, 0, width * height * 4);
+				process.StandardInput.BaseStream.Flush();
+				process.StandardInput.Close();
+				readTask.Wait(TimeoutDuration);
+				if (!process.WaitForExit(TimeoutDuration))
+					throw new TimeoutException("FFmpeg timed out encoding JPEG from raw pixels.");
+				if (process.ExitCode != 0)
+					throw new FFInvalidExitCodeException($"FFmpeg exited with: {process.ExitCode}");
+				byte[] jpeg = ms.ToArray();
+				return jpeg.Length > 0 ? jpeg : null;
+			}
+			catch (Exception e) {
+				Logger.Instance.Info($"BGRA->JPEG encode via FFmpeg process failed: {e.Message}");
+				try { if (!process.HasExited) process.Kill(); } catch { }
+				return null;
+			}
 		}
 	}
 
@@ -544,5 +783,11 @@ namespace VDF.Core.FFTools {
 		public byte Fullsize;
 		public string File;
 		public TimeSpan Position;
+		/// <summary>Target max width for non-fullsize thumbnails; 0 = default (100). Downscale only.</summary>
+		public int MaxWidth;
+		/// <summary>JPEG quality 1-100; 0 = default (90).</summary>
+		public int JpegQuality;
+		/// <summary>Skip hardware acceleration (used for still images).</summary>
+		public bool SoftwareDecodeOnly;
 	}
 }

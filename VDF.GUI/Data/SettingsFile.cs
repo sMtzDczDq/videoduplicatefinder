@@ -88,6 +88,58 @@ namespace VDF.GUI.Data {
 			set => this.RaiseAndSetIfChanged(ref _CustomSelectionPresets, value);
 		}
 
+		bool _AutoApplySelectionPresetEnabled;
+		[JsonPropertyName("AutoApplySelectionPresetEnabled")]
+		public bool AutoApplySelectionPresetEnabled {
+			get => _AutoApplySelectionPresetEnabled;
+			set => this.RaiseAndSetIfChanged(ref _AutoApplySelectionPresetEnabled, value);
+		}
+		string _AutoApplySelectionPreset = string.Empty;
+		/// <summary>Name of the custom-selection preset applied automatically after every scan.</summary>
+		[JsonPropertyName("AutoApplySelectionPreset")]
+		public string AutoApplySelectionPreset {
+			get => _AutoApplySelectionPreset;
+			set => this.RaiseAndSetIfChanged(ref _AutoApplySelectionPreset, value);
+		}
+
+		double? _MainWindowWidth;
+		[JsonPropertyName("MainWindowWidth")]
+		public double? MainWindowWidth {
+			get => _MainWindowWidth;
+			set => this.RaiseAndSetIfChanged(ref _MainWindowWidth, value);
+		}
+		double? _MainWindowHeight;
+		[JsonPropertyName("MainWindowHeight")]
+		public double? MainWindowHeight {
+			get => _MainWindowHeight;
+			set => this.RaiseAndSetIfChanged(ref _MainWindowHeight, value);
+		}
+		int? _MainWindowPositionX;
+		[JsonPropertyName("MainWindowPositionX")]
+		public int? MainWindowPositionX {
+			get => _MainWindowPositionX;
+			set => this.RaiseAndSetIfChanged(ref _MainWindowPositionX, value);
+		}
+		int? _MainWindowPositionY;
+		[JsonPropertyName("MainWindowPositionY")]
+		public int? MainWindowPositionY {
+			get => _MainWindowPositionY;
+			set => this.RaiseAndSetIfChanged(ref _MainWindowPositionY, value);
+		}
+		bool _MainWindowMaximized;
+		[JsonPropertyName("MainWindowMaximized")]
+		public bool MainWindowMaximized {
+			get => _MainWindowMaximized;
+			set => this.RaiseAndSetIfChanged(ref _MainWindowMaximized, value);
+		}
+		string _LastSortOrder = string.Empty;
+		/// <summary>Key of the results sort order (see MainWindowVM.SortOrders), restored on startup.</summary>
+		[JsonPropertyName("LastSortOrder")]
+		public string LastSortOrder {
+			get => _LastSortOrder;
+			set => this.RaiseAndSetIfChanged(ref _LastSortOrder, value);
+		}
+
 		string _LanguageCode = ResolveDefaultLanguageCode();
 		[JsonPropertyName("LanguageCode")]
 		public string LanguageCode {
@@ -301,7 +353,7 @@ namespace VDF.GUI.Data {
 
 		public static void SaveSettings(string? path = null) {
 			path = ResolveSettingsPath(path);
-			File.WriteAllText(path, JsonSerializer.Serialize(instance));
+			File.WriteAllText(path, JsonSerializer.Serialize(instance, GuiJsonContext.Default.SettingsFile));
 		}
 
 		bool _UseMica = false;
@@ -351,6 +403,12 @@ namespace VDF.GUI.Data {
 		public CompareMode ThumbnailComparerMode {
 			get => _ThumbnailComparerMode;
 			set => this.RaiseAndSetIfChanged(ref _ThumbnailComparerMode, value);
+		}
+		bool _ShowThumbnailColumn = true;
+		[JsonPropertyName("ShowThumbnailColumn")]
+		public bool ShowThumbnailColumn {
+			get => _ShowThumbnailColumn;
+			set => this.RaiseAndSetIfChanged(ref _ShowThumbnailColumn, value);
 		}
 		bool _ShowPathColumn = true;
 		[JsonPropertyName("ShowPathColumn")]
@@ -508,7 +566,7 @@ namespace VDF.GUI.Data {
 
 			path = ResolveSettingsPath(path);
 			if (!File.Exists(path)) return;
-			instance = JsonSerializer.Deserialize<SettingsFile>(File.ReadAllBytes(path));
+			instance = JsonSerializer.Deserialize(File.ReadAllBytes(path), GuiJsonContext.Default.SettingsFile);
 		}
 
 		static bool LoadOldSettings(string? path) {

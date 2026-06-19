@@ -16,10 +16,17 @@
 
 using System.Diagnostics;
 using System.Text.Json;
-using ProtoBuf;
+using MemoryPack;
 
 namespace VDF.Core.Utils {
 	static class DatabaseUtils {
+		static DatabaseUtils() => MemoryPackRegistration.Register();
+
+		// New databases are MemoryPack payloads behind this magic header; files without
+		// it are protobuf-net databases from 3.x / early 4.x, decoded by
+		// LegacyDatabaseReader and migrated to the new format on the next save.
+		static ReadOnlySpan<byte> FormatMagic => "VDFDB001"u8;
+
 		internal static HashSet<FileEntry> Database => DbWrapper.Entries;
 		internal static int DbVersion => DbWrapper.Version;
 		static DatabaseWrapper DbWrapper = new();
@@ -43,57 +50,84 @@ namespace VDF.Core.Utils {
 			if (databaseFile.Exists && databaseFile.Length == 0) //invalid data
 			{
 				databaseFile.Delete();
+				MigrateImageHashesIfNeeded();
 				return true;
 			}
-			if (!databaseFile.Exists)
+			if (!databaseFile.Exists) {
+				MigrateImageHashesIfNeeded();
 				return true;
+			}
 
 			Logger.Instance.Info("Found previously scanned files, importing...");
 			var st = Stopwatch.StartNew();
 			try {
-				using var file = new FileStream(databaseFile.FullName, FileMode.Open);
-				DbWrapper = Serializer.Deserialize<DatabaseWrapper>(file);
+				using var file = new FileStream(databaseFile.FullName, FileMode.Open, FileAccess.Read);
+				Span<byte> header = stackalloc byte[8];
+				int headerRead = file.Read(header);
+				if (headerRead == FormatMagic.Length && header.SequenceEqual(FormatMagic)) {
+					DbWrapper = MemoryPackSerializer.DeserializeAsync<DatabaseWrapper>(file)
+						.AsTask().GetAwaiter().GetResult() ?? new DatabaseWrapper();
+				}
+				else {
+					// Legacy protobuf-net database (3.x / early 4.x).
+					file.Position = 0;
+					byte[] raw = new byte[file.Length];
+					file.ReadExactly(raw);
+					DbWrapper = LegacyDatabaseReader.Read(raw);
+					Logger.Instance.Info("Legacy database format detected — it will be stored in the new format on the next save.");
+				}
 			}
-			catch (ProtoException ex) {
-				if (UpgradeDatabase(databaseFile.FullName)) {
-					Logger.Instance.Info("Database has been upgraded to the new format.");
-					return true;
+			catch (Exception ex) {
+				st.Stop();
+				// A broken temp file (e.g. a crash mid-save) must not block startup:
+				// drop it and retry with the real database file.
+				if (databaseFile.FullName == new FileInfo(TempDatabasePath).FullName) {
+					Logger.Instance.Info($"Importing previously scanned files from '{databaseFile.FullName}' has failed; retrying with the main database file.");
+					try { databaseFile.Delete(); } catch (Exception) { }
+					return LoadDatabase();
 				}
 				Logger.Instance.Info($"Importing previously scanned files has failed because of: {ex}");
-				st.Stop();
 				try {
 					File.Move(databaseFile.FullName, Path.ChangeExtension(databaseFile.FullName, "_DAMAGED.db"), true);
 				}
 				catch (Exception) { }
 				return false;
 			}
-			catch (EndOfStreamException) {
-				Logger.Instance.Info($"Importing previously scanned files from '{databaseFile.FullName}' has failed.");
-				databaseFile.Delete();
-				//Could have been the temp database file
-				LoadDatabase();
-			}
 
 			st.Stop();
 			Logger.Instance.Info($"Previously scanned files imported. {Database.Count:N0} files in {st.Elapsed}");
+			MigrateImageHashesIfNeeded();
 			return true;
+		}
+
+		/// <summary>
+		/// One-time migration: image gray bytes/pHashes produced by the old ImageSharp
+		/// pipeline are not comparable with the FFmpeg pipeline (different luma weights
+		/// and resampler), so clear them and let the next scan recompute. Cheap — images
+		/// re-hash at one decode per file. Videos are unaffected (always FFmpeg-hashed).
+		/// </summary>
+		internal const int CurrentImageHashPipeline = 1;
+		static void MigrateImageHashesIfNeeded() {
+			if (DbWrapper.ImageHashPipeline >= CurrentImageHashPipeline)
+				return;
+			int cleared = 0;
+			foreach (FileEntry entry in DbWrapper.Entries) {
+				if (!entry.IsImage)
+					continue;
+				if (entry.grayBytes.Count > 0 || entry.PHashes.Count > 0 || entry.Flags.Has(EntryFlags.TooDark)) {
+					entry.grayBytes.Clear();
+					entry.PHashes.Clear();
+					entry.Flags.Set(EntryFlags.TooDark, false);
+					cleared++;
+				}
+			}
+			DbWrapper.ImageHashPipeline = CurrentImageHashPipeline;
+			if (cleared > 0)
+				Logger.Instance.Info($"Image hash migration: cleared cached hashes of {cleared:N0} image(s) — they will be re-hashed with the FFmpeg pipeline on the next scan.");
 		}
 		internal static void Create16x16Database() {
 			DbWrapper.Version = 1;
 			SaveDatabase();
-		}
-		static bool UpgradeDatabase(string file) {
-
-			try {
-				using var fs = new FileStream(file, FileMode.Open);
-				DbWrapper.Entries = Serializer.Deserialize<HashSet<FileEntry>>(fs);
-				DbWrapper.Version = 1;
-				return true;
-			}
-			catch (Exception ex) {
-				Logger.Instance.Info($"Upgrading database has failed because of: {ex}");
-			}
-			return false;
 		}
 		internal static void CleanupDatabase() {
 			int oldCount = Database.Count;
@@ -109,9 +143,10 @@ namespace VDF.Core.Utils {
 		internal static void SaveDatabase() {
 			Logger.Instance.Info($"Save scanned files to disk ({Database.Count:N0} files).");
 
-			FileStream stream = new(TempDatabasePath, FileMode.Create);
-			Serializer.Serialize(stream, DbWrapper);
-			stream.Dispose();
+			using (FileStream stream = new(TempDatabasePath, FileMode.Create)) {
+				stream.Write(FormatMagic);
+				MemoryPackSerializer.SerializeAsync(stream, DbWrapper).AsTask().GetAwaiter().GetResult();
+			}
 			//Reason: https://github.com/0x90d/videoduplicatefinder/issues/247
 			File.Move(TempDatabasePath, CurrentDatabasePath, true);
 		}
@@ -129,10 +164,19 @@ namespace VDF.Core.Utils {
 			dbEntry.Path = newPath;
 			Database.Add(dbEntry);
 		}
+		// Typed JsonTypeInfo overloads only: the generic overloads carry
+		// RequiresUnreferencedCode/RequiresDynamicCode and pollute Native AOT publish
+		// logs even though metadata is source-generated. WriteIndented is the only
+		// caller-supplied option that matters here; everything else is fixed by the
+		// contexts (IncludeFields, case-insensitive names).
 		internal static bool ExportDatabaseToJson(string jsonFile, JsonSerializerOptions options) {
 			try {
-				using var stream = File.OpenWrite(jsonFile);
-				JsonSerializer.Serialize(stream, DbWrapper, options);
+				// File.Create, not OpenWrite: overwriting a previously larger export with
+				// OpenWrite leaves trailing garbage that breaks re-import.
+				using var stream = File.Create(jsonFile);
+				JsonSerializer.Serialize(stream, DbWrapper, options.WriteIndented
+					? CoreJsonPrettyContext.Default.DatabaseWrapper
+					: CoreJsonContext.Default.DatabaseWrapper);
 				stream.Close();
 			}
 			catch (JsonException e) {
@@ -148,7 +192,7 @@ namespace VDF.Core.Utils {
 		internal static bool ImportDatabaseFromJson(string jsonFile, JsonSerializerOptions options) {
 			try {
 				using var stream = File.OpenRead(jsonFile);
-				DbWrapper = JsonSerializer.Deserialize<DatabaseWrapper>(stream, options)!;
+				DbWrapper = JsonSerializer.Deserialize(stream, CoreJsonContext.Default.DatabaseWrapper)!;
 				stream.Close();
 			}
 			catch (JsonException e) {

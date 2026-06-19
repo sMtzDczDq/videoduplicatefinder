@@ -28,6 +28,7 @@ using System.Text.Json;
 using Avalonia;
 using Avalonia.Collections;
 using Avalonia.Controls;
+using Avalonia.Input.Platform;
 using Avalonia.Platform;
 using Avalonia.Platform.Storage;
 using Avalonia.Threading;
@@ -188,6 +189,12 @@ namespace VDF.GUI.ViewModels {
 			get => _TotalDuplicatesSize;
 			set => this.RaiseAndSetIfChanged(ref _TotalDuplicatesSize, value);
 		}
+		string _PotentialSavings = string.Empty;
+		/// <summary>Space freed if only the largest file of every group were kept.</summary>
+		public string PotentialSavings {
+			get => _PotentialSavings;
+			set => this.RaiseAndSetIfChanged(ref _PotentialSavings, value);
+		}
 		long _TotalSizeRemovedInternal;
 		long TotalSizeRemovedInternal {
 			get => _TotalSizeRemovedInternal;
@@ -201,6 +208,89 @@ namespace VDF.GUI.ViewModels {
 			get => _DuplicatesCheckedCounter;
 			set => this.RaiseAndSetIfChanged(ref _DuplicatesCheckedCounter, value);
 		}
+		long _DuplicatesCheckedSizeInternal;
+		long DuplicatesCheckedSizeInternal {
+			get => _DuplicatesCheckedSizeInternal;
+			set {
+				_DuplicatesCheckedSizeInternal = value;
+				this.RaisePropertyChanged(nameof(DuplicatesCheckedSize));
+			}
+		}
+		public string DuplicatesCheckedSize => DuplicatesCheckedSizeInternal.BytesToString();
+		// SizeLong is -1 when the file no longer exists on disk; don't let those
+		// items distort the checked-size total.
+		static long CheckedSizeOf(DuplicateItemVM item) => Math.Max(0, item.ItemInfo.SizeLong);
+
+		// ---- Selection undo (Ctrl+Z) ----
+		// Each step holds the items whose Checked state changed in one gesture and
+		// the value to restore. Bulk selection commands group their changes via
+		// BeginSelectionUndoBatch(); ungrouped changes (single checkbox clicks)
+		// become one step each.
+		const int MaxSelectionUndoSteps = 200;
+		readonly List<List<(DuplicateItemVM Item, bool OldChecked)>> selectionUndoStack = new();
+		List<(DuplicateItemVM Item, bool OldChecked)>? activeSelectionUndoBatch;
+		bool suppressSelectionUndoRecording;
+
+		internal IDisposable BeginSelectionUndoBatch() {
+			// Nested scopes (e.g. a preset auto-applied from another command) fold
+			// into the outer step so one Ctrl+Z reverts the whole gesture.
+			if (activeSelectionUndoBatch != null)
+				return System.Reactive.Disposables.Disposable.Empty;
+			var batch = activeSelectionUndoBatch = new();
+			return System.Reactive.Disposables.Disposable.Create(() => {
+				activeSelectionUndoBatch = null;
+				if (batch.Count > 0)
+					PushSelectionUndoStep(batch);
+			});
+		}
+
+		void RecordCheckedChangeForUndo(DuplicateItemVM item) {
+			if (suppressSelectionUndoRecording) return;
+			var entry = (item, !item.Checked); // PropertyChanged fires after the change
+			if (activeSelectionUndoBatch != null) {
+				activeSelectionUndoBatch.Add(entry);
+				return;
+			}
+			PushSelectionUndoStep(new() { entry });
+		}
+
+		void PushSelectionUndoStep(List<(DuplicateItemVM Item, bool OldChecked)> step) {
+			selectionUndoStack.Add(step);
+			if (selectionUndoStack.Count > MaxSelectionUndoSteps)
+				selectionUndoStack.RemoveAt(0);
+		}
+
+		public ReactiveCommand<Unit, Unit> UndoSelectionCommand => ReactiveCommand.Create(() => {
+			if (selectionUndoStack.Count == 0) return;
+			var step = selectionUndoStack[^1];
+			selectionUndoStack.RemoveAt(selectionUndoStack.Count - 1);
+			suppressSelectionUndoRecording = true;
+			try {
+				// Restore in reverse so items touched twice in one step end up
+				// at their original state.
+				for (int i = step.Count - 1; i >= 0; i--)
+					step[i].Item.Checked = step[i].OldChecked;
+			}
+			finally {
+				suppressSelectionUndoRecording = false;
+			}
+		});
+
+		// Live count of checked items per group, maintained alongside the checked
+		// counters. The "groups with checked items" filter and sort previously
+		// rescanned the whole duplicates list per row, which is quadratic on
+		// large result sets.
+		readonly Dictionary<Guid, int> checkedCountByGroup = new();
+		internal bool GroupHasCheckedItems(Guid groupId) => checkedCountByGroup.ContainsKey(groupId);
+		void AdjustCheckedGroupIndex(DuplicateItemVM item, int delta) {
+			Guid groupId = item.ItemInfo.GroupId;
+			checkedCountByGroup.TryGetValue(groupId, out int count);
+			count += delta;
+			if (count <= 0)
+				checkedCountByGroup.Remove(groupId);
+			else
+				checkedCountByGroup[groupId] = count;
+		}
 		public bool IsMultiOpenSupported => !string.IsNullOrEmpty(SettingsFile.Instance.CustomCommands.OpenMultiple);
 		public bool IsMultiOpenInFolderSupported => !string.IsNullOrEmpty(SettingsFile.Instance.CustomCommands.OpenMultipleInFolder);
 
@@ -213,6 +303,14 @@ namespace VDF.GUI.ViewModels {
 		public static bool IsDebug => false;
 #endif
 
+		// ILLink flags every WhenAnyValue call (IL2026): it reflects over the member
+		// chain in the expression. All chains here target view-model properties that
+		// are also statically referenced (compiled bindings and code), so they are
+		// preserved and the warning is a false positive — suppressed per call site.
+		internal const string WhenAnyValueTrimJustification =
+			"WhenAnyValue reflects over view-model properties that are also statically referenced (compiled bindings and code), so they are preserved.";
+
+		[System.Diagnostics.CodeAnalysis.UnconditionalSuppressMessage("Trimming", "IL2026", Justification = WhenAnyValueTrimJustification)]
 		public MainWindowVM() {
 			MigrateLegacyBlacklistLocation();
 			GroupBlacklist = BlacklistStore.Load(BlacklistedGroupsFile, msg => Logger.Instance.Info(msg));
@@ -224,7 +322,11 @@ namespace VDF.GUI.ViewModels {
 			Scanner.ThumbnailsRetrieved += Scanner_ThumbnailsRetrieved;
 			Scanner.DatabaseCleaned += Scanner_DatabaseCleaned;
 			Scanner.FilesEnumerated += Scanner_FilesEnumerated;
-			Scanner.NoThumbnailImage = SixLabors.ImageSharp.Image.Load(AssetLoader.Open(new Uri("avares://VDF.GUI/Assets/icon.png")));
+			using (var assetStream = AssetLoader.Open(new Uri("avares://VDF.GUI/Assets/icon.png")))
+			using (var assetMs = new MemoryStream()) {
+				assetStream.CopyTo(assetMs);
+				Scanner.NoThumbnailImage = assetMs.ToArray();
+			}
 
 			try {
 				TempDirectory = TempExtractionManager.Register(new("VDF-"));
@@ -249,45 +351,52 @@ namespace VDF.GUI.ViewModels {
 			scheduledScanTimer.Start();
 			CheckScheduledScan();
 
-			SortOrders = new KeyValuePair<string, DataGridSortDescription>[] {
-				new KeyValuePair<string, DataGridSortDescription>("None", null!),
-				new KeyValuePair<string, DataGridSortDescription>("Size Ascending",
+			SortOrders = new SortOrderOption[] {
+				new SortOrderOption("None", null),
+				new SortOrderOption("Size Ascending",
 				DataGridSortDescription.FromPath($"{nameof(DuplicateItemVM.ItemInfo)}.{nameof(DuplicateItem.SizeLong)}", ListSortDirection.Ascending)),
-				new KeyValuePair<string, DataGridSortDescription>("Size Descending",
+				new SortOrderOption("Size Descending",
 				DataGridSortDescription.FromPath($"{nameof(DuplicateItemVM.ItemInfo)}.{nameof(DuplicateItem.SizeLong)}", ListSortDirection.Descending)),
-				new KeyValuePair<string, DataGridSortDescription>("Resolution Ascending",
+				new SortOrderOption("Resolution Ascending",
 				DataGridSortDescription.FromPath($"{nameof(DuplicateItemVM.ItemInfo)}.{nameof(DuplicateItem.FrameSizeInt)}", ListSortDirection.Ascending)),
-				new KeyValuePair<string, DataGridSortDescription>("Resolution Descending",
+				new SortOrderOption("Resolution Descending",
 				DataGridSortDescription.FromPath($"{nameof(DuplicateItemVM.ItemInfo)}.{nameof(DuplicateItem.FrameSizeInt)}", ListSortDirection.Descending)),
-				new KeyValuePair<string, DataGridSortDescription>("Duration Ascending",
+				new SortOrderOption("Duration Ascending",
 				DataGridSortDescription.FromPath($"{nameof(DuplicateItemVM.ItemInfo)}.{nameof(DuplicateItem.Duration)}", ListSortDirection.Ascending)),
-				new KeyValuePair<string, DataGridSortDescription>("Duration Descending",
+				new SortOrderOption("Duration Descending",
 				DataGridSortDescription.FromPath($"{nameof(DuplicateItemVM.ItemInfo)}.{nameof(DuplicateItem.Duration)}", ListSortDirection.Descending)),
-				new KeyValuePair<string, DataGridSortDescription>("Date Created Ascending",
+				new SortOrderOption("Date Created Ascending",
 				DataGridSortDescription.FromPath($"{nameof(DuplicateItemVM.ItemInfo)}.{nameof(DuplicateItem.DateCreated)}", ListSortDirection.Ascending)),
-				new KeyValuePair<string, DataGridSortDescription>("Date Created Descending",
+				new SortOrderOption("Date Created Descending",
 				DataGridSortDescription.FromPath($"{nameof(DuplicateItemVM.ItemInfo)}.{nameof(DuplicateItem.DateCreated)}", ListSortDirection.Descending)),
-				new KeyValuePair<string, DataGridSortDescription>("Similarity Ascending",
+				new SortOrderOption("Similarity Ascending",
 				DataGridSortDescription.FromPath($"{nameof(DuplicateItemVM.ItemInfo)}.{nameof(DuplicateItem.Similarity)}", ListSortDirection.Ascending)),
-				new KeyValuePair<string, DataGridSortDescription>("Similarity Descending",
+				new SortOrderOption("Similarity Descending",
 				DataGridSortDescription.FromPath($"{nameof(DuplicateItemVM.ItemInfo)}.{nameof(DuplicateItem.Similarity)}", ListSortDirection.Descending)),
-				new KeyValuePair<string, DataGridSortDescription>("Group Has Selected Items Ascending",
+				new SortOrderOption("Group Has Selected Items Ascending",
 				DataGridSortDescription.FromComparer(new CheckedGroupsComparer(this), ListSortDirection.Ascending)),
-				new KeyValuePair<string, DataGridSortDescription>("Group Has Selected Items Descending",
+				new SortOrderOption("Group Has Selected Items Descending",
 				DataGridSortDescription.FromComparer(new CheckedGroupsComparer(this), ListSortDirection.Descending)),
-				new KeyValuePair<string, DataGridSortDescription>("Group Size Ascending",
+				new SortOrderOption("Group Size Ascending",
 				DataGridSortDescription.FromComparer(new GroupSizeComparer(this), ListSortDirection.Ascending)),
-				new KeyValuePair<string, DataGridSortDescription>("Group Size Descending",
+				new SortOrderOption("Group Size Descending",
 				DataGridSortDescription.FromComparer(new GroupSizeComparer(this), ListSortDirection.Descending)),
-				new KeyValuePair<string, DataGridSortDescription>("Group Total Size Ascending",
+				new SortOrderOption("Group Total Size Ascending",
 				DataGridSortDescription.FromComparer(new GroupTotalSizeComparer(this), ListSortDirection.Ascending)),
-				new KeyValuePair<string, DataGridSortDescription>("Group Total Size Descending",
+				new SortOrderOption("Group Total Size Descending",
 				DataGridSortDescription.FromComparer(new GroupTotalSizeComparer(this), ListSortDirection.Descending)),
 			};
 			_SortOrder = SortOrders[0];
+			if (!string.IsNullOrEmpty(SettingsFile.Instance.LastSortOrder)) {
+				foreach (var order in SortOrders)
+					if (order.Name == SettingsFile.Instance.LastSortOrder) {
+						_SortOrder = order;
+						break;
+					}
+			}
 
 			this.WhenAnyValue(vm => vm.FilterByPath)
-					.Throttle(TimeSpan.FromMilliseconds(500), RxApp.MainThreadScheduler)
+					.Throttle(TimeSpan.FromMilliseconds(500), RxSchedulers.MainThreadScheduler)
 						.Subscribe(_ => { RebuildSearchPathIndex(); view?.Refresh(); });
 		}
 
@@ -295,24 +404,46 @@ namespace VDF.GUI.ViewModels {
 			if (e.OldItems != null) {
 				foreach (INotifyPropertyChanged item in e.OldItems) {
 					item.PropertyChanged -= DuplicateItemVM_PropertyChanged;
-					if (((DuplicateItemVM)item).Checked)
+					if (((DuplicateItemVM)item).Checked) {
 						DuplicatesCheckedCounter--;
+						DuplicatesCheckedSizeInternal -= CheckedSizeOf((DuplicateItemVM)item);
+						AdjustCheckedGroupIndex((DuplicateItemVM)item, -1);
+					}
 				}
 			}
 			if (e.NewItems != null) {
-				foreach (INotifyPropertyChanged item in e.NewItems)
+				foreach (INotifyPropertyChanged item in e.NewItems) {
 					item.PropertyChanged += DuplicateItemVM_PropertyChanged;
+					// Items can arrive already checked (restored backups); count them
+					// so the counters and the per-group index stay accurate.
+					if (((DuplicateItemVM)item).Checked) {
+						DuplicatesCheckedCounter++;
+						DuplicatesCheckedSizeInternal += CheckedSizeOf((DuplicateItemVM)item);
+						AdjustCheckedGroupIndex((DuplicateItemVM)item, +1);
+					}
+				}
 			}
-			if (e.Action == NotifyCollectionChangedAction.Reset)
+			if (e.Action == NotifyCollectionChangedAction.Reset) {
 				DuplicatesCheckedCounter = 0;
+				DuplicatesCheckedSizeInternal = 0;
+				checkedCountByGroup.Clear();
+				selectionUndoStack.Clear();
+			}
 		}
 
 		void DuplicateItemVM_PropertyChanged(object? sender, PropertyChangedEventArgs e) {
 			if (e.PropertyName != nameof(DuplicateItemVM.Checked) || sender == null) return;
-			if (((DuplicateItemVM)sender).Checked)
+			RecordCheckedChangeForUndo((DuplicateItemVM)sender);
+			if (((DuplicateItemVM)sender).Checked) {
 				DuplicatesCheckedCounter++;
-			else
+				DuplicatesCheckedSizeInternal += CheckedSizeOf((DuplicateItemVM)sender);
+				AdjustCheckedGroupIndex((DuplicateItemVM)sender, +1);
+			}
+			else {
 				DuplicatesCheckedCounter--;
+				DuplicatesCheckedSizeInternal -= CheckedSizeOf((DuplicateItemVM)sender);
+				AdjustCheckedGroupIndex((DuplicateItemVM)sender, -1);
+			}
 		}
 
 		public async void Thumbnails_ValueChanged(object? sender, NumericUpDownValueChangedEventArgs e) {
@@ -489,6 +620,19 @@ namespace VDF.GUI.ViewModels {
 				RebuildSearchPathIndex();
 				RefreshGroupStats();
 
+				if (SettingsFile.Instance.AutoApplySelectionPresetEnabled &&
+					!string.IsNullOrEmpty(SettingsFile.Instance.AutoApplySelectionPreset)) {
+					var preset = SettingsFile.Instance.CustomSelectionPresets
+						.FirstOrDefault(p => p.Name == SettingsFile.Instance.AutoApplySelectionPreset);
+					if (preset != null) {
+						RunCustomSelection(preset.Data);
+						Logger.Instance.Info(string.Format(App.Lang["Log.AutoAppliedPreset"], preset.Name));
+					}
+					else {
+						Logger.Instance.Info(string.Format(App.Lang["Log.AutoApplyPresetMissing"], SettingsFile.Instance.AutoApplySelectionPreset));
+					}
+				}
+
 				if (completedScheduledScan && SettingsFile.Instance.NotifyOnScheduledScanComplete) {
 					_ = MessageBoxService.Show(App.Lang["Message.ScheduledScanCompleted"]);
 				}
@@ -503,6 +647,10 @@ namespace VDF.GUI.ViewModels {
 		void BuildDuplicatesView() {
 			view = new DataGridCollectionView(Duplicates);
 			view.GroupDescriptions.Add(new DataGridPathGroupDescription($"{nameof(DuplicateItemVM.ItemInfo)}.{nameof(DuplicateItem.GroupId)}"));
+			// Rebuilding the view (rescan, import) previously dropped the active sort
+			// while the sort ComboBox kept displaying it.
+			if (_SortOrder.Sort != null)
+				view.SortDescriptions.Add(_SortOrder.Sort);
 			view.Filter += DuplicatesFilter;
 			GetDataGrid.ItemsSource = view;
 			TotalSizeRemovedInternal = 0;
@@ -512,8 +660,24 @@ namespace VDF.GUI.ViewModels {
 
 		void RefreshGroupStats() {
 			TotalDuplicates = Duplicates.Count;
-			TotalDuplicatesSize = Duplicates.Sum(x => x.ItemInfo.SizeLong).BytesToString();
-			TotalDuplicateGroups = Duplicates.GroupBy(x => x.ItemInfo.GroupId).Count();
+			int groupCount = 0;
+			long totalSize = 0;
+			long savings = 0;
+			foreach (var group in Duplicates.GroupBy(x => x.ItemInfo.GroupId)) {
+				groupCount++;
+				long groupTotal = 0;
+				long largest = 0;
+				foreach (var item in group) {
+					long size = Math.Max(0, item.ItemInfo.SizeLong);
+					groupTotal += size;
+					if (size > largest) largest = size;
+				}
+				totalSize += groupTotal;
+				savings += groupTotal - largest;
+			}
+			TotalDuplicatesSize = totalSize.BytesToString();
+			TotalDuplicateGroups = groupCount;
+			PotentialSavings = savings.BytesToString();
 		}
 
 		private DuplicateItemVM? GetSelectedDuplicateItem() {
@@ -603,42 +767,83 @@ namespace VDF.GUI.ViewModels {
 		}
 
 		public ReactiveCommand<Unit, Unit> ExportScanResultsCommand => ReactiveCommand.CreateFromTask(async () => {
-			await ExportScanResults(serializerOptions: new JsonSerializerOptions {
-				IncludeFields = true,
-			});
+			await ExportScanResults();
 		});
 
 		public ReactiveCommand<Unit, Unit> ExportScanResultsPrettyCommand => ReactiveCommand.CreateFromTask(async () => {
-			await ExportScanResults(serializerOptions: new JsonSerializerOptions {
-				IncludeFields = true,
-				WriteIndented = true,
-			});
+			await ExportScanResults(envelopeTypeInfo: GuiJsonFieldsPrettyContext.Default.ScanResultsEnvelope);
 		});
 
 		public ReactiveCommand<Unit, Unit> ExportScanResultsToFileCommand => ReactiveCommand.CreateFromTask(async () => {
 			await ExportScanResults();
 		});
 
-		private static readonly JsonSerializerOptions JsonOptions = new JsonSerializerOptions {
-			IncludeFields = true,
-		};
+		public ReactiveCommand<Unit, Unit> ExportScanResultsToCsvCommand => ReactiveCommand.CreateFromTask(async () => {
+			if (Duplicates.Count == 0) return;
+			var path = await Utils.PickerDialogUtils.SaveFilePicker(new FilePickerSaveOptions() {
+				DefaultExtension = ".csv",
+				FileTypeChoices = [new FilePickerFileType("CSV") { Patterns = ["*.csv"] }]
+			});
+			if (string.IsNullOrEmpty(path)) return;
+			try {
+				var snapshot = Duplicates.ToList();
+				await Task.Run(() => WriteScanResultsCsv(path, snapshot));
+			}
+			catch (Exception ex) {
+				string error = string.Format(App.Lang["Message.ExportScanResultsFailed"], ex);
+				Logger.Instance.Info(error);
+				await MessageBoxService.Show(error);
+			}
+		});
+
+		static void WriteScanResultsCsv(string path, List<DuplicateItemVM> items) {
+			static string Escape(string? s) {
+				s ??= string.Empty;
+				return s.Contains(',') || s.Contains('"') || s.Contains('\n') || s.Contains('\r')
+					? "\"" + s.Replace("\"", "\"\"") + "\""
+					: s;
+			}
+			var inv = System.Globalization.CultureInfo.InvariantCulture;
+			// UTF-8 BOM so Excel detects the encoding.
+			using var writer = new StreamWriter(path, append: false, new UTF8Encoding(encoderShouldEmitUTF8Identifier: true));
+			writer.WriteLine("GroupId,Path,SizeBytes,Duration,Resolution,Fps,BitrateKbs,AudioFormat,AudioSampleRate,Similarity,DateCreated,IsImage,Checked");
+			// Keep group members on adjacent rows regardless of list order.
+			foreach (var group in items.GroupBy(i => i.ItemInfo.GroupId))
+				foreach (var item in group) {
+					var info = item.ItemInfo;
+					writer.WriteLine(string.Join(',',
+						info.GroupId.ToString(),
+						Escape(info.Path),
+						info.SizeLong.ToString(inv),
+						info.Duration.ToString(null, inv),
+						Escape(info.FrameSize),
+						info.Fps.ToString(inv),
+						info.BitRateKbs.ToString(inv),
+						Escape(info.AudioFormat),
+						info.AudioSampleRate.ToString(inv),
+						info.Similarity.ToString(inv),
+						info.DateCreated.ToString("yyyy-MM-dd HH:mm:ss", inv),
+						info.IsImage.ToString(),
+						item.Checked.ToString()));
+				}
+		}
 
 		// Accepts both the v1 envelope ({version, items}) and the legacy raw array
 		// shape produced by older builds. Returns the items list.
 		private static List<DuplicateItemVM> ReadScanResultsItems(JsonElement root) {
 			if (root.ValueKind == JsonValueKind.Array)
-				return root.Deserialize<List<DuplicateItemVM>>(JsonOptions) ?? new();
+				return root.Deserialize(GuiJsonFieldsContext.Default.ListDuplicateItemVM) ?? new();
 
 			if (root.ValueKind == JsonValueKind.Object &&
 				root.TryGetProperty("items", out var itemsEl) &&
 				itemsEl.ValueKind == JsonValueKind.Array) {
-				return itemsEl.Deserialize<List<DuplicateItemVM>>(JsonOptions) ?? new();
+				return itemsEl.Deserialize(GuiJsonFieldsContext.Default.ListDuplicateItemVM) ?? new();
 			}
 
 			throw new JsonException("Unknown scan results format");
 		}
 
-		async Task ExportScanResults(string? path = null, bool includeThumbnails = true, int thumbMaxEdge = 160, JsonSerializerOptions? serializerOptions = null) {
+		async Task ExportScanResults(string? path = null, bool includeThumbnails = true, int thumbMaxEdge = 160, System.Text.Json.Serialization.Metadata.JsonTypeInfo<ScanResultsEnvelope>? envelopeTypeInfo = null) {
 			path ??= await Utils.PickerDialogUtils.SaveFilePicker(new FilePickerSaveOptions() {
 				SuggestedStartLocation = await ApplicationHelpers.MainWindow.StorageProvider.TryGetFolderFromPathAsync(CoreUtils.CurrentFolder),
 				DefaultExtension = includeThumbnails ? ".zip" : ".json",
@@ -658,7 +863,7 @@ namespace VDF.GUI.ViewModels {
 
 				if (!includeThumbnails) {
 					await using var fs = new FileStream(tmp, FileMode.Create, FileAccess.Write, FileShare.None, 128 * 1024, useAsync: true);
-					await JsonSerializer.SerializeAsync(fs, envelope, serializerOptions ?? JsonOptions);
+					await JsonSerializer.SerializeAsync(fs, envelope, envelopeTypeInfo ?? GuiJsonFieldsContext.Default.ScanResultsEnvelope);
 				}
 				else {
 					await using var fs = new FileStream(tmp, FileMode.Create, FileAccess.Write, FileShare.None, 128 * 1024, useAsync: true);
@@ -666,7 +871,7 @@ namespace VDF.GUI.ViewModels {
 					var jsonEntry = zip.CreateEntry("scan.json", CompressionLevel.NoCompression);
 
 					await using (var es = jsonEntry.Open()) {
-						await JsonSerializer.SerializeAsync(es, envelope, serializerOptions ?? JsonOptions);
+						await JsonSerializer.SerializeAsync(es, envelope, envelopeTypeInfo ?? GuiJsonFieldsContext.Default.ScanResultsEnvelope);
 						await es.FlushAsync();
 					}
 
@@ -735,11 +940,12 @@ namespace VDF.GUI.ViewModels {
 
 				using var zip = ZipFile.OpenRead(path);
 				var json = zip.GetEntry("scan.json") ?? throw new Exception("scan.json missing");
-				List<DuplicateItemVM> items;
-				await using (var js = json.Open()) {
-					using var doc = await JsonDocument.ParseAsync(js);
-					items = ReadScanResultsItems(doc.RootElement);
-				}
+				// Parse and deserialize on a worker thread — large backups froze the UI (#789).
+				List<DuplicateItemVM> items = await Task.Run(() => {
+					using var js = json.Open();
+					using var doc = JsonDocument.Parse(js);
+					return ReadScanResultsItems(doc.RootElement);
+				});
 
 				int skipped = items.RemoveAll(it => it?.ItemInfo == null);
 				if (skipped > 0)
@@ -823,6 +1029,7 @@ namespace VDF.GUI.ViewModels {
 			IsBusy = true;
 			IsBusyOverlayText = App.Lang["Busy.LoadMissingThumbnails"];
 			try {
+				SyncCoreSettings();
 				await Scanner.RetrieveThumbnailsForItems(missing.Select(d => d.ItemInfo));
 			}
 			finally {
@@ -849,7 +1056,7 @@ namespace VDF.GUI.ViewModels {
 				OpenItems();
 		});
 
-		public KeyValuePair<string, Data.ThumbnailDoubleClickAction>[] ThumbnailDoubleClickOptions { get; } = {
+		public Data.ThumbnailDoubleClickOption[] ThumbnailDoubleClickOptions { get; } = {
 			new(App.Lang["MainWindow.Settings.ThumbnailDoubleClick.OpenFile"], Data.ThumbnailDoubleClickAction.OpenFile),
 			new(App.Lang["MainWindow.Settings.ThumbnailDoubleClick.OpenThumbnailComparer"], Data.ThumbnailDoubleClickAction.OpenThumbnailComparer),
 		};
@@ -1032,6 +1239,7 @@ namespace VDF.GUI.ViewModels {
 		});
 
 		public ReactiveCommand<Unit, Unit> ToggleCheckboxCommand => ReactiveCommand.Create(() => {
+			using var _ = BeginSelectionUndoBatch();
 			foreach (var item in GetSelectedDuplicates()) {
 				if (item is not DuplicateItemVM currentItem) return;
 				currentItem.Checked = !currentItem.Checked;
@@ -1125,6 +1333,27 @@ Non-Windows setup:
 			return msg;
 		}
 
+		/// <summary>
+		/// Message for the specific case where 'Use native FFmpeg binding' is on and the
+		/// FFmpeg/FFprobe executables were found, but the matching shared libraries were not.
+		/// The native binding cannot use the executable, so "FFmpeg was not found" is wrong and
+		/// confusing here — guide the user to either disable native binding or install the libs.
+		/// </summary>
+		public static string GetNativeLibrariesMissingMessage() {
+			int ffMajor = MapToFfmpegMajor(ffmpeg.LIBAVCODEC_VERSION_MAJOR, ffmpeg.LIBAVFORMAT_VERSION_MAJOR, ffmpeg.LIBAVUTIL_VERSION_MAJOR);
+			string versionPart = ffMajor == 0 ? "FFmpeg" : $"FFmpeg {ffMajor}.x";
+			string archPart = ArchString(RuntimeInformation.ProcessArchitecture);
+
+			// Library file names are platform-specific but not translatable (filenames).
+			string libNames = OperatingSystem.IsWindows()
+				? "avcodec-*.dll, avformat-*.dll, avutil-*.dll, swresample-*.dll, swscale-*.dll"
+				: OperatingSystem.IsMacOS()
+					? "libavcodec.*.dylib, libavformat.*.dylib, libavutil.*.dylib, libswresample.*.dylib, libswscale.*.dylib"
+					: "libavcodec.so.*, libavformat.so.*, libavutil.so.*, libswresample.so.*, libswscale.so.*";
+
+			return string.Format(App.Lang["Message.NativeFfmpegLibrariesMissing"], versionPart, archPart, libNames);
+		}
+
 		public ReactiveCommand<string, Unit> StartScanCommand => ReactiveCommand.CreateFromTask(async (string command) => {
 			if (!string.IsNullOrEmpty(SettingsFile.Instance.CustomDatabaseFolder) && !Directory.Exists(SettingsFile.Instance.CustomDatabaseFolder)) {
 				await MessageBoxService.Show(App.Lang["Message.CustomDatabaseFolderMissing"]);
@@ -1140,6 +1369,15 @@ Non-Windows setup:
 				(!SettingsFile.Instance.UseNativeFfmpegBinding && !ScanEngine.FFmpegExists) ||
 				!ScanEngine.FFprobeExists) {
 				await DownloadSharedFfmpegAsync();
+			}
+			// Native binding on, shared libraries still missing, but the ffmpeg/ffprobe
+			// executables ARE present: don't claim "FFmpeg was not found" — point the user
+			// at the actual distinction (native needs shared libs) and the one-click way out
+			// (disable native binding to use the executable). See issue #788.
+			if (SettingsFile.Instance.UseNativeFfmpegBinding && !ScanEngine.NativeFFmpegExists &&
+				ScanEngine.FFmpegExists && ScanEngine.FFprobeExists) {
+				await MessageBoxService.Show(GetNativeLibrariesMissingMessage());
+				return;
 			}
 			if ((SettingsFile.Instance.UseNativeFfmpegBinding && !ScanEngine.NativeFFmpegExists) ||
 				(!SettingsFile.Instance.UseNativeFfmpegBinding && !ScanEngine.FFmpegExists)) {
@@ -1199,6 +1437,32 @@ Non-Windows setup:
 			TotalDuplicatesSize = string.Empty;
 
 			SettingsFile.SaveSettings();
+			SyncCoreSettings();
+
+			ChangeIsBusyMessage();
+			IsBusy = true;
+
+			if (isFreshScan) {
+				Scanner.StartSearch();
+			}
+			else {
+				Scanner.StartCompare();
+			}
+		}, CanStartScan);
+
+		IObservable<bool> CanStartScan {
+			[System.Diagnostics.CodeAnalysis.UnconditionalSuppressMessage("Trimming", "IL2026", Justification = WhenAnyValueTrimJustification)]
+			get => this.WhenAnyValue(x => x.IsBusy, busy => !busy);
+		}
+
+		/// <summary>
+		/// Copies the GUI settings into the Core engine. Must run before any engine
+		/// operation that reads <see cref="ScanEngine.Settings"/> — not just scans:
+		/// explicit thumbnail loading after a backup restore otherwise runs with Core
+		/// defaults (e.g. ThumbnailMaxWidth 100 instead of the configured value),
+		/// producing pixelated thumbnails (issue #778).
+		/// </summary>
+		void SyncCoreSettings() {
 			Scanner.Settings.IncludeSubDirectories = SettingsFile.Instance.IncludeSubDirectories;
 			Scanner.Settings.IncludeImages = SettingsFile.Instance.IncludeImages;
 			Scanner.Settings.GeneratePreviewThumbnails = SettingsFile.Instance.GeneratePreviewThumbnails;
@@ -1251,33 +1515,44 @@ Non-Windows setup:
 			foreach (var s in SettingsFile.Instance.Blacklists)
 				Scanner.Settings.BlackList.Add(s);
 
-			ChangeIsBusyMessage();
-			IsBusy = true;
-
-			if (isFreshScan) {
-				Scanner.StartSearch();
-			}
-			else {
-				Scanner.StartCompare();
-			}
-		}, this.WhenAnyValue(x => x.IsBusy, busy => !busy));
+			// Apply the FFmpeg engine statics as well — PrepareSearch does this at scan
+			// start, but thumbnail-only flows never reach PrepareSearch.
+			VDF.Core.FFTools.FfmpegEngine.HardwareAccelerationMode = Scanner.Settings.HardwareAccelerationMode;
+			VDF.Core.FFTools.FfmpegEngine.CustomFFArguments = Scanner.Settings.CustomFFArguments;
+			VDF.Core.FFTools.FfmpegEngine.UseNativeBinding = Scanner.Settings.UseNativeFfmpegBinding;
+		}
 
 		public ReactiveCommand<Unit, Unit> PauseScanCommand => ReactiveCommand.Create(() => {
 			Scanner.Pause();
 			IsPaused = true;
-		}, this.WhenAnyValue(x => x.IsScanning, x => x.IsPaused, (a, b) => a && !b));
+		}, CanPauseScan);
+
+		IObservable<bool> CanPauseScan {
+			[System.Diagnostics.CodeAnalysis.UnconditionalSuppressMessage("Trimming", "IL2026", Justification = WhenAnyValueTrimJustification)]
+			get => this.WhenAnyValue(x => x.IsScanning, x => x.IsPaused, (a, b) => a && !b);
+		}
 
 		public ReactiveCommand<Unit, Unit> ResumeScanCommand => ReactiveCommand.Create(() => {
 			IsPaused = false;
 			Scanner.Resume();
-		}, this.WhenAnyValue(x => x.IsScanning, x => x.IsPaused, (a, b) => a && b));
+		}, CanResumeScan);
+
+		IObservable<bool> CanResumeScan {
+			[System.Diagnostics.CodeAnalysis.UnconditionalSuppressMessage("Trimming", "IL2026", Justification = WhenAnyValueTrimJustification)]
+			get => this.WhenAnyValue(x => x.IsScanning, x => x.IsPaused, (a, b) => a && b);
+		}
 
 		public ReactiveCommand<Unit, Unit> StopScanCommand => ReactiveCommand.Create(() => {
 			IsPaused = false;
 			IsBusy = true;
 			IsBusyOverlayText = "Stopping all scan threads...";
 			Scanner.Stop();
-		}, this.WhenAnyValue(x => x.IsScanning));
+		}, CanStopScan);
+
+		IObservable<bool> CanStopScan {
+			[System.Diagnostics.CodeAnalysis.UnconditionalSuppressMessage("Trimming", "IL2026", Justification = WhenAnyValueTrimJustification)]
+			get => this.WhenAnyValue(x => x.IsScanning);
+		}
 
 		public ReactiveCommand<Unit, Unit> MarkGroupAsNotAMatchCommand => ReactiveCommand.CreateFromTask(async () => {
 			try {
@@ -1365,6 +1640,7 @@ Non-Windows setup:
 				ResolveCriteria(QualityCriteriaOrder),
 				d => d.ItemInfo.IsImage);
 
+			using var _ = BeginSelectionUndoBatch();
 			keep.Checked = false;
 			foreach (var item in groupItems)
 				if (item.ItemInfo.Path != keep.ItemInfo.Path)
@@ -1374,12 +1650,14 @@ Non-Windows setup:
 	public ReactiveCommand<Unit, Unit> LoadThumbnailsForCheckedItemsCommand => ReactiveCommand.CreateFromTask(async () => {
 		var items = Duplicates.Where(d => d.Checked).Select(vm => vm.ItemInfo).ToList();
 		if (items.Count == 0) return;
+		SyncCoreSettings();
 		await Scanner.RetrieveThumbnailsForItems(items);
 	});
 
 	public ReactiveCommand<Unit, Unit> LoadThumbnailsForGroupCommand => ReactiveCommand.CreateFromTask(async () => {
 		if (GetSelectedDuplicateItem() is not DuplicateItemVM currentItem) return;
 		var items = Duplicates.Where(d => d.ItemInfo.GroupId == currentItem.ItemInfo.GroupId).Select(d => d.ItemInfo).ToList();
+		SyncCoreSettings();
 		await Scanner.RetrieveThumbnailsForItems(items);
 	});
 
@@ -1389,15 +1667,26 @@ Non-Windows setup:
 									List<DuplicateItemVM>? toDelete = null,
 									bool blackList = false,
 									bool createSymbolLinksInstead = false,
-									bool permanently = false) {
+									bool permanently = false,
+									bool createHardLinksInstead = false) {
 			if (Duplicates.Count == 0) return;
 			toDelete ??= CheckedItemsToDelete;
 			if (toDelete.Count == 0) return;
+			bool createLinks = createSymbolLinksInstead || createHardLinksInstead;
 
-			MessageBoxButtons? dlgResult = await MessageBoxService.Show(
-				fromDisk
+			long totalSizeToDelete = 0;
+			foreach (var item in toDelete)
+				totalSizeToDelete += CheckedSizeOf(item);
+
+			string confirmMessage = createLinks
+					? App.Lang["Message.ReplaceWithLinksConfirm"]
+					: fromDisk
 					? (!permanently ? App.Lang["Message.DeleteToTrashConfirm"] : App.Lang["Message.DeletePermanentlyConfirm"])
-					: (blackList ? App.Lang["Message.DeleteFromListBlacklistConfirm"] : App.Lang["Message.DeleteFromListConfirm"]),
+					: (blackList ? App.Lang["Message.DeleteFromListBlacklistConfirm"] : App.Lang["Message.DeleteFromListConfirm"]);
+			confirmMessage += Environment.NewLine + Environment.NewLine +
+				string.Format(App.Lang["Message.DeleteConfirmStats"], toDelete.Count, totalSizeToDelete.BytesToString());
+
+			MessageBoxButtons? dlgResult = await MessageBoxService.Show(confirmMessage,
 				MessageBoxButtons.Yes | MessageBoxButtons.No);
 			if (dlgResult != MessageBoxButtons.Yes) return;
 
@@ -1410,26 +1699,36 @@ Non-Windows setup:
 
 			var actuallyDeleted = new HashSet<DuplicateItemVM>(toDelete.Count, ReferenceEqualityComparer<DuplicateItemVM>.Instance);
 			long freedBytes = 0;
-			foreach (var dub in toDelete) {
-				try {
-					var fe = new FileEntry(dub.ItemInfo.Path);
-					if (fromDisk && !File.Exists(dub.ItemInfo.Path)) {
-						// File is already gone — treat as successfully deleted
-						// so the entry is still removed from the list and database.
-						Logger.Instance.Info($"'{dub.ItemInfo.Path}' no longer exists on disk; removing entry only.");
+			int total = toDelete.Count;
+			IsBusy = true;
+			IsBusyOverlayText = string.Format(App.Lang["Busy.Deleting"], 0, total);
+
+			try {
+				// File I/O and database updates run off the UI thread; thousands of
+				// deletions previously froze the window for their full duration.
+				await Task.Run(() => {
+					var progressTimer = Stopwatch.StartNew();
+					int done = 0;
+					void ReportProgress() {
+						if (progressTimer.ElapsedMilliseconds < 300) return;
+						progressTimer.Restart();
+						int current = done;
+						Dispatcher.UIThread.Post(() =>
+							IsBusyOverlayText = string.Format(App.Lang["Busy.Deleting"], current, total));
 					}
-					else if (fromDisk) {
-						if (createSymbolLinksInstead) {
-							var keeper = keepByGroup.TryGetValue(dub.ItemInfo.GroupId, out var k) ? k : null;
-							if (keeper == null)
-								throw new Exception($"Cannot create symlink for '{dub.ItemInfo.Path}' because all items in this group are selected");
-							File.CreateSymbolicLink(dub.ItemInfo.Path, keeper.ItemInfo.Path);
-							freedBytes += dub.ItemInfo.SizeLong;
-						}
-						else if (!permanently && CoreUtils.IsWindows) {
+
+					// Windows recycle-bin deletes go through a single batched shell
+					// operation — one SHFileOperation per file pays the full shell
+					// round-trip each time and is dramatically slower for big batches.
+					// Per-file success is determined afterwards by re-checking existence.
+					bool batchedRecycle = fromDisk && !permanently && !createLinks && CoreUtils.IsWindows;
+					var batchRecycled = new HashSet<DuplicateItemVM>(ReferenceEqualityComparer<DuplicateItemVM>.Instance);
+					if (batchedRecycle) {
+						var existing = toDelete.Where(d => File.Exists(d.ItemInfo.Path)).ToList();
+						if (existing.Count > 0) {
 							var fs = new FileUtils.SHFILEOPSTRUCT {
 								wFunc = FileUtils.FileOperationType.FO_DELETE,
-								pFrom = dub.ItemInfo.Path + '\0' + '\0',
+								pFrom = string.Join('\0', existing.Select(d => d.ItemInfo.Path)) + "\0\0",
 								fFlags = FileUtils.FileOperationFlags.FOF_ALLOWUNDO |
 										 FileUtils.FileOperationFlags.FOF_NOCONFIRMATION |
 										 FileUtils.FileOperationFlags.FOF_NOERRORUI |
@@ -1437,35 +1736,93 @@ Non-Windows setup:
 							};
 							int result = FileUtils.SHFileOperation(ref fs);
 							if (result != 0)
-								throw new Exception($"SHFileOperation returned: {result:X}");
-							freedBytes += dub.ItemInfo.SizeLong;
-						}
-						else if (!permanently) {
-							// Linux/macOS: attempt to move to system trash, fall back to permanent delete
-							if (!FileUtils.MoveToTrash(dub.ItemInfo.Path))
-								File.Delete(dub.ItemInfo.Path);
-							freedBytes += dub.ItemInfo.SizeLong;
-						}
-						else {
-							File.Delete(dub.ItemInfo.Path);
-							freedBytes += dub.ItemInfo.SizeLong;
+								Logger.Instance.Info($"SHFileOperation returned {result:X} for a batch of {existing.Count} file(s); checking which files were actually recycled.");
+							foreach (var d in existing)
+								batchRecycled.Add(d);
 						}
 					}
 
-					if (blackList)
-						ScanEngine.BlackListFileEntry(dub.ItemInfo.Path);
-					else
-						ScanEngine.RemoveFromDatabase(fe);
+					foreach (var dub in toDelete) {
+						try {
+							// Path-only entry for the database lookup; FileEntry(string)
+							// stats the file and throws once it's gone.
+							var fe = new FileEntry { Path = dub.ItemInfo.Path };
+							bool exists = File.Exists(dub.ItemInfo.Path);
 
-					actuallyDeleted.Add(dub);
-				}
-				catch (Exception ex) {
-					Logger.Instance.Info($"Failed to delete '{dub.ItemInfo.Path}': {ex.Message}\n{ex.StackTrace}");
-				}
+							if (createLinks) {
+								if (!exists) {
+									Logger.Instance.Info($"'{dub.ItemInfo.Path}' no longer exists on disk; removing entry only.");
+								}
+								else {
+									var keeper = keepByGroup.TryGetValue(dub.ItemInfo.GroupId, out var k) ? k : null;
+									if (keeper == null)
+										throw new Exception($"Cannot create a link for '{dub.ItemInfo.Path}' because all items in this group are selected");
+									if (!File.Exists(keeper.ItemInfo.Path))
+										throw new Exception($"Cannot create a link for '{dub.ItemInfo.Path}' because the file to keep ('{keeper.ItemInfo.Path}') does not exist");
+									// The link target path must be free before the link can be created.
+									File.Delete(dub.ItemInfo.Path);
+									if (createHardLinksInstead)
+										HardLinkUtils.CreateHardLink(dub.ItemInfo.Path, keeper.ItemInfo.Path);
+									else
+										File.CreateSymbolicLink(dub.ItemInfo.Path, keeper.ItemInfo.Path);
+									freedBytes += CheckedSizeOf(dub);
+								}
+							}
+							else if (fromDisk) {
+								if (!exists) {
+									if (batchRecycled.Contains(dub)) {
+										freedBytes += CheckedSizeOf(dub);
+									}
+									else {
+										// File was already gone — treat as successfully deleted
+										// so the entry is still removed from the list and database.
+										Logger.Instance.Info($"'{dub.ItemInfo.Path}' no longer exists on disk; removing entry only.");
+									}
+								}
+								else if (batchedRecycle) {
+									// Batch ran but this file is still there.
+									throw new Exception("the shell did not move the file to the recycle bin");
+								}
+								else if (!permanently) {
+									// Linux/macOS: attempt to move to system trash, fall back to permanent delete
+									if (!FileUtils.MoveToTrash(dub.ItemInfo.Path))
+										File.Delete(dub.ItemInfo.Path);
+									freedBytes += CheckedSizeOf(dub);
+								}
+								else {
+									File.Delete(dub.ItemInfo.Path);
+									freedBytes += CheckedSizeOf(dub);
+								}
+							}
+
+							if (blackList)
+								ScanEngine.BlackListFileEntry(dub.ItemInfo.Path);
+							else
+								ScanEngine.RemoveFromDatabase(fe);
+
+							actuallyDeleted.Add(dub);
+						}
+						catch (Exception ex) {
+							Logger.Instance.Info($"Failed to delete '{dub.ItemInfo.Path}': {ex.Message}\n{ex.StackTrace}");
+						}
+						finally {
+							done++;
+							ReportProgress();
+						}
+					}
+				});
+			}
+			finally {
+				IsBusy = false;
 			}
 
 			if (freedBytes > 0)
 				TotalSizeRemovedInternal += freedBytes;
+
+			int failedCount = toDelete.Count - actuallyDeleted.Count;
+			if (failedCount > 0)
+				await MessageBoxService.Show(string.Format(App.Lang["Message.DeleteCompletedWithFailures"],
+					actuallyDeleted.Count, toDelete.Count, failedCount));
 
 			if (actuallyDeleted.Count == 0)
 				return;
@@ -1557,6 +1914,19 @@ Non-Windows setup:
 			NavigateGroup(forward: true);
 		});
 
+		// Keyboard triage (Alt+K): keep the highlighted item — check everything
+		// else in its group — then advance to the next group.
+		public ReactiveCommand<Unit, Unit> KeepHighlightedAndAdvanceCommand => ReactiveCommand.Create(() => {
+			if (GetSelectedDuplicateItem() is DuplicateItemVM keeper) {
+				using var _ = BeginSelectionUndoBatch();
+				keeper.Checked = false;
+				foreach (var item in Duplicates)
+					if (item.ItemInfo.GroupId == keeper.ItemInfo.GroupId && !ReferenceEquals(item, keeper))
+						item.Checked = true;
+			}
+			NavigateGroup(forward: true);
+		});
+
 		public ReactiveCommand<Unit, Unit> NavigatePreviousGroupCommand => ReactiveCommand.Create(() => {
 			NavigateGroup(forward: false);
 		});
@@ -1615,11 +1985,8 @@ Non-Windows setup:
 				if (item is not DuplicateItemVM currentItem) return;
 				sb.AppendLine($"\"{currentItem.ItemInfo.Path}\"");
 			}
-#pragma warning disable CS8600
-#pragma warning disable CS8602
-			await (ApplicationHelpers.MainWindow.Clipboard.SetTextAsync(sb.ToString().TrimEnd(new char[2] { '\r', '\n' })));
-#pragma warning restore CS8602
-#pragma warning restore CS8600
+			if (ApplicationHelpers.MainWindow.Clipboard is { } clipboard)
+				await clipboard.SetTextAsync(sb.ToString().TrimEnd(new char[2] { '\r', '\n' }));
 		});
 
 		public ReactiveCommand<Unit, Unit> CopyFilenamesToClipboardCommand => ReactiveCommand.CreateFromTask(async () => {
@@ -1628,11 +1995,8 @@ Non-Windows setup:
 				if (item is not DuplicateItemVM currentItem) return;
 				sb.AppendLine(Path.GetFileName(currentItem.ItemInfo.Path));
 			}
-#pragma warning disable CS8600
-#pragma warning disable CS8602
-			await (ApplicationHelpers.MainWindow.Clipboard.SetTextAsync(sb.ToString().TrimEnd(new char[2] { '\r', '\n' })));
-#pragma warning restore CS8602
-#pragma warning restore CS8600
+			if (ApplicationHelpers.MainWindow.Clipboard is { } clipboard)
+				await clipboard.SetTextAsync(sb.ToString().TrimEnd(new char[2] { '\r', '\n' }));
 		});
 
 		public ReactiveCommand<Unit, Unit> RelocateDatabaseFilesCommand => ReactiveCommand.Create(() => {

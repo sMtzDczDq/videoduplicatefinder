@@ -11,12 +11,22 @@
 
 @{
     var allDuplicates = Scan.Duplicates;
-    var filteredGroups = allDuplicates
-        .GroupBy(d => d.GroupId)
-        .Where(g => string.IsNullOrEmpty(_search) ||
-                    g.Any(i => i.Path.Contains(_search, StringComparison.OrdinalIgnoreCase)))
-        .OrderBy(g => g.Key)
-        .ToList();
+    var filteredGroups = GetFilteredGroups();
+    long totalSize = 0, potentialSavings = 0;
+    int totalFiles = 0;
+    foreach (var g in filteredGroups) {
+        long groupTotal = 0, largest = 0;
+        foreach (var i in g) {
+            totalFiles++;
+            long s = Math.Max(0, i.SizeLong);
+            groupTotal += s;
+            if (s > largest) largest = s;
+        }
+        totalSize += groupTotal;
+        potentialSavings += groupTotal - largest;
+    }
+    long selectedSize = _selected.Sum(i => Math.Max(0, i.SizeLong));
+    int renderIndex = 0;
 }
 
 @if (!allDuplicates.Any()) {
@@ -25,13 +35,13 @@
 else {
     <div class="results-toolbar" @onkeydown="OnKeyDown" tabindex="0">
         <input class="search-box" @bind="_search" @bind:event="oninput"
-               placeholder="Filter by path..." />
+               placeholder="Filter by path (* and ? wildcards)..." />
         @if (!string.IsNullOrEmpty(_search)) {
             <button @onclick="() => _search = string.Empty">&#x2715;</button>
         }
         <span class="result-count">
-            @filteredGroups.Count group(s), @filteredGroups.SelectMany(g => g).Count() file(s)
-            @if (_selected.Count > 0) { <text> — @_selected.Count selected</text> }
+            @filteredGroups.Count group(s), @totalFiles file(s), @FormatSize(totalSize) — potential savings @FormatSize(potentialSavings)
+            @if (_selected.Count > 0) { <text> — @_selected.Count selected (@FormatSize(selectedSize))</text> }
         </span>
 
         @* Auto-select dropdown *@
@@ -55,17 +65,30 @@ else {
         @* Collapse all / Expand all *@
         <button @onclick="CollapseAll" title="Collapse all groups">Collapse all</button>
         <button @onclick="ExpandAll" title="Expand all groups">Expand all</button>
+        <button @onclick="ExportCsv" title="Download the results list as CSV">Export CSV</button>
 
         @if (_selected.Count > 0) {
             <div class="action-group">
                 <button @onclick="RemoveSelected">Remove from list</button>
-                <button @onclick="() => _confirmDelete = true" class="danger-outline">Delete (trash)</button>
-                <button @onclick="() => _confirmDeletePermanent = true" class="danger">Delete permanently</button>
-                <button @onclick="() => _showMovePanel = !_showMovePanel">Move to folder…</button>
+                <button @onclick="() => _confirmDelete = true" class="danger-outline" disabled="@Scan.FileOpRunning">Delete (trash)</button>
+                <button @onclick="() => _confirmDeletePermanent = true" class="danger" disabled="@Scan.FileOpRunning">Delete permanently</button>
+                <button @onclick="() => _showMovePanel = !_showMovePanel" disabled="@Scan.FileOpRunning">Move to folder…</button>
+                <button @onclick="() => _showLinkPanel = !_showLinkPanel" disabled="@Scan.FileOpRunning">Replace with links…</button>
                 <button @onclick="ClearSelection">Deselect all</button>
             </div>
         }
     </div>
+
+    @* Batch file operation progress *@
+    @if (Scan.FileOpRunning) {
+        <div class="action-panel">
+            <span class="spinner"></span>
+            <span>@Scan.FileOpVerb… @Scan.FileOpCurrent / @Scan.FileOpMax</span>
+            <div class="progress-bar-track inline-bar">
+                <div class="progress-bar-fill" style="width:@(Scan.FileOpMax > 0 ? 100 * Scan.FileOpCurrent / Scan.FileOpMax : 0)%"></div>
+            </div>
+        </div>
+    }
 
     @* Move panel *@
     @if (_showMovePanel) {
@@ -73,8 +96,19 @@ else {
             <label>Destination folder:
                 <input @bind="_moveDestination" placeholder="/path/to/destination" class="@(Directory.Exists(_moveDestination) ? "input-valid" : "")" />
             </label>
-            <button class="primary" @onclick="MoveSelected" disabled="@string.IsNullOrWhiteSpace(_moveDestination)">Move @_selected.Count file(s)</button>
+            <button class="primary" @onclick="MoveSelected" disabled="@(string.IsNullOrWhiteSpace(_moveDestination) || Scan.FileOpRunning)">Move @_selected.Count file(s)</button>
             <button @onclick="() => _showMovePanel = false">Cancel</button>
+        </div>
+    }
+
+    @* Link panel *@
+    @if (_showLinkPanel) {
+        <div class="action-panel">
+            <span>Replace each selected file with a link to the best remaining file of its group:</span>
+            <label><input type="radio" name="linktype" checked="@(!_linkHard)" @onchange="() => _linkHard = false" /> Symlink</label>
+            <label><input type="radio" name="linktype" checked="@_linkHard" @onchange="() => _linkHard = true" /> Hardlink (same volume only)</label>
+            <button class="primary" @onclick="CreateLinksSelected" disabled="@Scan.FileOpRunning">Create links for @_selected.Count file(s)</button>
+            <button @onclick="() => _showLinkPanel = false">Cancel</button>
         </div>
     }
 
@@ -100,7 +134,8 @@ else {
         bool allGroupSelected = sortedItems.All(i => _selected.Contains(i));
         bool isCollapsed = _collapsedGroups.Contains(groupId);
         float maxSimilarity = sortedItems.Max(i => i.Similarity);
-        int groupIndex = filteredGroups.IndexOf(group);
+        long groupSize = sortedItems.Sum(i => Math.Max(0, i.SizeLong));
+        int groupIndex = renderIndex++;
         int hiddenCount = sortedItems.Count(i => _hiddenItems.Contains(i.Path));
         var hoveredMetric = _hoveredMetrics.GetValueOrDefault(groupId);
 
@@ -109,7 +144,7 @@ else {
                 <label class="group-select-all">
                     <input type="checkbox" checked="@allGroupSelected"
                            @onchange="() => ToggleGroup(sortedItems, !allGroupSelected)" />
-                    @sortedItems.Count file(s)
+                    @sortedItems.Count file(s) &#183; @FormatSize(groupSize)
                 </label>
                 <span class="similarity-badge @SimilarityClass(maxSimilarity)">
                     @maxSimilarity.ToString("F1")% similar
@@ -368,6 +403,8 @@ else {
     bool _confirmDelete;
     bool _confirmDeletePermanent;
     bool _showMovePanel;
+    bool _showLinkPanel;
+    bool _linkHard;
     string _moveDestination = string.Empty;
     string? _operationMsg;
     bool _operationFailed;
@@ -471,24 +508,37 @@ else {
         _selected.Remove(item);
     }
 
-    void ExecuteDelete(bool permanent) {
-        var (deleted, failed, errors) = Scan.DeleteItems(_selected.ToList(), permanent);
-        _selected.Clear();
+    async Task ExecuteDelete(bool permanent) {
         _confirmDelete = false;
         _confirmDeletePermanent = false;
-        string verb = permanent ? "permanently deleted" : "moved to trash";
-        string msg = $"{deleted} file(s) {verb}.";
-        if (failed > 0) msg += $" {failed} failed: {string.Join("; ", errors.Take(3))}";
-        ShowMsg(msg, failed > 0);
+        var toDelete = _selected.ToList();
+        _selected.Clear();
+        var result = await Scan.DeleteItemsAsync(toDelete, permanent);
+        ShowOpResult($"{result.Done} file(s) {(permanent ? "permanently deleted" : "moved to trash")}", result);
     }
 
-    void MoveSelected() {
-        var (moved, failed, errors) = Scan.MoveItems(_selected.ToList(), _moveDestination);
-        _selected.Clear();
+    async Task MoveSelected() {
         _showMovePanel = false;
-        string msg = $"{moved} file(s) moved to '{_moveDestination}'.";
-        if (failed > 0) msg += $" {failed} failed: {string.Join("; ", errors.Take(3))}";
-        ShowMsg(msg, failed > 0);
+        var toMove = _selected.ToList();
+        _selected.Clear();
+        var result = await Scan.MoveItemsAsync(toMove, _moveDestination);
+        ShowOpResult($"{result.Done} file(s) moved to '{_moveDestination}'", result);
+    }
+
+    async Task CreateLinksSelected() {
+        _showLinkPanel = false;
+        var toLink = _selected.ToList();
+        _selected.Clear();
+        var result = await Scan.CreateLinksAsync(toLink, _linkHard);
+        ShowOpResult($"{result.Done} file(s) replaced with {(_linkHard ? "hardlinks" : "symlinks")}", result);
+    }
+
+    void ShowOpResult(string action, FileOpResult result) {
+        string msg = action;
+        if (result.FreedBytes > 0) msg += $" — {FormatSize(result.FreedBytes)} freed";
+        msg += ".";
+        if (result.Failed > 0) msg += $" {result.Failed} failed: {string.Join("; ", result.Errors.Take(3))}";
+        ShowMsg(msg, result.Failed > 0);
     }
 
     void ShowMsg(string msg, bool failed) {
@@ -685,9 +735,34 @@ else {
 
     static string SimilarityClass(float sim) => sim >= 99f ? "high" : sim >= 90f ? "medium" : "low";
 
+    // === Filtering ===
+    List<IGrouping<Guid, DuplicateItem>> GetFilteredGroups() =>
+        Scan.Duplicates
+            .GroupBy(d => d.GroupId)
+            .Where(g => string.IsNullOrEmpty(_search) || g.Any(i => PathMatchesFilter(i.Path, _search)))
+            .OrderBy(g => g.Key)
+            .ToList();
+
+    // Substring match by default; * and ? switch to wildcard matching (same rules as the GUI filter).
+    static bool PathMatchesFilter(string path, string needle) {
+        if (needle.IndexOfAny(['*', '?']) < 0)
+            return path.Contains(needle, StringComparison.OrdinalIgnoreCase);
+        string pattern = needle;
+        if (!pattern.StartsWith('*')) pattern = "*" + pattern;
+        if (!pattern.EndsWith('*')) pattern += "*";
+        return System.IO.Enumeration.FileSystemName.MatchesSimpleExpression(pattern, path);
+    }
+
+    // === CSV Export ===
+    async Task ExportCsv() {
+        try { await JS.InvokeVoidAsync("vdf.download", "/export/csv"); }
+        catch { }
+    }
+
     // === QoL: Keyboard Navigation ===
     async Task OnKeyDown(KeyboardEventArgs e) {
-        var groups = Scan.Duplicates.GroupBy(d => d.GroupId).ToList();
+        // Same group list the page renders, so j/k/x/1-9 act on what the user sees.
+        var groups = GetFilteredGroups();
         if (groups.Count == 0) return;
 
         switch (e.Key) {

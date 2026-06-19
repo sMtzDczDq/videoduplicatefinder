@@ -14,25 +14,12 @@
 // */
 //
 
-using System.Text.Json;
 using System.Text.Json.Serialization;
-using SixLabors.ImageSharp;
-using VDF.GUI.Utils;
+using VDF.Web.Services;
 
-namespace VDF.GUI.Data {
-	internal class ImageJsonConverter : JsonConverter<Image> {
-		public override Image Read(
-			ref Utf8JsonReader reader,
-			Type typeToConvert,
-			JsonSerializerOptions options) {
-			using var ms = new MemoryStream(reader.GetBytesFromBase64());
-			return Image.Load(ms);
-		}
-
-		public override void Write(
-			Utf8JsonWriter writer,
-			Image image,
-			JsonSerializerOptions options) =>
-				writer.WriteBase64StringValue(image.ToByteArray());
-	}
+namespace VDF.Web {
+	[JsonSourceGenerationOptions(WriteIndented = true)]
+	[JsonSerializable(typeof(WebSettingsService.Dto))]
+	[JsonSerializable(typeof(AuthService.StoredCredentials))]
+	internal sealed partial class WebJsonContext : JsonSerializerContext { }
 }

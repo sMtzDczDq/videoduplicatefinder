@@ -30,6 +30,8 @@ namespace VDF.GUI.ViewModels {
 		private DatabaseWrapper DbWrapper;
 		public DataGridCollectionView DatabaseFilesView { get; }
 		readonly string TempDatabaseFile;
+		// Only forwarded to ScanEngine.ExportDataBaseToJson (which serializes through
+		// its own typed metadata); local (de)serialization uses CoreJsonContext directly.
 		static readonly JsonSerializerOptions serializerOptions = new() {
 			IncludeFields = true,
 		};
@@ -39,7 +41,7 @@ namespace VDF.GUI.ViewModels {
 			GetDataGrid = dataGrid;
 			TempDatabaseFile = Path.Combine(Path.GetTempPath(), Path.GetRandomFileName());
 			ScanEngine.ExportDataBaseToJson(TempDatabaseFile, serializerOptions);
-			 DbWrapper = JsonSerializer.Deserialize<DatabaseWrapper>(File.ReadAllBytes(TempDatabaseFile), serializerOptions)!;
+			 DbWrapper = JsonSerializer.Deserialize(File.ReadAllBytes(TempDatabaseFile), VDF.Core.Utils.CoreJsonContext.Default.DatabaseWrapper)!;
 			DatabaseFiles = new ObservableCollection<FileEntry>(DbWrapper.Entries);
 			DatabaseFilesView = new DataGridCollectionView(DatabaseFiles);
 			DatabaseFilesView.Filter += TextFilter;
@@ -77,7 +79,7 @@ namespace VDF.GUI.ViewModels {
 		}
 		public void Save() {
 			DbWrapper.Entries = new HashSet<FileEntry>(DatabaseFiles);
-			File.WriteAllBytes(TempDatabaseFile, JsonSerializer.SerializeToUtf8Bytes(DbWrapper, serializerOptions));
+			File.WriteAllBytes(TempDatabaseFile, JsonSerializer.SerializeToUtf8Bytes(DbWrapper, VDF.Core.Utils.CoreJsonContext.Default.DatabaseWrapper));
 			ScanEngine.ImportDataBaseFromJson(TempDatabaseFile, serializerOptions);
 			ScanEngine.SaveDatabase();
 			try {

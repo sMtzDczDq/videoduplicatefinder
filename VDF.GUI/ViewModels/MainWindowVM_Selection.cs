@@ -70,7 +70,10 @@ namespace VDF.GUI.ViewModels {
 			try {
 				// Use PrimitiveTypes only — avoids registering types like Convert, Activator, etc.
 				// that could be abused if a malicious expression is loaded from a crafted settings file.
+				// Assignments are disabled: "item.IsBestSize = true" (a typo for ==) would otherwise
+				// WRITE the property on every item and match everything; now it's a parse error.
 				interpreter = new Interpreter(InterpreterOptions.PrimitiveTypes | InterpreterOptions.SystemKeywords)
+					.EnableAssignment(AssignmentOperators.None)
 					.Reference(typeof(TimeSpan))
 					.Reference(typeof(Math))
 					.Reference(typeof(Regex))
@@ -95,6 +98,7 @@ namespace VDF.GUI.ViewModels {
 								})
 								.ToList();
 
+			using var undoBatch = BeginSelectionUndoBatch();
 			foreach (var result in matchResults) {
 				if (result.Matches.Count == 0)
 					continue;
@@ -119,6 +123,7 @@ namespace VDF.GUI.ViewModels {
 		});
 
 		public ReactiveCommand<Unit, Unit> CheckWhenIdenticalCommand => ReactiveCommand.Create(() => {
+			using var undoBatch = BeginSelectionUndoBatch();
 			HashSet<Guid> blackListGroupID = new();
 			var scoped = ScopedDuplicates();
 
@@ -137,6 +142,7 @@ namespace VDF.GUI.ViewModels {
 		});
 
 		public ReactiveCommand<Unit, Unit> CheckWhenIdenticalButSizeCommand => ReactiveCommand.Create(() => {
+			using var undoBatch = BeginSelectionUndoBatch();
 			HashSet<Guid> blackListGroupID = new();
 			var scoped = ScopedDuplicates();
 
@@ -157,6 +163,7 @@ namespace VDF.GUI.ViewModels {
 		});
 
 		public ReactiveCommand<Unit, Unit> CheckOldestCommand => ReactiveCommand.Create(() => {
+			using var undoBatch = BeginSelectionUndoBatch();
 			HashSet<Guid> blackListGroupID = new();
 			var scoped = ScopedDuplicates();
 
@@ -177,6 +184,7 @@ namespace VDF.GUI.ViewModels {
 		});
 
 		public ReactiveCommand<Unit, Unit> CheckNewestCommand => ReactiveCommand.Create(() => {
+			using var undoBatch = BeginSelectionUndoBatch();
 			HashSet<Guid> blackListGroupID = new();
 			var scoped = ScopedDuplicates();
 
@@ -202,6 +210,7 @@ namespace VDF.GUI.ViewModels {
 			if (result == null || result.Count == 0) return;
 			QualityCriteriaOrder = result;
 
+			using var undoBatch = BeginSelectionUndoBatch();
 			HashSet<Guid> blackListGroupID = new();
 			var scoped = ScopedDuplicates();
 
@@ -230,6 +239,7 @@ namespace VDF.GUI.ViewModels {
 		});
 
 		public ReactiveCommand<Unit, Unit> CheckMissingFilesCommand => ReactiveCommand.Create(() => {
+			using var undoBatch = BeginSelectionUndoBatch();
 			foreach (var item in ScopedDuplicates().Where(d => d.IsVisibleInFilter))
 				if (!File.Exists(item.ItemInfo.Path))
 					item.Checked = true;
@@ -243,11 +253,13 @@ namespace VDF.GUI.ViewModels {
 		});
 
 		public ReactiveCommand<Unit, Unit> ClearCheckedItemsCommand => ReactiveCommand.Create(() => {
+			using var undoBatch = BeginSelectionUndoBatch();
 			foreach (var item in ScopedDuplicates().Where(d => d.IsVisibleInFilter))
 				item.Checked = false;
 		});
 
 		public ReactiveCommand<Unit, Unit> InvertCheckedItemsCommand => ReactiveCommand.Create(() => {
+			using var undoBatch = BeginSelectionUndoBatch();
 			foreach (var item in ScopedDuplicates().Where(d => d.IsVisibleInFilter))
 				item.Checked = !item.Checked;
 		});
@@ -318,6 +330,18 @@ namespace VDF.GUI.ViewModels {
 			});
 		});
 
+		public ReactiveCommand<Unit, Unit> CreateHardLinksForCheckedItemsCommand => ReactiveCommand.Create(() => {
+			Dispatcher.UIThread.InvokeAsync(() => {
+				DeleteInternal(fromDisk: false, blackList: false, createHardLinksInstead: true);
+			});
+		});
+
+		public ReactiveCommand<Unit, Unit> CreateHardLinksForCheckedItemsAndBlacklistCommand => ReactiveCommand.Create(() => {
+			Dispatcher.UIThread.InvokeAsync(() => {
+				DeleteInternal(fromDisk: false, blackList: true, createHardLinksInstead: true);
+			});
+		});
+
 		public ReactiveCommand<Unit, Unit> ExportCheckedItemsCleanupDryRunReportCommand => ReactiveCommand.CreateFromTask(async () => {
 			var toDelete = CheckedItemsToDelete;
 			if (toDelete.Count == 0) {
@@ -333,7 +357,7 @@ namespace VDF.GUI.ViewModels {
 				}
 			});
 			if (string.IsNullOrEmpty(result)) return;
-			var json = JsonSerializer.Serialize(report, new JsonSerializerOptions { WriteIndented = true });
+			var json = JsonSerializer.Serialize(report, GuiJsonPrettyContext.Default.CleanupDryRunReport);
 			File.WriteAllText(result, json);
 			await MessageBoxService.Show(App.Lang["Message.CleanupDryRunSaved"]);
 		});
@@ -346,7 +370,24 @@ namespace VDF.GUI.ViewModels {
 
 			if (result == null || result.Count == 0) return;
 
-			Utils.FileUtils.CopyFile(Duplicates.Where(s => s.Checked), result[0], true, false, out var errorCounter);
+			var selectedItems = Duplicates.Where(s => s.Checked).ToList();
+			if (selectedItems.Count == 0) return;
+
+			IsBusy = true;
+			IsBusyOverlayText = string.Format(App.Lang["Busy.Copying"], 0, selectedItems.Count);
+			int errorCounter;
+			var renames = new List<(DuplicateItemVM Item, string NewPath)>();
+			try {
+				errorCounter = await Task.Run(() =>
+					Utils.FileUtils.CopyFile(selectedItems, result[0], true, false, renames,
+						(done, total) => Dispatcher.UIThread.Post(() =>
+							IsBusyOverlayText = string.Format(App.Lang["Busy.Copying"], done, total))));
+			}
+			finally {
+				IsBusy = false;
+			}
+			foreach (var (item, newPath) in renames)
+				item.ItemInfo.Path = newPath;
 			if (errorCounter > 0)
 				await MessageBoxService.Show(App.Lang["Message.CopyFailed"]);
 		});
@@ -360,21 +401,41 @@ namespace VDF.GUI.ViewModels {
 			if (result == null || result.Count == 0) return;
 
 			var selectedItems = Duplicates.Where(s => s.Checked).ToList();
-			List<Tuple<DuplicateItemVM, FileEntry>> itemsToUpdate = new();
-			foreach (var item in selectedItems) {
-				if (ScanEngine.GetFromDatabase(item.ItemInfo.Path, out var dbEntry))
-					itemsToUpdate.Add(Tuple.Create(item, dbEntry!));
+			if (selectedItems.Count == 0) return;
+
+			IsBusy = true;
+			IsBusyOverlayText = string.Format(App.Lang["Busy.Moving"], 0, selectedItems.Count);
+			int errorCounter;
+			var renames = new List<(DuplicateItemVM Item, string NewPath)>();
+			try {
+				errorCounter = await Task.Run(() => {
+					// Database entries must be resolved by the OLD path, before the move.
+					var dbEntries = new Dictionary<DuplicateItemVM, FileEntry>(ReferenceEqualityComparer<DuplicateItemVM>.Instance);
+					foreach (var item in selectedItems) {
+						if (ScanEngine.GetFromDatabase(item.ItemInfo.Path, out var dbEntry))
+							dbEntries[item] = dbEntry!;
+					}
+					int errors = Utils.FileUtils.CopyFile(selectedItems, result[0], true, true, renames,
+						(done, total) => Dispatcher.UIThread.Post(() =>
+							IsBusyOverlayText = string.Format(App.Lang["Busy.Moving"], done, total)));
+					foreach (var (item, newPath) in renames)
+						if (dbEntries.TryGetValue(item, out var entry))
+							ScanEngine.UpdateFilePathInDatabase(newPath, entry);
+					ScanEngine.SaveDatabase();
+					return errors;
+				});
 			}
-			Utils.FileUtils.CopyFile(selectedItems, result[0], true, true, out var errorCounter);
-			foreach (var pair in itemsToUpdate) {
-				ScanEngine.UpdateFilePathInDatabase(pair.Item1.ItemInfo.Path, pair.Item2);
+			finally {
+				IsBusy = false;
 			}
-			ScanEngine.SaveDatabase();
+			foreach (var (item, newPath) in renames)
+				item.ItemInfo.Path = newPath;
 			if (errorCounter > 0)
 				await MessageBoxService.Show(App.Lang["Message.MoveFailed"]);
 		});
 
 		internal void RunCustomSelection(CustomSelectionData data) {
+			using var undoBatch = BeginSelectionUndoBatch();
 
 			IEnumerable<DuplicateItemVM> dups = ScopedDuplicates().Where(x => x.IsVisibleInFilter);
 			if (data.IgnoreGroupsWithCheckedItems) {
@@ -493,25 +554,28 @@ namespace VDF.GUI.ViewModels {
 			history.Insert(0, expression);
 		}
 
-		sealed class CleanupDryRunReport {
-			public DateTime CreatedAt { get; set; }
-			public long EstimatedTotalSavingsBytes { get; set; }
-			public List<CleanupDryRunGroup> Groups { get; set; } = new();
-		}
+	}
 
-		sealed class CleanupDryRunGroup {
-			public Guid GroupId { get; set; }
-			public long EstimatedSavingsBytes { get; set; }
-			public string Reason { get; set; } = string.Empty;
-			public List<CleanupDryRunItem> RemoveItems { get; set; } = new();
-			public List<CleanupDryRunItem> KeepItems { get; set; } = new();
-		}
+	// Top-level (not nested in MainWindowVM) so the source-generated JSON context
+	// can reference them.
+	internal sealed class CleanupDryRunReport {
+		public DateTime CreatedAt { get; set; }
+		public long EstimatedTotalSavingsBytes { get; set; }
+		public List<CleanupDryRunGroup> Groups { get; set; } = new();
+	}
 
-		sealed class CleanupDryRunItem {
-			public string Path { get; set; } = string.Empty;
-			public long SizeBytes { get; set; }
-			public string Resolution { get; set; } = string.Empty;
-			public DateTime DateCreated { get; set; }
-		}
+	internal sealed class CleanupDryRunGroup {
+		public Guid GroupId { get; set; }
+		public long EstimatedSavingsBytes { get; set; }
+		public string Reason { get; set; } = string.Empty;
+		public List<CleanupDryRunItem> RemoveItems { get; set; } = new();
+		public List<CleanupDryRunItem> KeepItems { get; set; } = new();
+	}
+
+	internal sealed class CleanupDryRunItem {
+		public string Path { get; set; } = string.Empty;
+		public long SizeBytes { get; set; }
+		public string Resolution { get; set; } = string.Empty;
+		public DateTime DateCreated { get; set; }
 	}
 }

@@ -21,8 +21,6 @@ using System.Linq;
 using System.Numerics;
 using System.Text;
 using System.Threading.Tasks;
-using SixLabors.ImageSharp.PixelFormats;
-using SixLabors.ImageSharp.Processing;
 
 namespace VDF.Core.pHash {
 	internal static class PerceptualHash {
@@ -111,10 +109,10 @@ namespace VDF.Core.pHash {
 		}
 
 		private static float Median64(Span<float> values) {
-			// Copy to array and sort; faster than fancy selection for 64 elems
-			float[] buf = new float[values.Length];
+			// Copy to the stack and sort; faster than fancy selection for 64 elems
+			Span<float> buf = stackalloc float[K * K];
 			values.CopyTo(buf);
-			Array.Sort(buf);
+			buf.Sort();
 			return (buf[31] + buf[32]) * 0.5f; // even length = 64
 		}
 	}

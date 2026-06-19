@@ -55,7 +55,7 @@ namespace VDF.Core.Utils {
 
 		public static Task SaveAsync(string path, List<HashSet<string>> groups, CancellationToken ct = default) {
 			var envelope = new Envelope { Version = CurrentVersion, Groups = groups };
-			return AtomicJsonWriter.WriteAsync(path, envelope, options: null, ct);
+			return AtomicJsonWriter.WriteAsync(path, envelope, CoreJsonContext.Default.Envelope, ct);
 		}
 
 		/// <summary>
@@ -81,13 +81,13 @@ namespace VDF.Core.Utils {
 
 			// v0: legacy raw array of arrays.
 			if (root.ValueKind == JsonValueKind.Array) {
-				groups = root.Deserialize<List<HashSet<string>>>() ?? new();
+				groups = root.Deserialize(CoreJsonContext.Default.ListHashSetString) ?? new();
 			}
 			// v1+: { "version": N, "groups": [[...], [...]] }
 			else if (root.ValueKind == JsonValueKind.Object &&
 				root.TryGetProperty("groups", out var groupsEl) &&
 				groupsEl.ValueKind == JsonValueKind.Array) {
-				groups = groupsEl.Deserialize<List<HashSet<string>>>() ?? new();
+				groups = groupsEl.Deserialize(CoreJsonContext.Default.ListHashSetString) ?? new();
 			}
 			else {
 				throw new JsonException("Unknown BlacklistedGroups.json format");

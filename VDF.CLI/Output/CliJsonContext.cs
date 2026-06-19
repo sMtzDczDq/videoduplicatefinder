@@ -14,25 +14,25 @@
 // */
 //
 
-using System.Text.Json;
 using System.Text.Json.Serialization;
-using Avalonia.Media.Imaging;
-using VDF.GUI.Utils;
+using VDF.Core.ViewModels;
 
-namespace VDF.GUI.Data {
-	internal class BitmapJsonConverter : JsonConverter<Bitmap> {
-		public override Bitmap Read(
-			ref Utf8JsonReader reader,
-			Type typeToConvert,
-			JsonSerializerOptions options) {
-			using var ms = new MemoryStream(reader.GetBytesFromBase64());
-			return new Bitmap(ms);
-		}
-
-		public override void Write(
-			Utf8JsonWriter writer,
-			Bitmap image,
-			JsonSerializerOptions options) =>
-				writer.WriteBase64StringValue(image.ToByteArray());
+namespace VDF.CLI.Output {
+	/// <summary>
+	/// Group shape written by the JSON results output and read back by the
+	/// 'mark' command. One shared type keeps the two sides in lockstep.
+	/// </summary>
+	public sealed class DuplicateGroup {
+		public Guid GroupId { get; set; }
+		public List<DuplicateItem> Items { get; set; } = new();
 	}
+
+	/// <summary>
+	/// Source-generated JSON metadata for the CLI's results format. Replaces
+	/// reflection-based serialization (and the non-generic JsonStringEnumConverter)
+	/// so the CLI can be published with Native AOT.
+	/// </summary>
+	[JsonSourceGenerationOptions(WriteIndented = true, UseStringEnumConverter = true)]
+	[JsonSerializable(typeof(List<DuplicateGroup>))]
+	internal partial class CliJsonContext : JsonSerializerContext { }
 }

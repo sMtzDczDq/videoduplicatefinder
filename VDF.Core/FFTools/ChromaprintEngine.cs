@@ -46,7 +46,7 @@ namespace VDF.Core.FFTools {
 					return ExtractFingerprintNative(filePath, extendedLogging, ct, onProgress);
 				}
 				catch (Exception e) {
-					Logger.Instance.Info(
+					Logger.Instance.Warn(
 						$"[ChromaprintEngine] Native binding failed on '{Path.GetFileName(filePath)}', " +
 						$"falling back to process mode. Exception: {e.Message}");
 				}
@@ -125,6 +125,7 @@ namespace VDF.Core.FFTools {
 			try {
 				var sw = extendedLogging ? Stopwatch.StartNew() : null;
 				process.Start();
+				FFToolsUtils.LowerChildPriority(process);
 
 				if (extendedLogging) {
 					process.ErrorDataReceived += (_, e) => {
@@ -212,7 +213,7 @@ namespace VDF.Core.FFTools {
 				return null;
 			}
 			catch (Exception ex) {
-				Logger.Instance.Info($"[ChromaprintEngine] Failed on '{filePath}': {ex.Message}");
+				Logger.Instance.Warn($"[ChromaprintEngine] Failed on '{filePath}': {ex.Message}");
 				KillProcess(process);
 				return null;
 			}

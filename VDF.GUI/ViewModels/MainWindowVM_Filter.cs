@@ -23,73 +23,6 @@ using VDF.GUI.Data;
 namespace VDF.GUI.ViewModels {
 	public partial class MainWindowVM : ReactiveObject {
 
-		DataGridCollectionView? view;
-
-		public SortOrderOption[] SortOrders { get; private set; }
-
-		public sealed class CheckedGroupsComparer : System.Collections.IComparer {
-			readonly MainWindowVM mainVM;
-			public CheckedGroupsComparer(MainWindowVM vm) => mainVM = vm;
-			public int Compare(object? x, object? y) {
-				if (x is not DuplicateItemVM dx || y is not DuplicateItemVM dy) return -1;
-				return mainVM.GroupHasCheckedItems(dx.ItemInfo.GroupId)
-					.CompareTo(mainVM.GroupHasCheckedItems(dy.ItemInfo.GroupId));
-			}
-		}
-		public sealed class GroupTotalSizeComparer : System.Collections.IComparer {
-		readonly MainWindowVM mainVM;
-		private readonly Dictionary<Guid, long> guidMap = new();
-		public GroupTotalSizeComparer(MainWindowVM vm) => mainVM = vm;
-		public int Compare(object? x, object? y) {
-			if (x == null || y == null)
-				return -1;
-			var dupX = (DuplicateItemVM)x;
-			var dupY = (DuplicateItemVM)y;
-			long totalSizeX, totalSizeY;
-			if (guidMap.ContainsKey(dupX.ItemInfo.GroupId)) {
-				totalSizeX = guidMap[dupX.ItemInfo.GroupId];
-			}
-			else {
-				totalSizeX = mainVM.Duplicates.Where(a => a.ItemInfo.GroupId == dupX.ItemInfo.GroupId).Sum(a => a.ItemInfo.SizeLong);
-				guidMap[dupX.ItemInfo.GroupId] = totalSizeX;
-			}
-			if (guidMap.ContainsKey(dupY.ItemInfo.GroupId)) {
-				totalSizeY = guidMap[dupY.ItemInfo.GroupId];
-			}
-			else {
-				totalSizeY = mainVM.Duplicates.Where(a => a.ItemInfo.GroupId == dupY.ItemInfo.GroupId).Sum(a => a.ItemInfo.SizeLong);
-				guidMap[dupY.ItemInfo.GroupId] = totalSizeY;
-			}
-			return totalSizeX.CompareTo(totalSizeY);
-		}
-	}
-	public sealed class GroupSizeComparer : System.Collections.IComparer {
-			readonly MainWindowVM mainVM;
-			private readonly Dictionary<Guid, int> guidMap = new();
-			public GroupSizeComparer(MainWindowVM vm) => mainVM = vm;
-			public int Compare(object? x, object? y) {
-				if (x == null || y == null)
-					return -1;
-				var dupX = (DuplicateItemVM)x;
-				var dupY = (DuplicateItemVM)y;
-				int groupSizeX, groupSizeY;
-				if (guidMap.ContainsKey(dupX.ItemInfo.GroupId)) {
-					groupSizeX = guidMap[dupX.ItemInfo.GroupId];
-				}
-				else {
-					groupSizeX = mainVM.Duplicates.Where(a => a.ItemInfo.GroupId == dupX.ItemInfo.GroupId).Count();
-					guidMap[dupX.ItemInfo.GroupId] = groupSizeX;
-				}
-				if (guidMap.ContainsKey(dupY.ItemInfo.GroupId)) {
-					groupSizeY = guidMap[dupY.ItemInfo.GroupId];
-				}
-				else {
-					groupSizeY = mainVM.Duplicates.Where(a => a.ItemInfo.GroupId == dupY.ItemInfo.GroupId).Count();
-					guidMap[dupY.ItemInfo.GroupId] = groupSizeY;
-				}
-				return groupSizeX.CompareTo(groupSizeY);
-			}
-		}
 		public FileTypeFilterOption[] TypeFilters { get; } = {
 			new FileTypeFilterOption("All", FileTypeFilter.All),
 			new FileTypeFilterOption("Videos", FileTypeFilter.Videos),
@@ -104,42 +37,16 @@ namespace VDF.GUI.ViewModels {
 				if (value.Name == _FileType.Name) return;
 				_FileType = value;
 				this.RaisePropertyChanged(nameof(FileType));
-				view?.Refresh();
+				RefreshResultsView();
 			}
 		}
-		SortOrderOption _SortOrder;
-
-		public SortOrderOption SortOrder {
-			get => _SortOrder;
-			set {
-				if (value.Name == _SortOrder.Name) return;
-				_SortOrder = value;
-				SettingsFile.Instance.LastSortOrder = value.Name;
-				this.RaisePropertyChanged(nameof(SortOrder));
-				view?.SortDescriptions.Clear();
-				if (_SortOrder.Sort != null)
-					view?.SortDescriptions.Add(_SortOrder.Sort);
-				view?.Refresh();
-			}
-		}
-
 		bool _FilterGroupsWithCheckedItems;
 		public bool FilterGroupsWithCheckedItems {
 			get => _FilterGroupsWithCheckedItems;
 			set {
 				if (value == _FilterGroupsWithCheckedItems) return;
 				this.RaiseAndSetIfChanged(ref _FilterGroupsWithCheckedItems, value);
-				view?.Refresh();
-			}
-		}
-
-		bool _IsFilterEnabled;
-		public bool IsFilterEnabled {
-			get => _IsFilterEnabled;
-			set {
-				if (value == _IsFilterEnabled) return;
-				this.RaiseAndSetIfChanged(ref _IsFilterEnabled, value);
-				view?.Refresh();
+				RefreshResultsView();
 			}
 		}
 
@@ -183,7 +90,7 @@ namespace VDF.GUI.ViewModels {
 			set {
 				if (value == _FilterSimilarityFrom) return;
 				this.RaiseAndSetIfChanged(ref _FilterSimilarityFrom, value);
-				view?.Refresh();
+				RefreshResultsView();
 			}
 		}
 		int _FilterSimilarityTo = 100;
@@ -192,16 +99,12 @@ namespace VDF.GUI.ViewModels {
 			set {
 				if (value == _FilterSimilarityTo) return;
 				this.RaiseAndSetIfChanged(ref _FilterSimilarityTo, value);
-				view?.Refresh();
+				RefreshResultsView();
 			}
 		}
 
-		bool DuplicatesFilter(object obj) {
-			if (obj is not DuplicateItemVM data) return false;
-			if (!IsFilterEnabled) {
-				data.IsVisibleInFilter = true;
-				return true;
-			}
+		/// <summary>The results filter; the view exposes it as always-active toolbar chips.</summary>
+		internal bool DuplicatesFilterCore(DuplicateItemVM data) {
 			bool ok = true;
 			if (!string.IsNullOrEmpty(FilterByPath)) {
 				ok = PathMatchesFilter(data.ItemInfo.Path, FilterByPath)

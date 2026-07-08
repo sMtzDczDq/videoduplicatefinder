@@ -33,6 +33,13 @@ using VDF.GUI.Views;
 
 namespace VDF.GUI.ViewModels {
 	public partial class MainWindowVM : ReactiveObject {
+		string _SettingsSearchQuery = string.Empty;
+		/// <summary>Query of the settings search box; filters option rows across all sections.</summary>
+		public string SettingsSearchQuery {
+			get => _SettingsSearchQuery;
+			set => this.RaiseAndSetIfChanged(ref _SettingsSearchQuery, value);
+		}
+
 #pragma warning disable CA1822 // Mark members as static => It's used by Avalonia binding
 		public IEnumerable<Core.FFTools.FFHardwareAccelerationMode> HardwareAccelerationModes =>
 #pragma warning restore CA1822 // Mark members as static
@@ -88,12 +95,6 @@ namespace VDF.GUI.ViewModels {
 				binding.ConflictText = null;
 			}
 		});
-
-		void Instance_LogItemAdded(string message) =>
-			Dispatcher.UIThread.InvokeAsync(() => {
-				if (string.IsNullOrEmpty(message)) return;
-				LogItems.Add(message);
-			});
 
 		public ReactiveCommand<Unit, Unit> OpenHWInfoLinkCommand => ReactiveCommand.CreateFromTask(async () => {
 			try {
@@ -197,31 +198,6 @@ namespace VDF.GUI.ViewModels {
 			while (lbox.SelectedItems?.Count > 0)
 				SettingsFile.Instance.Blacklists.Remove((string)lbox.SelectedItems[0]!);
 			return null!;
-		});
-		public ReactiveCommand<Unit, Unit> ClearLogCommand => ReactiveCommand.Create(() => {
-			LogItems.Clear();
-		});
-		public ReactiveCommand<System.Collections.IList, Unit> CopyLogSelectionCommand => ReactiveCommand.Create<System.Collections.IList>(selected => {
-			if (selected == null || selected.Count == 0) return;
-			var sb = new StringBuilder();
-			foreach (var item in selected)
-				sb.AppendLine(item?.ToString());
-			ApplicationHelpers.MainWindow.Clipboard?.SetTextAsync(sb.ToString());
-		});
-		public ReactiveCommand<Unit, Unit> SaveLogCommand => ReactiveCommand.CreateFromTask(async () => {
-			var result = await Utils.PickerDialogUtils.SaveFilePicker(new FilePickerSaveOptions() {
-				DefaultExtension = ".txt",
-			});
-			if (string.IsNullOrEmpty(result)) return;
-			var sb = new StringBuilder();
-			foreach (var l in LogItems)
-				sb.AppendLine(l);
-			try {
-				File.WriteAllText(result, sb.ToString());
-			}
-			catch (Exception e) {
-				Logger.Instance.Info(e.Message);
-			}
 		});
 		public ReactiveCommand<Unit, Unit> SaveSettingsCommand => ReactiveCommand.CreateFromTask(async () => {
 			try {

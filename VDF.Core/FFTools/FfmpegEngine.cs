@@ -50,6 +50,7 @@ namespace VDF.Core.FFTools {
 				// i.e. at the start of each scan.
 				_nativeConsecutiveFailures = 0;
 				_nativeDisabledForSession = false;
+				_vulkanNativeWarningLogged = false;
 			}
 		}
 
@@ -72,35 +73,74 @@ namespace VDF.Core.FFTools {
 			if (_nativeDisabledForSession)
 				return;
 			int n = ++_nativeConsecutiveFailures;
+			string detail = BuildNativeFailureDetail(e);
 			if (n >= NativeFailureThreshold) {
 				_nativeDisabledForSession = true;
-				Logger.Instance.Info(
+				Logger.Instance.Warn(
 					$"Native FFmpeg binding failed on {n} consecutive files; using process mode for the rest of this scan. " +
-					$"Last error on '{file}': {e.GetType().Name}: {e.Message}. " +
+					$"Last error on '{file}': {e.GetType().Name}: {e.Message}.{detail} " +
 					$"If this persists, set hardware acceleration to 'none' or disable 'Use native FFmpeg binding'.");
 			}
 			else {
-				Logger.Instance.Info($"Failed using native FFmpeg binding on '{file}', switching to process mode. Exception: {e}");
+				Logger.Instance.Warn($"Failed using native FFmpeg binding on '{file}', switching to process mode. Exception: {e}{detail}");
 			}
+		}
+
+		/// <summary>
+		/// Builds the extra diagnostic suffix for a native failure: the FFmpeg log lines captured
+		/// on this thread for the failed file (otherwise lost by the native binding) plus a
+		/// classified, plain-language hint about the likely cause. Empty when nothing useful was
+		/// captured and the cause is unknown.
+		/// </summary>
+		static string BuildNativeFailureDetail(Exception e) {
+			string diagnostics = FfmpegLogCapture.GetRecent();
+			string? hint = FfmpegErrorClassifier.Classify(
+				diagnostics.Length > 0 ? $"{diagnostics} {e.Message}" : e.Message);
+			string detail = string.Empty;
+			if (diagnostics.Length > 0)
+				detail += $" FFmpeg log: {diagnostics}.";
+			if (hint != null)
+				detail += $" Hint: {hint}";
+			return detail;
 		}
 
 		const int DefaultJpegQuality = 90;
 
 
-		static AVHWDeviceType GetConfiguredHardwareDeviceType() => HardwareAccelerationMode switch {
-			FFHardwareAccelerationMode.vdpau => AVHWDeviceType.AV_HWDEVICE_TYPE_VDPAU,
-			FFHardwareAccelerationMode.dxva2 => AVHWDeviceType.AV_HWDEVICE_TYPE_DXVA2,
-			FFHardwareAccelerationMode.vaapi => AVHWDeviceType.AV_HWDEVICE_TYPE_VAAPI,
-			FFHardwareAccelerationMode.qsv => AVHWDeviceType.AV_HWDEVICE_TYPE_QSV,
-			FFHardwareAccelerationMode.cuda => AVHWDeviceType.AV_HWDEVICE_TYPE_CUDA,
-			FFHardwareAccelerationMode.videotoolbox => AVHWDeviceType.AV_HWDEVICE_TYPE_VIDEOTOOLBOX,
-			FFHardwareAccelerationMode.d3d11va => AVHWDeviceType.AV_HWDEVICE_TYPE_D3D11VA,
-			FFHardwareAccelerationMode.drm => AVHWDeviceType.AV_HWDEVICE_TYPE_DRM,
-			//FFHardwareAccelerationMode.opencl => AVHWDeviceType.AV_HWDEVICE_TYPE_OPENCL, OpenCL support is irrelevant for frame extraction
-			FFHardwareAccelerationMode.mediacodec => AVHWDeviceType.AV_HWDEVICE_TYPE_MEDIACODEC,
-			FFHardwareAccelerationMode.vulkan => AVHWDeviceType.AV_HWDEVICE_TYPE_VULKAN,
-			_ => AVHWDeviceType.AV_HWDEVICE_TYPE_NONE
-		};
+		// Vulkan hardware decoding through the native FFmpeg binding segfaults the whole
+		// process on at least some NVIDIA setups (#799) — a native crash we cannot catch.
+		// The CLI path runs FFmpeg out-of-process, so a crash there is isolated and merely
+		// fails the file, but the native path takes the app down with it. Guard the native
+		// binding by decoding in software when Vulkan is requested; the warning is emitted
+		// once per scan instead of once per file.
+		static bool _vulkanNativeWarningLogged;
+
+		internal static AVHWDeviceType GetConfiguredHardwareDeviceType() {
+			if (HardwareAccelerationMode == FFHardwareAccelerationMode.vulkan) {
+				if (!_vulkanNativeWarningLogged) {
+					_vulkanNativeWarningLogged = true;
+					Logger.Instance.Warn(
+						"Vulkan hardware acceleration is not supported with the native FFmpeg binding " +
+						"(it crashes the process on some drivers, #799); decoding in software instead. " +
+						"Disable 'Use native FFmpeg binding' to run Vulkan via the CLI, or pick another " +
+						"hardware acceleration mode such as 'cuda'.");
+				}
+				return AVHWDeviceType.AV_HWDEVICE_TYPE_NONE;
+			}
+			return HardwareAccelerationMode switch {
+				FFHardwareAccelerationMode.vdpau => AVHWDeviceType.AV_HWDEVICE_TYPE_VDPAU,
+				FFHardwareAccelerationMode.dxva2 => AVHWDeviceType.AV_HWDEVICE_TYPE_DXVA2,
+				FFHardwareAccelerationMode.vaapi => AVHWDeviceType.AV_HWDEVICE_TYPE_VAAPI,
+				FFHardwareAccelerationMode.qsv => AVHWDeviceType.AV_HWDEVICE_TYPE_QSV,
+				FFHardwareAccelerationMode.cuda => AVHWDeviceType.AV_HWDEVICE_TYPE_CUDA,
+				FFHardwareAccelerationMode.videotoolbox => AVHWDeviceType.AV_HWDEVICE_TYPE_VIDEOTOOLBOX,
+				FFHardwareAccelerationMode.d3d11va => AVHWDeviceType.AV_HWDEVICE_TYPE_D3D11VA,
+				FFHardwareAccelerationMode.drm => AVHWDeviceType.AV_HWDEVICE_TYPE_DRM,
+				//FFHardwareAccelerationMode.opencl => AVHWDeviceType.AV_HWDEVICE_TYPE_OPENCL, OpenCL support is irrelevant for frame extraction
+				FFHardwareAccelerationMode.mediacodec => AVHWDeviceType.AV_HWDEVICE_TYPE_MEDIACODEC,
+				_ => AVHWDeviceType.AV_HWDEVICE_TYPE_NONE
+			};
+		}
 
 		/// <summary>
 		/// Copies a 32x32 GRAY8 frame produced by <see cref="VideoFrameConverter"/> into a
@@ -160,6 +200,7 @@ namespace VDF.Core.FFTools {
 			Action<int>? onSampleComplete) {
 			const int N = 32;
 			try {
+				FfmpegLogCapture.Reset();
 				using var vsd = new VideoStreamDecoder(videoFile.Path, GetConfiguredHardwareDeviceType());
 				VideoFrameConverter? converter = null;
 				Size converterSourceSize = default;
@@ -238,6 +279,7 @@ namespace VDF.Core.FFTools {
 			var frames = new byte[]?[positionsSeconds.Count];
 			if (ShouldUseNativeBinding) {
 				try {
+					FfmpegLogCapture.Reset();
 					using var vsd = new VideoStreamDecoder(filePath, GetConfiguredHardwareDeviceType());
 					VideoFrameConverter? converter = null;
 					Size converterSourceSize = default;
@@ -299,6 +341,7 @@ namespace VDF.Core.FFTools {
 			try {
 				if (ShouldUseNativeBinding) {
 
+					FfmpegLogCapture.Reset();
 
 					AVHWDeviceType HWDevice = settings.SoftwareDecodeOnly
 						? AVHWDeviceType.AV_HWDEVICE_TYPE_NONE
@@ -376,7 +419,7 @@ namespace VDF.Core.FFTools {
 				}
 			}
 			catch (Exception e) {
-				Logger.Instance.Info($"Failed using native FFmpeg binding on '{settings.File}', try switching to process mode. Exception: {e}");
+				Logger.Instance.Warn($"Failed using native FFmpeg binding on '{settings.File}', try switching to process mode. Exception: {e}{BuildNativeFailureDetail(e)}");
 			}
 
 			var psi = new ProcessStartInfo {
@@ -402,8 +445,14 @@ namespace VDF.Core.FFTools {
 				psi.ArgumentList.Add(HardwareAccelerationMode.ToString());
 			}
 
-			// -ss before -i (faster seek, may be less accurate; OK for frame sampling)
-			psi.ArgumentList.Add("-ss"); psi.ArgumentList.Add(settings.Position.ToString(null, CultureInfo.InvariantCulture));
+			// -ss before -i (faster seek, may be less accurate; OK for frame sampling).
+			// Skip it entirely for still images: they are a single frame with no seek position,
+			// and an input -ss (even -ss 0) makes FFmpeg discard that frame on some JPEGs —
+			// EOF before any frame reaches the filter graph, so it writes 0 bytes and exits 0
+			// with no error, surfacing as "Failed to retrieve graybytes" (#801).
+			if (!FileUtils.IsImageFile(settings.File)) {
+				psi.ArgumentList.Add("-ss"); psi.ArgumentList.Add(settings.Position.ToString(null, CultureInfo.InvariantCulture));
+			}
 			psi.ArgumentList.Add("-i"); psi.ArgumentList.Add(FFToolsUtils.LongPathFix(settings.File));
 
 			// Parse CustomFFArguments up front so we can detect a user-supplied -vf and merge it
@@ -474,6 +523,7 @@ namespace VDF.Core.FFTools {
 			try {
 				process.EnableRaisingEvents = true;
 				process.Start();
+				FFToolsUtils.LowerChildPriority(process);
 				process.ErrorDataReceived += new DataReceivedEventHandler((sender, e) => {
 					if (e.Data?.Length > 0) {
 						if (e.Data == lastErrLine) {
@@ -521,6 +571,13 @@ namespace VDF.Core.FFTools {
 			}
 			if (repeatCount > 0)
 				errOut += $" (repeated {repeatCount} more time{(repeatCount == 1 ? string.Empty : "s")})";
+			// When we still extracted the frame from a still image, drop FFmpeg's benign
+			// demuxer chatter: its image2/png_pipe demuxer probes past the single frame and
+			// misreads mid-stream PNG IDAT bytes as a second image, emitting bogus
+			// "Invalid PNG signature"/"chunk too big" decode errors even though the frame
+			// decoded fine (issues #805/#809/#815). Keep the full stderr on real failures.
+			if (bytes != null && errOut.Length > 0 && FileUtils.IsImageFile(settings.File))
+				errOut = FilterBenignImageDemuxerNoise(errOut);
 			// Failures always log (including FFmpeg's stderr); success-with-warnings only
 			// when extended logging is enabled, to avoid noise from benign decoder chatter.
 			if (bytes == null || (extendedLogging && errOut.Length > 0)) {
@@ -529,7 +586,12 @@ namespace VDF.Core.FFTools {
 					var args = string.Join(" ", psi.ArgumentList);
 					message += $":{Environment.NewLine}{FFmpegPath} {args}";
 				}
-				Logger.Instance.Info($"{message}{errOut}");
+				// On an outright failure, classify FFmpeg's stderr into a plain-language hint so
+				// users (and the maintainer triaging reports) can tell incompatible hardware from
+				// a damaged file from a real bug without reproducing it.
+				string? hint = bytes == null ? FfmpegErrorClassifier.Classify(errOut) : null;
+				string hintSuffix = hint != null ? $"{Environment.NewLine}Hint: {hint}" : string.Empty;
+				Logger.Instance.Warn($"{message}{errOut}{hintSuffix}");
 			}
 			return bytes;
 		}
@@ -552,7 +614,7 @@ namespace VDF.Core.FFTools {
 			if (ShouldUseNativeBinding && TryGetGrayBytesFromVideoNativeBatch(videoFile, positions, maxSamplingDurationSeconds, ref tooDarkCounter, onSampleComplete)) {
 				if (tooDarkCounter == missingPositions) {
 					videoFile.Flags.Set(EntryFlags.TooDark);
-					Logger.Instance.Info($"ERROR: Graybytes too dark of: {videoFile.Path}");
+					Logger.Instance.Warn($"Graybytes too dark of: {videoFile.Path}");
 					return false;
 				}
 				return true;
@@ -588,10 +650,46 @@ namespace VDF.Core.FFTools {
 			}
 			if (tooDarkCounter == missingPositions) {
 				videoFile.Flags.Set(EntryFlags.TooDark);
-				Logger.Instance.Info($"ERROR: Graybytes too dark of: {videoFile.Path}");
+				Logger.Instance.Warn($"Graybytes too dark of: {videoFile.Path}");
 				return false;
 			}
 			return true;
+		}
+
+		// Markers for FFmpeg PNG demuxer false-positives that occur after a still frame
+		// has already been decoded successfully (issues #805/#809/#815).
+		static readonly string[] BenignImageDemuxerMarkers = {
+			"Invalid PNG signature",
+			"chunk too big",
+		};
+
+		/// <summary>
+		/// Strips known-benign FFmpeg demuxer lines (and the png decoder's follow-up
+		/// "Decoding error" line) from captured stderr. Only used for still images whose
+		/// frame was nonetheless extracted, so a non-fatal decode line cannot hide a real
+		/// failure. Returns the surviving lines with the original leading newline layout.
+		/// </summary>
+		static string FilterBenignImageDemuxerNoise(string errOut) {
+			var lines = errOut.Split(Environment.NewLine);
+			var kept = new List<string>(lines.Length);
+			foreach (var line in lines) {
+				if (line.Length == 0)
+					continue;
+				bool benign = false;
+				foreach (var marker in BenignImageDemuxerMarkers)
+					if (line.Contains(marker, StringComparison.OrdinalIgnoreCase)) {
+						benign = true;
+						break;
+					}
+				// The png decoder emits a paired "Decoding error: Invalid data ..." line
+				// alongside the bogus signature; drop it too when it names the png decoder.
+				if (!benign && line.Contains("/png @", StringComparison.Ordinal) &&
+					line.Contains("Decoding error", StringComparison.Ordinal))
+					benign = true;
+				if (!benign)
+					kept.Add(line);
+			}
+			return kept.Count == 0 ? string.Empty : Environment.NewLine + string.Join(Environment.NewLine, kept);
 		}
 
 		private static List<string> TokenizeArgs(string args) {
@@ -683,7 +781,7 @@ namespace VDF.Core.FFTools {
 			}
 			catch (Exception e) {
 				if (extendedLogging)
-					Logger.Instance.Info($"Native image decode failed on '{path}', falling back to process mode. Exception: {e}");
+					Logger.Instance.Warn($"Native image decode failed on '{path}', falling back to process mode. Exception: {e}");
 				return false;
 			}
 		}
@@ -727,7 +825,7 @@ namespace VDF.Core.FFTools {
 					}
 				}
 				catch (Exception e) {
-					Logger.Instance.Info($"Native BGRA->JPEG encode failed, falling back to process mode. Exception: {e}");
+					Logger.Instance.Warn($"Native BGRA->JPEG encode failed, falling back to process mode. Exception: {e}");
 				}
 			}
 
@@ -756,6 +854,7 @@ namespace VDF.Core.FFTools {
 			using var process = new Process { StartInfo = psi };
 			try {
 				process.Start();
+				FFToolsUtils.LowerChildPriority(process);
 				using var ms = new MemoryStream();
 				// Write input and read output concurrently to avoid pipe-buffer deadlocks.
 				var readTask = process.StandardOutput.BaseStream.CopyToAsync(ms);
@@ -771,7 +870,7 @@ namespace VDF.Core.FFTools {
 				return jpeg.Length > 0 ? jpeg : null;
 			}
 			catch (Exception e) {
-				Logger.Instance.Info($"BGRA->JPEG encode via FFmpeg process failed: {e.Message}");
+				Logger.Instance.Warn($"BGRA->JPEG encode via FFmpeg process failed: {e.Message}");
 				try { if (!process.HasExited) process.Kill(); } catch { }
 				return null;
 			}

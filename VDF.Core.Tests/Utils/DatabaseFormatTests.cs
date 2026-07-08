@@ -14,6 +14,7 @@
 // */
 //
 
+using System.Text.Json;
 using MemoryPack;
 using VDF.Core.Utils;
 
@@ -25,6 +26,7 @@ namespace VDF.Core.Tests.Utils;
 /// itself before the dependency was removed), and the MemoryPack format must
 /// round-trip losslessly.
 /// </summary>
+[Collection("DatabaseUtils")] // DatabaseUtils is static — serialize with other classes touching it
 public class DatabaseFormatTests {
 	static string Asset(string name) =>
 		Path.Combine(AppContext.BaseDirectory, "TestAssets", name);
@@ -158,6 +160,124 @@ public class DatabaseFormatTests {
 	}
 
 	[Fact]
+	public void ExportGrayBytesDiagnostic_HasHashesButLeaksNoPaths() {
+		string dir = Path.Combine(Path.GetTempPath(), $"vdf-diag-{Guid.NewGuid():N}");
+		Directory.CreateDirectory(dir);
+		try {
+			File.Copy(Asset("legacy-wrapper.db"), Path.Combine(dir, "ScannedFiles.db"));
+			DatabaseUtils.CustomDatabaseFolder = dir;
+			DatabaseUtils.InvalidateDatabaseFolder();
+			Assert.True(DatabaseUtils.LoadDatabase());
+			Assert.Equal(3, DatabaseUtils.Database.Count);
+
+			string outFile = Path.Combine(dir, "diag.json");
+			Assert.True(DatabaseUtils.ExportGrayBytesDiagnostic(outFile));
+			string json = File.ReadAllText(outFile);
+
+			// Privacy guarantee: not a single path, folder, or filename from the DB.
+			Assert.DoesNotContain("movie.mp4", json);
+			Assert.DoesNotContain("photo.jpg", json);
+			Assert.DoesNotContain("minimal.mkv", json);
+			Assert.DoesNotContain("vids", json);
+			Assert.DoesNotContain("server", json);
+
+			using var doc = JsonDocument.Parse(json);
+			var root = doc.RootElement;
+			Assert.Equal(3, root.GetProperty("entryCount").GetInt32());
+			var entries = root.GetProperty("entries");
+			Assert.Equal(3, entries.GetArrayLength());
+
+			// The movie entry's 1024-byte gray frame must survive the base64 round-trip
+			// intact (the fixture stored the i*7 pattern).
+			bool foundExpectedFrame = false;
+			foreach (var e in entries.EnumerateArray()) {
+				foreach (var gf in e.GetProperty("grayFrames").EnumerateArray()) {
+					if (gf.ValueKind == JsonValueKind.Null)
+						continue;
+					byte[] bytes = Convert.FromBase64String(gf.GetString()!);
+					if (bytes.Length != 1024)
+						continue;
+					bool match = true;
+					for (int i = 0; i < 1024; i++)
+						if (bytes[i] != (byte)(i * 7)) { match = false; break; }
+					if (match) { foundExpectedFrame = true; break; }
+				}
+			}
+			Assert.True(foundExpectedFrame, "Expected the movie entry's 1024-byte gray frame in the export");
+		}
+		finally {
+			DatabaseUtils.CustomDatabaseFolder = null;
+			DatabaseUtils.InvalidateDatabaseFolder();
+			DatabaseUtils.Database.Clear();
+			try { Directory.Delete(dir, recursive: true); } catch { }
+		}
+	}
+
+	[Fact]
+	public void StreamingFormat_SaveLoad_RoundTripsAllEntries() {
+		string dir = Path.Combine(Path.GetTempPath(), $"vdf-dbstream-{Guid.NewGuid():N}");
+		Directory.CreateDirectory(dir);
+		try {
+			File.Copy(Asset("legacy-wrapper.db"), Path.Combine(dir, "ScannedFiles.db"));
+			DatabaseUtils.CustomDatabaseFolder = dir;
+			DatabaseUtils.InvalidateDatabaseFolder();
+
+			Assert.True(DatabaseUtils.LoadDatabase());     // legacy in
+			DatabaseUtils.SaveDatabase();                  // streaming out
+			DatabaseUtils.Database.Clear();
+			Assert.True(DatabaseUtils.LoadDatabase());     // streaming back in
+
+			Assert.Equal(3, DatabaseUtils.Database.Count);
+			var a = DatabaseUtils.Database.Single(e => e.Path.EndsWith("movie.mp4"));
+			Assert.Equal(@"C:\vids\ä 🎬 movie.mp4", a.Path);
+			Assert.Equal(123_456_789_012, a.FileSize);
+			Assert.Equal(EntryFlags.NoAudioTrack | EntryFlags.TooDark, a.Flags);
+			Assert.Equal(new uint[] { 0u, 1u, uint.MaxValue, 12345u }, a.AudioFingerprint);
+			Assert.Equal(0xDEADBEEFCAFEBABEUL, a.PHashes[12.5]);
+			Assert.Null(a.PHashes[25.0]);
+			Assert.Equal(1024, a.grayBytes[12.5]!.Length);
+			Assert.Equal(new TimeSpan(0, 1, 23, 45, 678), a.mediaInfo!.Duration);
+			Assert.Equal(3, DatabaseUtils.DbVersion);
+		}
+		finally {
+			DatabaseUtils.CustomDatabaseFolder = null;
+			DatabaseUtils.InvalidateDatabaseFolder();
+			DatabaseUtils.Database.Clear();
+			try { Directory.Delete(dir, recursive: true); } catch { }
+		}
+	}
+
+	[Fact]
+	public void TornTempFile_FallsBackToMainDatabase_NeverLoadsEmpty() {
+		string dir = Path.Combine(Path.GetTempPath(), $"vdf-dbtorn-{Guid.NewGuid():N}");
+		Directory.CreateDirectory(dir);
+		try {
+			// Intact main DB written in the streaming format …
+			File.Copy(Asset("legacy-wrapper.db"), Path.Combine(dir, "ScannedFiles.db"));
+			DatabaseUtils.CustomDatabaseFolder = dir;
+			DatabaseUtils.InvalidateDatabaseFolder();
+			Assert.True(DatabaseUtils.LoadDatabase());
+			DatabaseUtils.SaveDatabase();
+			DatabaseUtils.Database.Clear();
+
+			// … and a torn temp from a crash mid-save: valid magic, but the stream ends
+			// before any entry (let alone the terminator). LoadDatabase tries the temp
+			// first; it must discard it and recover the 3 real entries, not load empty.
+			File.WriteAllBytes(Path.Combine(dir, "ScannedFiles_new.db"), "VDFDB002"u8.ToArray());
+
+			Assert.True(DatabaseUtils.LoadDatabase());
+			Assert.Equal(3, DatabaseUtils.Database.Count);
+			Assert.False(File.Exists(Path.Combine(dir, "ScannedFiles_new.db")));
+		}
+		finally {
+			DatabaseUtils.CustomDatabaseFolder = null;
+			DatabaseUtils.InvalidateDatabaseFolder();
+			DatabaseUtils.Database.Clear();
+			try { Directory.Delete(dir, recursive: true); } catch { }
+		}
+	}
+
+	[Fact]
 	public void DatabaseUtils_MigratesLegacyFileToNewFormat() {
 		string dir = Path.Combine(Path.GetTempPath(), $"vdf-dbmig-{Guid.NewGuid():N}");
 		Directory.CreateDirectory(dir);
@@ -176,7 +296,7 @@ public class DatabaseFormatTests {
 			byte[] header = new byte[8];
 			using (var fs = File.OpenRead(Path.Combine(dir, "ScannedFiles.db")))
 				fs.ReadExactly(header);
-			Assert.Equal("VDFDB001"u8.ToArray(), header);
+			Assert.Equal("VDFDB002"u8.ToArray(), header);
 
 			// … and loads back with identical content.
 			Assert.True(DatabaseUtils.LoadDatabase());

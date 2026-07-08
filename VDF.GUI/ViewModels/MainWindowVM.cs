@@ -43,7 +43,11 @@ using VDF.GUI.Views;
 namespace VDF.GUI.ViewModels {
 	public partial class MainWindowVM : ReactiveObject {
 		public ScanEngine Scanner { get; } = new();
-		public ObservableCollection<string> LogItems { get; } = new();
+		object? _SelectedLogItem;
+		public object? SelectedLogItem {
+			get => _SelectedLogItem;
+			set => this.RaiseAndSetIfChanged(ref _SelectedLogItem, value);
+		}
 		List<HashSet<string>> GroupBlacklist = new();
 		public string BackupScanResultsFile =>
 			Path.Combine(CoreUtils.ResolveDatabaseFolder(SettingsFile.Instance.CustomDatabaseFolder), "backup.scanresults");
@@ -66,7 +70,7 @@ namespace VDF.GUI.ViewModels {
 				}
 			}
 			catch (Exception ex) {
-				Logger.Instance.Info($"Failed to migrate BlacklistedGroups.json: {ex.Message}");
+				Logger.Instance.Warn($"Failed to migrate BlacklistedGroups.json: {ex.Message}");
 			}
 		}
 
@@ -107,7 +111,15 @@ namespace VDF.GUI.ViewModels {
 		bool _IsScanning;
 		public bool IsScanning {
 			get => _IsScanning;
-			set => this.RaiseAndSetIfChanged(ref _IsScanning, value);
+			set {
+				if (value == _IsScanning) return;
+				this.RaiseAndSetIfChanged(ref _IsScanning, value);
+				RaiseScannerStateChanged();
+				// Back on the Setup screen (scan aborted/stopped with no results):
+				// refresh folder stats — the database may have grown meanwhile.
+				if (IsSetupState)
+					RebuildSetupFolders();
+			}
 		}
 		string _IsBusyOverlayText = string.Empty;
 		public string IsBusyOverlayText {
@@ -143,6 +155,18 @@ namespace VDF.GUI.ViewModels {
 				this.RaisePropertyChanged(nameof(ShowThumbnailRetrievalProgress));
 			}
 		}
+		// Determinate thumbnail-loading progress (GitHub #791). The engine has always
+		// reported (current, total); the old UI just rendered an indeterminate bar.
+		int _ThumbnailProgressCurrent;
+		public int ThumbnailProgressCurrent {
+			get => _ThumbnailProgressCurrent;
+			set => this.RaiseAndSetIfChanged(ref _ThumbnailProgressCurrent, value);
+		}
+		int _ThumbnailProgressMax;
+		public int ThumbnailProgressMax {
+			get => _ThumbnailProgressMax;
+			set => this.RaiseAndSetIfChanged(ref _ThumbnailProgressMax, value);
+		}
 		string _ScanProgressText = string.Empty;
 		public string ScanProgressText {
 			get => _ScanProgressText;
@@ -173,6 +197,13 @@ namespace VDF.GUI.ViewModels {
 		public int ScanProgressMaxValue {
 			get => _ScanProgressMaxValue;
 			set => this.RaiseAndSetIfChanged(ref _ScanProgressMaxValue, value);
+		}
+		/// <summary>Per-drive rows of the Scanning state (mockup .drives); rows exist only while the analysis phase reports drive data.</summary>
+		public ScanDrivesPresenter ScanDrives { get; } = new(() => App.Lang["Scan.FilesPerSec"]);
+		string _ScanProgressCount = string.Empty;
+		public string ScanProgressCount {
+			get => _ScanProgressCount;
+			set => this.RaiseAndSetIfChanged(ref _ScanProgressCount, value);
 		}
 		int _TotalDuplicates;
 		public int TotalDuplicates {
@@ -340,9 +371,7 @@ namespace VDF.GUI.ViewModels {
 				File.Delete(Path.Combine(CoreUtils.CurrentFolder, "log.txt"));
 			}
 			catch { }
-			Logger.Instance.LogItemAdded += Instance_LogItemAdded;
-			//Ensure items added before GUI was ready will be shown
-			Instance_LogItemAdded(string.Empty);
+			Logger.Instance.LogEntryAdded += Instance_LogEntryAdded;
 
 			Duplicates.CollectionChanged += Duplicates_CollectionChanged;
 
@@ -351,53 +380,27 @@ namespace VDF.GUI.ViewModels {
 			scheduledScanTimer.Start();
 			CheckScheduledScan();
 
-			SortOrders = new SortOrderOption[] {
-				new SortOrderOption("None", null),
-				new SortOrderOption("Size Ascending",
-				DataGridSortDescription.FromPath($"{nameof(DuplicateItemVM.ItemInfo)}.{nameof(DuplicateItem.SizeLong)}", ListSortDirection.Ascending)),
-				new SortOrderOption("Size Descending",
-				DataGridSortDescription.FromPath($"{nameof(DuplicateItemVM.ItemInfo)}.{nameof(DuplicateItem.SizeLong)}", ListSortDirection.Descending)),
-				new SortOrderOption("Resolution Ascending",
-				DataGridSortDescription.FromPath($"{nameof(DuplicateItemVM.ItemInfo)}.{nameof(DuplicateItem.FrameSizeInt)}", ListSortDirection.Ascending)),
-				new SortOrderOption("Resolution Descending",
-				DataGridSortDescription.FromPath($"{nameof(DuplicateItemVM.ItemInfo)}.{nameof(DuplicateItem.FrameSizeInt)}", ListSortDirection.Descending)),
-				new SortOrderOption("Duration Ascending",
-				DataGridSortDescription.FromPath($"{nameof(DuplicateItemVM.ItemInfo)}.{nameof(DuplicateItem.Duration)}", ListSortDirection.Ascending)),
-				new SortOrderOption("Duration Descending",
-				DataGridSortDescription.FromPath($"{nameof(DuplicateItemVM.ItemInfo)}.{nameof(DuplicateItem.Duration)}", ListSortDirection.Descending)),
-				new SortOrderOption("Date Created Ascending",
-				DataGridSortDescription.FromPath($"{nameof(DuplicateItemVM.ItemInfo)}.{nameof(DuplicateItem.DateCreated)}", ListSortDirection.Ascending)),
-				new SortOrderOption("Date Created Descending",
-				DataGridSortDescription.FromPath($"{nameof(DuplicateItemVM.ItemInfo)}.{nameof(DuplicateItem.DateCreated)}", ListSortDirection.Descending)),
-				new SortOrderOption("Similarity Ascending",
-				DataGridSortDescription.FromPath($"{nameof(DuplicateItemVM.ItemInfo)}.{nameof(DuplicateItem.Similarity)}", ListSortDirection.Ascending)),
-				new SortOrderOption("Similarity Descending",
-				DataGridSortDescription.FromPath($"{nameof(DuplicateItemVM.ItemInfo)}.{nameof(DuplicateItem.Similarity)}", ListSortDirection.Descending)),
-				new SortOrderOption("Group Has Selected Items Ascending",
-				DataGridSortDescription.FromComparer(new CheckedGroupsComparer(this), ListSortDirection.Ascending)),
-				new SortOrderOption("Group Has Selected Items Descending",
-				DataGridSortDescription.FromComparer(new CheckedGroupsComparer(this), ListSortDirection.Descending)),
-				new SortOrderOption("Group Size Ascending",
-				DataGridSortDescription.FromComparer(new GroupSizeComparer(this), ListSortDirection.Ascending)),
-				new SortOrderOption("Group Size Descending",
-				DataGridSortDescription.FromComparer(new GroupSizeComparer(this), ListSortDirection.Descending)),
-				new SortOrderOption("Group Total Size Ascending",
-				DataGridSortDescription.FromComparer(new GroupTotalSizeComparer(this), ListSortDirection.Ascending)),
-				new SortOrderOption("Group Total Size Descending",
-				DataGridSortDescription.FromComparer(new GroupTotalSizeComparer(this), ListSortDirection.Descending)),
-			};
-			_SortOrder = SortOrders[0];
-			if (!string.IsNullOrEmpty(SettingsFile.Instance.LastSortOrder)) {
-				foreach (var order in SortOrders)
-					if (order.Name == SettingsFile.Instance.LastSortOrder) {
-						_SortOrder = order;
-						break;
-					}
-			}
-
 			this.WhenAnyValue(vm => vm.FilterByPath)
 					.Throttle(TimeSpan.FromMilliseconds(500), RxSchedulers.MainThreadScheduler)
-						.Subscribe(_ => { RebuildSearchPathIndex(); view?.Refresh(); });
+						.Subscribe(_ => { RebuildSearchPathIndex(); RefreshResultsView(); });
+
+			SettingsFile.Instance.PropertyChanged += (_, e) => {
+				if (e.PropertyName == nameof(SettingsFile.EnablePartialClipDetection))
+					this.RaisePropertyChanged(nameof(ResultsShowClipOffsetColumn));
+				// Editing any profile-managed knob re-derives the Setup screen's selection
+				// (switches the card to Custom when values no longer match a bundle).
+				if (e.PropertyName is nameof(SettingsFile.Percent)
+					or nameof(SettingsFile.CompareHorizontallyFlipped)
+					or nameof(SettingsFile.IgnoreBlackPixels)
+					or nameof(SettingsFile.IgnoreWhitePixels)
+					or nameof(SettingsFile.EnablePartialClipDetection))
+					RefreshScanProfileSelection();
+			};
+
+			SettingsFile.Instance.Includes.CollectionChanged += (_, __) => RebuildSetupFolders();
+			SettingsFile.Instance.Blacklists.CollectionChanged += (_, __) => RebuildSetupFolders();
+			RefreshScanProfileSelection();
+			RebuildSetupFolders();
 		}
 
 		void Duplicates_CollectionChanged(object? sender, NotifyCollectionChangedEventArgs e) {
@@ -429,6 +432,7 @@ namespace VDF.GUI.ViewModels {
 				checkedCountByGroup.Clear();
 				selectionUndoStack.Clear();
 			}
+			RaiseScannerStateChanged();
 		}
 
 		void DuplicateItemVM_PropertyChanged(object? sender, PropertyChangedEventArgs e) {
@@ -456,6 +460,8 @@ namespace VDF.GUI.ViewModels {
 
 		private void Scanner_ThumbnailProgress(int arg1, int arg2) => Dispatcher.UIThread.Post(() => {
 			ThumbnailRetrievalProgressText = $"Retrieving thumbnails for preview: {arg1}/{arg2}";
+			ThumbnailProgressCurrent = arg1;
+			ThumbnailProgressMax = arg2;
 		});
 
 		void Scanner_ThumbnailsRetrieved(object? sender, EventArgs e) {
@@ -465,6 +471,8 @@ namespace VDF.GUI.ViewModels {
 			ScanProgressValue = 0;
 			ScanProgressMaxValue = 100;
 			ThumbnailRetrievalProgressText = string.Empty;
+			ThumbnailProgressCurrent = 0;
+			ThumbnailProgressMax = 0;
 			ShowThumbnailRetrievalProgressBar = false;
 #pragma warning disable CS4014
 			if (SettingsFile.Instance.BackupAfterListChanged)
@@ -504,12 +512,16 @@ namespace VDF.GUI.ViewModels {
 		public async void LoadDatabase() {
 			IsBusy = true;
 			IsBusyOverlayText = "Loading database...";
-			bool success = await ScanEngine.LoadDatabase();
+			// Pass the configured folder — the parameterless overload loads the DEFAULT
+			// location, which is the wrong database when a custom folder is set.
+			bool success = await ScanEngine.LoadDatabase(SettingsFile.Instance.CustomDatabaseFolder);
 			IsBusy = false;
 			if (!success) {
 				await MessageBoxService.Show(App.Lang["Message.LoadDatabaseFailed"]);
 				Environment.Exit(-1);
 			}
+			// The Setup screen's DB-known counts were computed against an empty database.
+			RebuildSetupFolders();
 		}
 
 		void CheckScheduledScan() {
@@ -517,7 +529,7 @@ namespace VDF.GUI.ViewModels {
 				return;
 			if (!TryParseScheduledTime(SettingsFile.Instance.ScheduledScanTime, out var scheduledTime)) {
 				if (!scheduleTimeInvalidNotified) {
-					Logger.Instance.Info(App.Lang["Log.InvalidScheduledScanTime"]);
+					Logger.Instance.Warn(App.Lang["Log.InvalidScheduledScanTime"]);
 					scheduleTimeInvalidNotified = true;
 				}
 				return;
@@ -542,24 +554,24 @@ namespace VDF.GUI.ViewModels {
 		void TryStartScheduledScan() {
 			if (IsScanning || IsBusy) return;
 			if (!string.IsNullOrEmpty(SettingsFile.Instance.CustomDatabaseFolder) && !Directory.Exists(SettingsFile.Instance.CustomDatabaseFolder)) {
-				Logger.Instance.Info(App.Lang["Log.ScheduledScanSkippedMissingDatabaseFolder"]);
+				Logger.Instance.Warn(App.Lang["Log.ScheduledScanSkippedMissingDatabaseFolder"]);
 				return;
 			}
 			if (Duplicates.Count > 0) {
-				Logger.Instance.Info(App.Lang["Log.ScheduledScanSkippedWithResults"]);
+				Logger.Instance.Warn(App.Lang["Log.ScheduledScanSkippedWithResults"]);
 				return;
 			}
 			if ((SettingsFile.Instance.UseNativeFfmpegBinding && !ScanEngine.NativeFFmpegExists) ||
 				(!SettingsFile.Instance.UseNativeFfmpegBinding && !ScanEngine.FFmpegExists)) {
-				Logger.Instance.Info(App.Lang["Log.ScheduledScanSkippedMissingFfmpeg"]);
+				Logger.Instance.Warn(App.Lang["Log.ScheduledScanSkippedMissingFfmpeg"]);
 				return;
 			}
 			if (!ScanEngine.FFprobeExists) {
-				Logger.Instance.Info(App.Lang["Log.ScheduledScanSkippedMissingFfprobe"]);
+				Logger.Instance.Warn(App.Lang["Log.ScheduledScanSkippedMissingFfprobe"]);
 				return;
 			}
 			if (SettingsFile.Instance.Includes.Count == 0) {
-				Logger.Instance.Info(App.Lang["Log.ScheduledScanSkippedNoFolders"]);
+				Logger.Instance.Warn(App.Lang["Log.ScheduledScanSkippedNoFolders"]);
 				return;
 			}
 			scheduledScanInProgress = true;
@@ -575,10 +587,17 @@ namespace VDF.GUI.ViewModels {
 					? string.Empty
 					: e.StageMax > 0 ? $"  [{e.CurrentStage} {e.StageCurrent}/{e.StageMax}]" : $"  [{e.CurrentStage}]";
 				ScanProgressText = e.CurrentFile + stageSuffix;
+				// Separate stage/file properties for the Scanning state's center panel.
+				ScanStageText = string.IsNullOrEmpty(e.CurrentStage)
+					? string.Empty
+					: e.StageMax > 0 ? $"{e.CurrentStage} {e.StageCurrent}/{e.StageMax}" : e.CurrentStage;
+				ScanCurrentFile = e.CurrentFile;
 				RemainingTime = e.Remaining.Format();
 				ScanProgressValue = e.CurrentPosition;
+				ScanProgressCount = $"{e.CurrentPosition:N0} / {e.MaxPosition:N0}";
 				TimeElapsed = e.Elapsed.Format();
 				ScanProgressMaxValue = e.MaxPosition;
+				ScanDrives.Update(e.Drives, DateTime.UtcNow);
 			});
 
 		void Scanner_ScanAborted(object? sender, EventArgs e) =>
@@ -588,6 +607,7 @@ namespace VDF.GUI.ViewModels {
 				IsReadyToCompare = false;
 				IsGathered = false;
 				scheduledScanInProgress = false;
+				ScanDrives.Clear();
 			});
 
 		void Scanner_ScanDone(object? sender, EventArgs e) =>
@@ -599,6 +619,7 @@ namespace VDF.GUI.ViewModels {
 				ScanProgressText = string.Empty;
 				RemainingTime = TimeSpan.Zero.Format();
 				ScanProgressValue = 0;
+				ScanDrives.Clear();
 				var completedScheduledScan = scheduledScanInProgress;
 				scheduledScanInProgress = false;
 
@@ -616,7 +637,7 @@ namespace VDF.GUI.ViewModels {
 					Scanner.RetrieveThumbnails();
 				}
 
-				BuildDuplicatesView();
+				BuildActiveResultsView();
 				RebuildSearchPathIndex();
 				RefreshGroupStats();
 
@@ -629,9 +650,12 @@ namespace VDF.GUI.ViewModels {
 						Logger.Instance.Info(string.Format(App.Lang["Log.AutoAppliedPreset"], preset.Name));
 					}
 					else {
-						Logger.Instance.Info(string.Format(App.Lang["Log.AutoApplyPresetMissing"], SettingsFile.Instance.AutoApplySelectionPreset));
+						Logger.Instance.Warn(string.Format(App.Lang["Log.AutoApplyPresetMissing"], SettingsFile.Instance.AutoApplySelectionPreset));
 					}
 				}
+
+				if (SettingsFile.Instance.RememberDeletedContent && SettingsFile.Instance.AutoCheckDeletedContentMatches)
+					AutoCheckTombstoneMatches();
 
 				if (completedScheduledScan && SettingsFile.Instance.NotifyOnScheduledScanComplete) {
 					_ = MessageBoxService.Show(App.Lang["Message.ScheduledScanCompleted"]);
@@ -644,19 +668,28 @@ namespace VDF.GUI.ViewModels {
 				}
 			});
 
-		void BuildDuplicatesView() {
-			view = new DataGridCollectionView(Duplicates);
-			view.GroupDescriptions.Add(new DataGridPathGroupDescription($"{nameof(DuplicateItemVM.ItemInfo)}.{nameof(DuplicateItem.GroupId)}"));
-			// Rebuilding the view (rescan, import) previously dropped the active sort
-			// while the sort ComboBox kept displaying it.
-			if (_SortOrder.Sort != null)
-				view.SortDescriptions.Add(_SortOrder.Sort);
-			view.Filter += DuplicatesFilter;
-			GetDataGrid.ItemsSource = view;
-			TotalSizeRemovedInternal = 0;
+		// Groups that contain a tombstone (a fingerprint of content the user already deleted) mean
+		// any LIVE member is a re-download of rejected content — pre-check it for deletion so the
+		// user only has to review and confirm. Offline members (unplugged drive) are shown but
+		// never targeted, and actual deletion always still requires the delete button.
+		void AutoCheckTombstoneMatches() {
+			var tombstoneGroups = Duplicates
+				.Where(d => d.IsTombstone)
+				.Select(d => d.ItemInfo.GroupId)
+				.ToHashSet();
+			if (tombstoneGroups.Count == 0)
+				return;
+			int autoChecked = 0;
+			foreach (var d in Duplicates)
+				if (!d.IsTombstone && !d.IsOffline &&
+					tombstoneGroups.Contains(d.ItemInfo.GroupId) &&
+					File.Exists(d.ItemInfo.Path)) {
+					d.Checked = true;
+					autoChecked++;
+				}
+			if (autoChecked > 0)
+				Logger.Instance.Info($"Auto-checked {autoChecked} re-download(s) matching previously deleted content.");
 		}
-
-		static DataGrid GetDataGrid => ApplicationHelpers.MainWindow.FindControl<DataGrid>("dataGridGrouping")!;
 
 		void RefreshGroupStats() {
 			TotalDuplicates = Duplicates.Count;
@@ -680,24 +713,16 @@ namespace VDF.GUI.ViewModels {
 			PotentialSavings = savings.BytesToString();
 		}
 
-		private DuplicateItemVM? GetSelectedDuplicateItem() {
-			return GetDataGrid.SelectedItem as DuplicateItemVM;
-		}
+		private DuplicateItemVM? GetSelectedDuplicateItem() =>
+			NewResultsSelectionProvider?.Invoke().FirstOrDefault();
 
-		private List<DuplicateItemVM> GetSelectedDuplicates() {
-			return GetDataGrid.SelectedItems?.Cast<DuplicateItemVM>().ToList() ?? new();
-		}
+		private List<DuplicateItemVM> GetSelectedDuplicates() =>
+			NewResultsSelectionProvider?.Invoke() ?? new();
 
-		public static ReactiveCommand<Unit, Unit> LatestReleaseCommand => ReactiveCommand.CreateFromTask(async () => {
-			try {
-				Process.Start(new ProcessStartInfo {
-					FileName = "https://github.com/0x90d/videoduplicatefinder/releases",
-					UseShellExecute = true
-				});
-			}
-			catch {
-				await MessageBoxService.Show(App.Lang["Message.OpenReleaseFailed"]);
-			}
+		public static ReactiveCommand<Unit, Unit> AboutCommand => ReactiveCommand.CreateFromTask(async () => {
+			if (ApplicationHelpers.MainWindow == null)
+				return;
+			await new AboutWindow().ShowDialog(ApplicationHelpers.MainWindow);
 		});
 
 		public static ReactiveCommand<Unit, Unit> OpenOwnFolderCommand => ReactiveCommand.Create(() => {
@@ -711,6 +736,23 @@ namespace VDF.GUI.ViewModels {
 			IsBusy = true;
 			IsBusyOverlayText = App.Lang["Busy.CleaningDatabase"];
 			Scanner.CleanupDatabase();
+		});
+
+		// Removes "ghost" entries: file gone from a MOUNTED drive + no comparable fingerprint data
+		// (tombstones — missing files WITH fingerprints — are untouched; offline drives too).
+		// Count-first so the confirm dialog shows exactly what would be removed.
+		public ReactiveCommand<Unit, Unit> PruneGhostEntriesCommand => ReactiveCommand.CreateFromTask(async () => {
+			int count = await Task.Run(ScanEngine.CountGhostEntries);
+			if (count == 0) {
+				await MessageBoxService.Show(App.Lang["Message.NoGhostEntries"]);
+				return;
+			}
+			MessageBoxButtons? dlgResult = await MessageBoxService.Show(
+				string.Format(App.Lang["Message.PruneGhostEntriesConfirm"], count),
+				MessageBoxButtons.Yes | MessageBoxButtons.No);
+			if (dlgResult != MessageBoxButtons.Yes) return;
+			int removed = await Task.Run(ScanEngine.PruneGhostEntries);
+			await MessageBoxService.Show(string.Format(App.Lang["Message.PruneGhostEntriesDone"], removed));
 		});
 
 		public ReactiveCommand<Unit, Unit> ClearDatabaseCommand => ReactiveCommand.CreateFromTask(async () => {
@@ -791,7 +833,7 @@ namespace VDF.GUI.ViewModels {
 			}
 			catch (Exception ex) {
 				string error = string.Format(App.Lang["Message.ExportScanResultsFailed"], ex);
-				Logger.Instance.Info(error);
+				Logger.Instance.Error(error);
 				await MessageBoxService.Show(error);
 			}
 		});
@@ -901,7 +943,7 @@ namespace VDF.GUI.ViewModels {
 			catch (Exception ex) {
 				IsBusy = false;
 				string error = string.Format(App.Lang["Message.ExportScanResultsFailed"], ex);
-				Logger.Instance.Info(error);
+				Logger.Instance.Error(error);
 				await MessageBoxService.Show(error);
 			}
 			finally {
@@ -949,7 +991,7 @@ namespace VDF.GUI.ViewModels {
 
 				int skipped = items.RemoveAll(it => it?.ItemInfo == null);
 				if (skipped > 0)
-					Logger.Instance.Info($"Skipped {skipped} corrupt scan result entries (missing ItemInfo)");
+					Logger.Instance.Warn($"Skipped {skipped} corrupt scan result entries (missing ItemInfo)");
 				if (items.Count == 0)
 					throw new JsonException("All scan result entries were corrupt");
 
@@ -980,7 +1022,7 @@ namespace VDF.GUI.ViewModels {
 				foreach (var item in items)
 					Duplicates.Add(item);
 
-				BuildDuplicatesView();
+				BuildActiveResultsView();
 				RefreshGroupStats();
 				IsBusy = false;
 				stream.Close();
@@ -990,13 +1032,13 @@ namespace VDF.GUI.ViewModels {
 			catch (JsonException) {
 				IsBusy = false;
 				string error = App.Lang["Message.ImportScanResultsCorrupt"];
-				Logger.Instance.Info(error);
+				Logger.Instance.Error(error);
 				await MessageBoxService.Show(error);
 			}
 			catch (Exception ex) {
 				IsBusy = false;
 				string error = string.Format(App.Lang["Message.ImportScanResultsFailed"], ex);
-				Logger.Instance.Info(error);
+				Logger.Instance.Error(error);
 				await MessageBoxService.Show(error);
 			}
 		}
@@ -1042,11 +1084,8 @@ namespace VDF.GUI.ViewModels {
 		});
 
 		public ReactiveCommand<Unit, Unit> OpenItemsByColIdCommand => ReactiveCommand.Create(() => {
-			var tag = GetDataGrid.CurrentColumn?.Tag as string;
-			if (tag == "Thumbnail")
-				OpenItems();
-			else if (tag == "Path")
-				OpenItemsInFolder();
+			// The flattened view has no "current column" concept — Enter simply opens.
+			OpenItems();
 		});
 
 		public ReactiveCommand<Unit, Unit> ThumbnailDoubleClickCommand => ReactiveCommand.Create(() => {
@@ -1106,27 +1145,34 @@ namespace VDF.GUI.ViewModels {
 				return;
 
 			if (GetSelectedDuplicateItem() is not DuplicateItemVM currentItem) return;
+			await RevealInFileManager(currentItem.ItemInfo.Path);
+		}
+
+		// Reveal a single file in the OS file manager, selecting it where the
+		// platform supports it. Shared by the results list, the log context menu
+		// and the database editor.
+		internal static async Task RevealInFileManager(string filePath) {
 			try {
 				if (OperatingSystem.IsWindows()) {
 					try {
-						Utils.ShellUtils.ShowInExplorer(currentItem.ItemInfo.Path);
+						Utils.ShellUtils.ShowInExplorer(filePath);
 					}
 					catch {
 						// Fallback to explorer.exe if shell API fails (Notepad++/Electron pattern)
 						var psi = new ProcessStartInfo("explorer.exe") { UseShellExecute = false };
-						psi.ArgumentList.Add($"/select,{currentItem.ItemInfo.Path}");
+						psi.ArgumentList.Add($"/select,{filePath}");
 						Process.Start(psi);
 					}
 				}
 				else if (OperatingSystem.IsMacOS()) {
 					var psi = new ProcessStartInfo("open") { UseShellExecute = false };
 					psi.ArgumentList.Add("-R");
-					psi.ArgumentList.Add(currentItem.ItemInfo.Path);
+					psi.ArgumentList.Add(filePath);
 					Process.Start(psi);
 				}
 				else {
 					Process.Start(new ProcessStartInfo {
-						FileName = currentItem.ItemInfo.Folder,
+						FileName = Path.GetDirectoryName(filePath),
 						UseShellExecute = true,
 						Verb = "open"
 					});
@@ -1134,8 +1180,60 @@ namespace VDF.GUI.ViewModels {
 			}
 			catch (Exception ex) {
 				await MessageBoxService.Show(string.Format(App.Lang["Message.OpenFilesFailed"], ex.Message));
+			}
+		}
+
+		// Right-click "Open In Folder" on a log line. Log entries are plain text, so
+		// pull a file path out of the selected line and reveal it if it still exists.
+		public ReactiveCommand<Unit, Unit> OpenLogItemLocationCommand => ReactiveCommand.CreateFromTask(async () => {
+			string? path = TryExtractExistingPath((SelectedLogItem as LogMessageRow)?.Message);
+			if (path == null) {
+				await MessageBoxService.Show(App.Lang["Message.NoFileInLogLine"]);
 				return;
 			}
+			await RevealInFileManager(path);
+		});
+
+		// Best-effort extraction of a filesystem path from a free-text log line.
+		// Handles the common "... of: <path>", quoted 'path'/"path", and
+		// "<drive-or-slash>...<end-of-line>" shapes; only returns a candidate that
+		// actually exists on disk so we never open a bogus location.
+		internal static string? TryExtractExistingPath(string? logLine) {
+			if (string.IsNullOrWhiteSpace(logLine)) return null;
+
+			// Drop the "HH:mm:ss => " timestamp prefix the logger prepends.
+			int arrow = logLine.IndexOf("=> ", StringComparison.Ordinal);
+			string message = arrow >= 0 ? logLine[(arrow + 3)..] : logLine;
+
+			var candidates = new List<string>();
+
+			// 1) "... of: <path>" — the shape used by the decode / too-dark errors.
+			int ofIdx = message.LastIndexOf("of: ", StringComparison.Ordinal);
+			if (ofIdx >= 0)
+				candidates.Add(message[(ofIdx + 4)..]);
+
+			// 2) Quoted paths, e.g. 'C:\a\b.mp4' or "C:\a\b.mp4".
+			foreach (char quote in new[] { '\'', '"' }) {
+				int start = message.IndexOf(quote);
+				while (start >= 0) {
+					int end = message.IndexOf(quote, start + 1);
+					if (end < 0) break;
+					candidates.Add(message[(start + 1)..end]);
+					start = message.IndexOf(quote, end + 1);
+				}
+			}
+
+			// 3) First path-like root (drive letter or leading slash) through end of line.
+			var match = System.Text.RegularExpressions.Regex.Match(message, @"([A-Za-z]:[\\/]|/).*$");
+			if (match.Success)
+				candidates.Add(match.Value);
+
+			foreach (string candidate in candidates) {
+				string trimmed = candidate.Trim().Trim('\'', '"').Trim();
+				if (trimmed.Length > 0 && (File.Exists(trimmed) || Directory.Exists(trimmed)))
+					return trimmed;
+			}
+			return null;
 		}
 
 		private bool AlternativeOpen(string cmdSingle, string cmdMulti, List<DuplicateItemVM>? items = null) {
@@ -1197,7 +1295,7 @@ namespace VDF.GUI.ViewModels {
 				Process.Start(psi);
 			}
 			catch (Exception e) {
-				Logger.Instance.Info(string.Format(App.Lang["Log.CustomCommandFailed"], command,
+				Logger.Instance.Error(string.Format(App.Lang["Log.CustomCommandFailed"], command,
 					string.Join(" ", psi.ArgumentList), e.Message));
 			}
 
@@ -1426,6 +1524,9 @@ Non-Windows setup:
 
 			Duplicates.Clear();
 
+			// Folder counting is informational only — never let it compete with the scan for IO.
+			folderCounting.CancelAll();
+
 			TempDirectory = TempExtractionManager.Register(new("VDF-"));
 			Utils.ThumbCacheHelpers.SetActiveProvider(Utils.ThumbPack.Open(TempDirectory.Path));
 
@@ -1476,6 +1577,8 @@ Non-Windows setup:
 			Scanner.Settings.DurationDifferenceMaxSeconds = SettingsFile.Instance.DurationDifferenceMaxSeconds;
 			Scanner.Settings.MaxSamplingDurationSeconds = SettingsFile.Instance.MaxSamplingDurationSeconds;
 			Scanner.Settings.MaxDegreeOfParallelism = SettingsFile.Instance.MaxDegreeOfParallelism;
+			Scanner.Settings.HddMaxDegreeOfParallelism = SettingsFile.Instance.HddMaxDegreeOfParallelism;
+			Scanner.Settings.DriveTypeOverrides = SettingsFile.Instance.DriveTypeOverrides;
 			Scanner.Settings.ThumbnailCount = SettingsFile.Instance.Thumbnails;
 			Scanner.Settings.ThumbnailMaxWidth = SettingsFile.Instance.ThumbnailMaxWidth;
 			Scanner.Settings.ExtendedFFToolsLogging = SettingsFile.Instance.ExtendedFFToolsLogging;
@@ -1491,6 +1594,7 @@ Non-Windows setup:
 			SettingsFile.Instance.LanguageCode = App.Lang.CurrentLanguage;
 			Scanner.Settings.LanguageCode = SettingsFile.Instance.LanguageCode;
 			Scanner.Settings.IncludeNonExistingFiles = SettingsFile.Instance.IncludeNonExistingFiles;
+			Scanner.Settings.RememberDeletedContent = SettingsFile.Instance.RememberDeletedContent;
 			Scanner.Settings.FilterByFilePathContains = SettingsFile.Instance.FilterByFilePathContains;
 			Scanner.Settings.FilePathContainsTexts = SettingsFile.Instance.FilePathContainsTexts.ToList();
 			Scanner.Settings.FilterByFilePathNotContains = SettingsFile.Instance.FilterByFilePathNotContains;
@@ -1555,11 +1659,12 @@ Non-Windows setup:
 		}
 
 		public ReactiveCommand<Unit, Unit> MarkGroupAsNotAMatchCommand => ReactiveCommand.CreateFromTask(async () => {
+			if (GetSelectedDuplicateItem() is not DuplicateItemVM data) return;
+			await MarkGroupAsNotAMatch(data.ItemInfo.GroupId);
+		});
+
+		internal async Task MarkGroupAsNotAMatch(Guid gid) {
 			try {
-				if (GetSelectedDuplicateItem() is not DuplicateItemVM data) return;
-
-				var gid = data.ItemInfo.GroupId;
-
 				HashSet<string> blacklist = new HashSet<string>(PathComparer.ForCurrentPlatform);
 				foreach (DuplicateItemVM duplicateItem in Duplicates.Where(d => d.ItemInfo.GroupId == gid))
 					blacklist.Add(duplicateItem.ItemInfo.Path);
@@ -1582,7 +1687,7 @@ Non-Windows setup:
 				// Drop singleton groups
 				DropSingletonGroups();
 				RefreshGroupStats();
-				view?.Refresh();
+				RefreshResultsView();
 
 				// Mirror the deletion path: keep backup.scanresults in sync so the mark
 				// survives a crash before the user gets to a clean exit.
@@ -1590,9 +1695,9 @@ Non-Windows setup:
 					await ExportScanResults(BackupScanResultsFile);
 			}
 			catch (Exception ex) {
-				Logger.Instance.Info($"MarkGroupAsNotAMatch failed: {ex}");
+				Logger.Instance.Error($"MarkGroupAsNotAMatch failed: {ex}");
 			}
-		});
+		}
 
 		private HashSet<Guid> ComputeBlacklistedGroupIds(IEnumerable<(Guid GroupId, string Path)> items) =>
 			GroupBlacklistFilter.ComputeBlacklistedGroupIds(items, GroupBlacklist);
@@ -1605,30 +1710,47 @@ Non-Windows setup:
 
 		public ReactiveCommand<Unit, Unit> ShowGroupInThumbnailComparerCommand => ReactiveCommand.Create(() => {
 			if (GetSelectedDuplicateItem() is not DuplicateItemVM data) return;
-			List<LargeThumbnailDuplicateItem> items = new();
+			List<LargeThumbnailDuplicateItem> items;
 			Guid? groupId = null;
 
 			if (GetSelectedDuplicates().Count == 1) {
-				foreach (DuplicateItemVM duplicateItem in Duplicates.Where(d => d.ItemInfo.GroupId == data.ItemInfo.GroupId))
-					items.Add(new LargeThumbnailDuplicateItem(duplicateItem));
+				items = CreateComparerItems(Duplicates.Where(d => d.ItemInfo.GroupId == data.ItemInfo.GroupId));
 				groupId = data.ItemInfo.GroupId;
 			}
 			else {
-				foreach (DuplicateItemVM duplicateItem in GetSelectedDuplicates())
-					items.Add(new LargeThumbnailDuplicateItem(duplicateItem));
+				// Arbitrary selection, possibly across groups — no keeper marking.
+				items = GetSelectedDuplicates().Select(d => new LargeThumbnailDuplicateItem(d)).ToList();
 			}
 
-			ThumbnailComparer thumbnailComparer = new(items, groupId, NavigateGroupForComparer);
+			ThumbnailComparer thumbnailComparer = new(items, groupId, NavigateGroupForComparer, GetComparerGroupPosition);
 			thumbnailComparer.Show();
 		});
 
 		public void CompareGroup(Guid groupId) {
-			var items = Duplicates
-				.Where(d => d.ItemInfo.GroupId == groupId)
-				.Select(d => new LargeThumbnailDuplicateItem(d))
-				.ToList();
+			var items = CreateComparerItems(Duplicates.Where(d => d.ItemInfo.GroupId == groupId));
 			if (items.Count == 0) return;
-			new ThumbnailComparer(items, groupId, NavigateGroupForComparer).Show();
+			new ThumbnailComparer(items, groupId, NavigateGroupForComparer, GetComparerGroupPosition).Show();
+		}
+
+		/// <summary>Comparer items for one group; marks the quality keeper (BEST badge, pane tint).</summary>
+		List<LargeThumbnailDuplicateItem> CreateComparerItems(IEnumerable<DuplicateItemVM> groupMembers) {
+			var list = groupMembers.Select(d => new LargeThumbnailDuplicateItem(d)).ToList();
+			if (list.Count >= 2) {
+				var keeper = VDF.Core.Utils.QualityRanker.PickKeeper(
+					list.Select(l => l.Item).ToList(),
+					ResolveCriteria(QualityCriteriaOrder),
+					d => d.ItemInfo.IsImage);
+				foreach (var entry in list)
+					entry.IsGroupBest = ReferenceEquals(entry.Item, keeper);
+			}
+			return list;
+		}
+
+		/// <summary>1-based position of a group within the current results view, for "Group X of Y".</summary>
+		internal (int Index, int Total)? GetComparerGroupPosition(Guid groupId) {
+			var ids = resultsGroups.Select(g => g.GroupId).ToList();
+			int idx = ids.IndexOf(groupId);
+			return idx < 0 ? null : (idx + 1, ids.Count);
 		}
 
 		public void KeepBestInGroup(Guid groupId) {
@@ -1698,6 +1820,11 @@ Non-Windows setup:
 				   );
 
 			var actuallyDeleted = new HashSet<DuplicateItemVM>(toDelete.Count, ReferenceEqualityComparer<DuplicateItemVM>.Instance);
+			// With RememberDeletedContent on, a disk-delete that removes an ENTIRE group (no
+			// unchecked survivor) is a content rejection, not a duplicate cleanup: exactly one
+			// entry stays in the database as the tombstone so a re-download of this content is
+			// caught. This set records the groups that already kept theirs.
+			var tombstonedGroups = new HashSet<Guid>();
 			long freedBytes = 0;
 			int total = toDelete.Count;
 			IsBusy = true;
@@ -1736,7 +1863,7 @@ Non-Windows setup:
 							};
 							int result = FileUtils.SHFileOperation(ref fs);
 							if (result != 0)
-								Logger.Instance.Info($"SHFileOperation returned {result:X} for a batch of {existing.Count} file(s); checking which files were actually recycled.");
+								Logger.Instance.Warn($"SHFileOperation returned {result:X} for a batch of {existing.Count} file(s); checking which files were actually recycled.");
 							foreach (var d in existing)
 								batchRecycled.Add(d);
 						}
@@ -1751,7 +1878,7 @@ Non-Windows setup:
 
 							if (createLinks) {
 								if (!exists) {
-									Logger.Instance.Info($"'{dub.ItemInfo.Path}' no longer exists on disk; removing entry only.");
+									Logger.Instance.Warn($"'{dub.ItemInfo.Path}' no longer exists on disk; removing entry only.");
 								}
 								else {
 									var keeper = keepByGroup.TryGetValue(dub.ItemInfo.GroupId, out var k) ? k : null;
@@ -1776,7 +1903,7 @@ Non-Windows setup:
 									else {
 										// File was already gone — treat as successfully deleted
 										// so the entry is still removed from the list and database.
-										Logger.Instance.Info($"'{dub.ItemInfo.Path}' no longer exists on disk; removing entry only.");
+										Logger.Instance.Warn($"'{dub.ItemInfo.Path}' no longer exists on disk; removing entry only.");
 									}
 								}
 								else if (batchedRecycle) {
@@ -1797,13 +1924,21 @@ Non-Windows setup:
 
 							if (blackList)
 								ScanEngine.BlackListFileEntry(dub.ItemInfo.Path);
-							else
-								ScanEngine.RemoveFromDatabase(fe);
+							else {
+								// Only a disk-delete rejects content; remove-from-list/link modes leave
+								// the file (or a survivor) in place, so their entries are dropped as before.
+								bool keepAsTombstone = fromDisk &&
+									SettingsFile.Instance.RememberDeletedContent &&
+									(!keepByGroup.TryGetValue(dub.ItemInfo.GroupId, out var survivor) || survivor == null) &&
+									tombstonedGroups.Add(dub.ItemInfo.GroupId);
+								if (!keepAsTombstone)
+									ScanEngine.RemoveFromDatabase(fe);
+							}
 
 							actuallyDeleted.Add(dub);
 						}
 						catch (Exception ex) {
-							Logger.Instance.Info($"Failed to delete '{dub.ItemInfo.Path}': {ex.Message}\n{ex.StackTrace}");
+							Logger.Instance.Error($"Failed to delete '{dub.ItemInfo.Path}': {ex.Message}\n{ex.StackTrace}");
 						}
 						finally {
 							done++;
@@ -1842,7 +1977,7 @@ Non-Windows setup:
 			DropSingletonGroups();
 
 			RefreshGroupStats();
-			view?.Refresh();
+			RefreshResultsView();
 
 			ScanEngine.SaveDatabase();
 
@@ -1897,17 +2032,14 @@ Non-Windows setup:
 		}
 
 		public ReactiveCommand<Unit, Unit> ExpandAllGroupsCommand => ReactiveCommand.Create(() => {
-			if (view == null) return;
-			foreach (var group in view.Groups ?? Enumerable.Empty<object>())
-				if (group is DataGridCollectionViewGroup g)
-					GetDataGrid.ExpandRowGroup(g, true);
+			collapsedResultsGroups.Clear();
+			RebuildResultsList();
 		});
 
 		public ReactiveCommand<Unit, Unit> CollapseAllGroupsCommand => ReactiveCommand.Create(() => {
-			if (view == null) return;
-			foreach (var group in view.Groups ?? Enumerable.Empty<object>())
-				if (group is DataGridCollectionViewGroup g)
-					GetDataGrid.CollapseRowGroup(g, true);
+			foreach (var group in resultsGroups)
+				collapsedResultsGroups.Add(group.GroupId);
+			RebuildResultsList();
 		});
 
 		public ReactiveCommand<Unit, Unit> NavigateNextGroupCommand => ReactiveCommand.Create(() => {
@@ -1931,50 +2063,15 @@ Non-Windows setup:
 			NavigateGroup(forward: false);
 		});
 
-		Guid? NavigateGroup(bool forward, Guid? fromGroupId = null) {
-			if (view?.Groups == null) return null;
-			var groups = view.Groups.OfType<DataGridCollectionViewGroup>().ToList();
-			if (groups.Count == 0) return null;
-
-			var dataGrid = GetDataGrid;
-			Guid? referenceGroupId = fromGroupId
-				?? (dataGrid.SelectedItem as DuplicateItemVM)?.ItemInfo.GroupId;
-			int currentGroupIndex = -1;
-
-			if (referenceGroupId.HasValue) {
-				for (int i = 0; i < groups.Count; i++) {
-					if (groups[i].Items.OfType<DuplicateItemVM>()
-						.Any(item => item.ItemInfo.GroupId == referenceGroupId.Value)) {
-						currentGroupIndex = i;
-						break;
-					}
-				}
-			}
-
-			int targetIndex = forward
-				? (currentGroupIndex + 1 < groups.Count ? currentGroupIndex + 1 : 0)
-				: (currentGroupIndex - 1 >= 0 ? currentGroupIndex - 1 : groups.Count - 1);
-
-			var targetGroup = groups[targetIndex];
-			dataGrid.ExpandRowGroup(targetGroup, true);
-			var firstItem = targetGroup.Items.OfType<DuplicateItemVM>().FirstOrDefault();
-			if (firstItem != null) {
-				dataGrid.SelectedItem = firstItem;
-				dataGrid.ScrollIntoView(firstItem, null);
-				return firstItem.ItemInfo.GroupId;
-			}
-			return null;
-		}
+		Guid? NavigateGroup(bool forward, Guid? fromGroupId = null) =>
+			NavigateGroupNewView(forward, fromGroupId);
 
 		// Used by ThumbnailComparer to walk to the sibling group without closing the dialog.
 		// Also moves the main grid's selection so state stays consistent when the dialog closes.
 		internal (Guid GroupId, List<LargeThumbnailDuplicateItem> Items)? NavigateGroupForComparer(Guid currentGroupId, bool forward) {
 			var newGroupId = NavigateGroup(forward, currentGroupId);
 			if (newGroupId is null) return null;
-			var items = Duplicates
-				.Where(d => d.ItemInfo.GroupId == newGroupId.Value)
-				.Select(d => new LargeThumbnailDuplicateItem(d))
-				.ToList();
+			var items = CreateComparerItems(Duplicates.Where(d => d.ItemInfo.GroupId == newGroupId.Value));
 			if (items.Count == 0) return null;
 			return (newGroupId.Value, items);
 		}

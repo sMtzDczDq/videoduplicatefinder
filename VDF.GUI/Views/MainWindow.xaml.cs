@@ -28,6 +28,7 @@ using Avalonia.Media;
 using Avalonia.Platform.Storage;
 using Avalonia.Styling;
 using Avalonia.Themes.Fluent;
+using Avalonia.Threading;
 using Avalonia.VisualTree;
 using VDF.Core.Utils;
 using VDF.GUI.Data;
@@ -38,6 +39,13 @@ namespace VDF.GUI.Views {
 	public class MainWindow : Window {
 		bool keepBackupFile;
 		bool hasExited;
+		DispatcherTimer? settingsSaveDebounce;
+
+		void RestartSettingsSaveDebounce() {
+			if (settingsSaveDebounce == null || hasExited) return;
+			settingsSaveDebounce.Stop();
+			settingsSaveDebounce.Start();
+		}
 
 		public readonly Core.FFTools.FFHardwareAccelerationMode InitialHwMode;
 		public MainWindow() {
@@ -50,13 +58,6 @@ namespace VDF.GUI.Views {
 			Opened += MainWindow_Opened;
 			//Don't use this Window.OnClosing event,
 			//datacontext might not be the same due to Avalonia internal handling data differently
-
-
-
-			this.FindControl<ListBox>("ListboxIncludelist")!.AddHandler(DragDrop.DropEvent, DropInclude);
-			this.FindControl<ListBox>("ListboxIncludelist")!.AddHandler(DragDrop.DragOverEvent, DragOver);
-			this.FindControl<ListBox>("ListboxBlacklist")!.AddHandler(DragDrop.DropEvent, DropBlacklist);
-			this.FindControl<ListBox>("ListboxBlacklist")!.AddHandler(DragDrop.DragOverEvent, DragOver);
 
 			ApplicationHelpers.CurrentApplicationLifetime.Startup += MainWindow_Startup;
 			ApplicationHelpers.CurrentApplicationLifetime.Exit += MainWindow_Exit;
@@ -75,14 +76,47 @@ namespace VDF.GUI.Views {
 					this.FindControl<ExperimentalAcrylicBorder>("ExperimentalAcrylicBorderBackgroundWhite")!.IsVisible = true;
 			}
 
-			if (!SettingsFile.Instance.DarkMode)
-				RequestedThemeVariant = ThemeVariant.Light;
+			// GNOME (and other Linux compositors) keep their server-side title bar even when
+			// ExtendClientAreaToDecorationsHint is set, so VDF's own centered title rendered a
+			// second time just below the decoration (#798). Fall back to native decorations on
+			// Linux and drop the in-window title. The 30px top band stays: it hosts the shell
+			// nav links, which render as a normal top strip under the native titlebar (no
+			// caption buttons to avoid, so the strip reaches the right edge).
+			if (RuntimeInformation.IsOSPlatform(OSPlatform.Linux)) {
+				ExtendClientAreaToDecorationsHint = false;
+				this.FindControl<TextBlock>("TextBlockWindowTitle")!.IsVisible = false;
+				this.FindControl<StackPanel>("TitlebarNav")!.Margin = new Thickness(0, 0, 8, 0);
+			}
+
+			// Application-level, not window-level: the managed window chrome (caption bar,
+			// titlebar buttons) resolves its brushes against the application's variant, so a
+			// window-only override leaves a dark titlebar band on an otherwise light window.
+			if (!SettingsFile.Instance.DarkMode && Application.Current != null)
+				Application.Current.RequestedThemeVariant = ThemeVariant.Light;
 
 			// Switch theme at runtime when the user toggles the DarkMode setting
 			SettingsFile.Instance.PropertyChanged += (_, e) => {
-				if (e.PropertyName == nameof(SettingsFile.DarkMode))
-					RequestedThemeVariant = SettingsFile.Instance.DarkMode ? ThemeVariant.Dark : ThemeVariant.Light;
+				if (e.PropertyName == nameof(SettingsFile.DarkMode) && Application.Current != null)
+					Application.Current.RequestedThemeVariant = SettingsFile.Instance.DarkMode ? ThemeVariant.Dark : ThemeVariant.Light;
 			};
+
+			// The settings page has no Save button anymore ("Settings save instantly"):
+			// persist any settings change debounced, plus the folder/filter lists.
+			settingsSaveDebounce = new DispatcherTimer { Interval = TimeSpan.FromSeconds(1.5) };
+			settingsSaveDebounce.Tick += (_, __) => {
+				settingsSaveDebounce!.Stop();
+				try {
+					SettingsFile.SaveSettings();
+				}
+				catch (Exception ex) {
+					Logger.Instance.Error($"Saving settings failed: {ex.Message}");
+				}
+			};
+			SettingsFile.Instance.PropertyChanged += (_, __) => RestartSettingsSaveDebounce();
+			SettingsFile.Instance.Includes.CollectionChanged += (_, __) => RestartSettingsSaveDebounce();
+			SettingsFile.Instance.Blacklists.CollectionChanged += (_, __) => RestartSettingsSaveDebounce();
+			SettingsFile.Instance.FilePathContainsTexts.CollectionChanged += (_, __) => RestartSettingsSaveDebounce();
+			SettingsFile.Instance.FilePathNotContainsTexts.CollectionChanged += (_, __) => RestartSettingsSaveDebounce();
 
 			ShowAlgoView();
 		}
@@ -131,6 +165,14 @@ namespace VDF.GUI.Views {
 		/// first layout passes and stop once found or after a few attempts.
 		/// </summary>
 		void HideOwnTitleIfChromeDrawsOne() {
+			// Windows: the system/managed chrome draws a left-aligned caption title even
+			// with the client area extended, and it never appears in this window's visual
+			// tree — the probe below can't see it, which left BOTH titles visible
+			// ("double window title" report). Just never draw our own copy here.
+			if (OperatingSystem.IsWindows()) {
+				this.FindControl<TextBlock>("TextBlockWindowTitle")!.IsVisible = false;
+				return;
+			}
 			int attempts = 0;
 			void Check(object? sender, EventArgs e) {
 				bool chromeTitleVisible = this.GetVisualDescendants()
@@ -212,8 +254,9 @@ namespace VDF.GUI.Views {
 				["KeepHighlightedAndAdvance"] = vm.KeepHighlightedAndAdvanceCommand,
 				["UndoSelection"] = vm.UndoSelectionCommand,
 			};
-			var dataGrid = this.FindControl<DataGrid>("dataGridGrouping")!;
-			KeyboardShortcutManager.Instance.ApplyBindings(dataGrid, commandMap);
+			var newResultsView = this.FindControl<DuplicateResultsView>("NewResultsView");
+			if (newResultsView != null)
+				KeyboardShortcutManager.Instance.ApplyBindings(newResultsView.ShortcutTarget, commandMap);
 		}
 
 		void MainWindow_Closing(object? sender, System.ComponentModel.CancelEventArgs e) {
@@ -240,129 +283,12 @@ namespace VDF.GUI.Views {
 			SettingsFile.SaveSettings();
 		}
 
-		private void DragOver(object? sender, DragEventArgs e) {
-			// Only allow Copy or Link as Drop Operations.
-			e.DragEffects &= (DragDropEffects.Copy | DragDropEffects.Link);
-
-			// Only allow if the dragged data contains filenames.
-			if (!e.DataTransfer.Contains(DataFormat.File))
-				e.DragEffects = DragDropEffects.None;
-		}
-
-		private void DropInclude(object? sender, DragEventArgs e) {
-			if (!e.DataTransfer.Contains(DataFormat.File)) return;
-
-			foreach (var path in e.DataTransfer.GetItems(DataFormat.File) ?? Array.Empty<IDataTransferItem>()) {
-				IStorageItem? fold = path.TryGetFile();
-				if (fold == null)
-					continue;
-				string? localPath = fold.TryGetLocalPath();
-				if (!string.IsNullOrEmpty(localPath) && !SettingsFile.Instance.Includes.Contains(localPath))
-					SettingsFile.Instance.Includes.Add(localPath);
-			}
-		}
-		private void DropBlacklist(object? sender, DragEventArgs e) {
-			if (!e.DataTransfer.Contains(DataFormat.File)) return;
-
-			foreach (var path in e.DataTransfer.GetItems(DataFormat.File) ?? Array.Empty<IDataTransferItem>()) {
-				IStorageItem? fold = path.TryGetFile();
-				if (fold == null)
-					continue;
-				string? localPath = fold.TryGetLocalPath();
-				if (!string.IsNullOrEmpty(localPath) && !SettingsFile.Instance.Blacklists.Contains(localPath))
-					SettingsFile.Instance.Blacklists.Add(localPath);
-			}
-		}
-
-		void Thumbnails_ValueChanged(object? sender, NumericUpDownValueChangedEventArgs e) {
-			if (ApplicationHelpers.MainWindow != null && ApplicationHelpers.MainWindowDataContext != null)
-				ApplicationHelpers.MainWindowDataContext.Thumbnails_ValueChanged(sender, e);
-		}
-
 		void MainWindow_Startup(object? sender, ControlledApplicationLifetimeStartupEventArgs e) {
 			var vm = ApplicationHelpers.MainWindowDataContext;
 			vm.LoadDatabase();
 			vm.RestoreBackupScanResults();
 		}
 
-		void OnLoadingRowGroup(object? sender, DataGridRowGroupHeaderEventArgs e) {
-			var header = e.RowGroupHeader;
-			// Avoid adding buttons twice (recycled headers)
-			if (header.Tag is true) return;
-			header.Tag = true;
-			// The summary below replaces the raw key; "ItemInfo.GroupId:" adds nothing.
-			header.IsPropertyNameVisible = false;
-
-			var vm = ApplicationHelpers.MainWindowDataContext;
-
-			Guid GetGroupId() {
-				if (header.DataContext is Avalonia.Collections.DataGridCollectionViewGroup g) {
-					var first = g.Items.OfType<DuplicateItemVM>().FirstOrDefault();
-					if (first != null) return first.ItemInfo.GroupId;
-				}
-				return Guid.Empty;
-			}
-
-			var compareBtn = new Button { Content = "Compare", Classes = { "group-action" } };
-			var keepBestBtn = new Button { Content = "Keep Best", Classes = { "group-action" } };
-
-			compareBtn.Click += (_, _) => {
-				var id = GetGroupId();
-				if (id != Guid.Empty) vm.CompareGroup(id);
-			};
-			keepBestBtn.Click += (_, _) => {
-				var id = GetGroupId();
-				if (id != Guid.Empty) vm.KeepBestInGroup(id);
-			};
-
-			var panel = new StackPanel {
-				Orientation = Orientation.Horizontal,
-				Spacing = 4,
-				Margin = new Thickness(8, 0, 4, 0),
-				VerticalAlignment = VerticalAlignment.Center,
-				Children = { compareBtn, keepBestBtn }
-			};
-
-			// Shown in place of the raw GroupId GUID ("4 files · 3.2 GB").
-			var summaryText = new TextBlock { VerticalAlignment = VerticalAlignment.Center };
-			void UpdateHeaderSummary() {
-				if (header.DataContext is not Avalonia.Collections.DataGridCollectionViewGroup g) return;
-				int count = 0;
-				long totalSize = 0;
-				foreach (var item in g.Items.OfType<DuplicateItemVM>()) {
-					count++;
-					if (item.ItemInfo.SizeLong > 0)
-						totalSize += item.ItemInfo.SizeLong;
-				}
-				summaryText.Text = string.Format(App.Lang["GroupHeader.Summary"], count, totalSize.BytesToString());
-			}
-			// Recycled headers keep our injected controls but get a new group.
-			header.DataContextChanged += (_, _) => UpdateHeaderSummary();
-
-			// Inject buttons into the header's visual tree once it's loaded
-			header.Loaded += (_, _) => {
-				// Walk visual tree to find the root Grid and append our button panel
-				var grid = header.GetVisualDescendants().OfType<Grid>().FirstOrDefault();
-				if (grid != null && !grid.Children.Contains(panel)) {
-					grid.ColumnDefinitions.Add(new ColumnDefinition(GridLength.Auto));
-					Grid.SetColumn(panel, grid.ColumnDefinitions.Count - 1);
-					grid.Children.Add(panel);
-				}
-				// Swap the GUID key TextBlock for the human-readable summary. The key
-				// element has no template part name, so it's located by its current text.
-				if (summaryText.Parent == null &&
-					header.DataContext is Avalonia.Collections.DataGridCollectionViewGroup g) {
-					string key = g.Key?.ToString() ?? string.Empty;
-					var keyText = header.GetVisualDescendants().OfType<TextBlock>()
-						.FirstOrDefault(tb => tb.Text == key);
-					if (keyText != null && keyText.Parent is Panel keyPanel) {
-						keyText.IsVisible = false;
-						keyPanel.Children.Insert(keyPanel.Children.IndexOf(keyText) + 1, summaryText);
-					}
-				}
-				UpdateHeaderSummary();
-			};
-		}
 
 		void OnMetricPointerEntered(object? sender, PointerEventArgs e) {
 			if (sender is Control ctrl && ctrl.Tag is string metric && ctrl.DataContext is DuplicateItemVM item)

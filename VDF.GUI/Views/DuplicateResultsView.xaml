@@ -1,0 +1,913 @@
+<UserControl
+    x:Class="VDF.GUI.Views.DuplicateResultsView"
+    xmlns="https://github.com/avaloniaui"
+    xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+    xmlns:Settings="clr-namespace:VDF.GUI.Data;assembly=VDF.GUI"
+    xmlns:actipro="http://schemas.actiprosoftware.com/avaloniaui"
+    xmlns:ctl="clr-namespace:VDF.GUI.Controls;assembly=VDF.GUI"
+    xmlns:local="clr-namespace:VDF.GUI;assembly=VDF.GUI"
+    xmlns:mvvm="clr-namespace:VDF.GUI.Mvvm;assembly=VDF.GUI"
+    xmlns:vm="clr-namespace:VDF.GUI.ViewModels;assembly=VDF.GUI"
+    x:DataType="vm:MainWindowVM"
+    x:Name="ResultsRoot">
+
+  <UserControl.Resources>
+    <!-- Own instances of the shared cell converters: StaticResource inside this
+         control's templates resolves against THIS scope, not the host window's. -->
+    <mvvm:SimilarityTierConverter x:Key="SimilarityTierConverter" />
+    <mvvm:EqualDiffConverter x:Key="EqualDiffConverter" />
+    <mvvm:BitrateDisplayConverter x:Key="BitrateDisplayConverter" />
+    <mvvm:SimilarityToFormattedConverter x:Key="SimilarityToFormattedConverter" />
+    <mvvm:MetricDisplayConverter x:Key="MetricDisplayConverter" />
+    <mvvm:ShowSkeletonConverter x:Key="ShowSkeletonConverter" />
+    <mvvm:ExtraShortDateTimeConverter x:Key="ExtraShortDateTimeConverter" />
+    <mvvm:FileNameConverter x:Key="FileNameConverter" />
+    <mvvm:DirectoryPathConverter x:Key="DirectoryPathConverter" />
+    <mvvm:ResultsRowSizingConverter x:Key="ResultsRowSizingConverter" />
+    <mvvm:BoolToValueConverter x:Key="ChevronConverter" TrueValue="▸" FalseValue="▾" />
+    <mvvm:BoolToValueConverter x:Key="SortDirectionGlyphConverter" TrueValue="↓" FalseValue="↑" />
+  </UserControl.Resources>
+
+  <UserControl.Styles>
+    <Style Selector="Button.group-action">
+      <Setter Property="Background" Value="Transparent" />
+      <Setter Property="Padding" Value="8,2" />
+      <Setter Property="FontSize" Value="12" />
+      <Setter Property="VerticalAlignment" Value="Center" />
+    </Style>
+    <Style Selector="Button.group-action:pointerover /template/ ContentPresenter">
+      <Setter Property="Background" Value="{actipro:ThemeResource Container3BackgroundBrush}" />
+    </Style>
+    <Style Selector="ListBox.results ListBoxItem">
+      <Setter Property="Padding" Value="0" />
+      <Setter Property="MinHeight" Value="0" />
+      <Setter Property="HorizontalContentAlignment" Value="Stretch" />
+    </Style>
+    <Style Selector="TextBlock.colheader">
+      <Setter Property="FontSize" Value="11" />
+      <Setter Property="FontWeight" Value="SemiBold" />
+      <Setter Property="Opacity" Value="0.65" />
+      <Setter Property="VerticalAlignment" Value="Center" />
+    </Style>
+    <Style Selector="TextBlock.meta">
+      <Setter Property="FontSize" Value="12" />
+      <Setter Property="Opacity" Value="0.85" />
+    </Style>
+    <Style Selector="ToggleButton.chip">
+      <Setter Property="Padding" Value="10,3" />
+      <Setter Property="FontSize" Value="12" />
+      <Setter Property="CornerRadius" Value="12" />
+    </Style>
+    <!-- checked rows use the mockup's exact selection tint (the "sel" token) -->
+    <Style Selector="Border.resultrow">
+      <Setter Property="Background" Value="Transparent" />
+    </Style>
+    <Style Selector="Border.resultrow.checked">
+      <Setter Property="Background" Value="{DynamicResource VdfSelBrush}" />
+    </Style>
+    <!-- similarity chip: mockup .simchip — soft surface, colored text, 45%-alpha
+         border; tier classes (mid/low) are bound from the similarity value -->
+    <Style Selector="Border.simchip">
+      <Setter Property="Background" Value="{DynamicResource VdfGoodSoftBrush}" />
+      <Setter Property="BorderBrush" Value="{DynamicResource VdfGoodBorderBrush}" />
+      <Setter Property="BorderThickness" Value="1" />
+      <Setter Property="CornerRadius" Value="6" />
+    </Style>
+    <Style Selector="Border.simchip TextBlock">
+      <Setter Property="Foreground" Value="{DynamicResource VdfGoodBrush}" />
+    </Style>
+    <Style Selector="Border.simchip.mid">
+      <Setter Property="Background" Value="{DynamicResource VdfWarnSoftBrush}" />
+      <Setter Property="BorderBrush" Value="{DynamicResource VdfWarnBorderBrush}" />
+    </Style>
+    <Style Selector="Border.simchip.mid TextBlock">
+      <Setter Property="Foreground" Value="{DynamicResource VdfWarnBrush}" />
+    </Style>
+    <Style Selector="Border.simchip.low">
+      <Setter Property="Background" Value="{DynamicResource VdfDangerSoftBrush}" />
+      <Setter Property="BorderBrush" Value="{DynamicResource VdfDangerBorderBrush}" />
+    </Style>
+    <Style Selector="Border.simchip.low TextBlock">
+      <Setter Property="Foreground" Value="{DynamicResource VdfDangerBrush}" />
+    </Style>
+    <!-- metric best/worst emphasis: mockup .hi/.lo (good/danger, weight 600).
+         .eq mutes both while the hover-diff shows equal values — declared last
+         so it wins the Foreground when combined with hi/lo. -->
+    <Style Selector="TextBlock.metric-diff.hi">
+      <Setter Property="Foreground" Value="{DynamicResource VdfGoodBrush}" />
+      <Setter Property="FontWeight" Value="SemiBold" />
+    </Style>
+    <Style Selector="TextBlock.metric-diff.lo">
+      <Setter Property="Foreground" Value="{DynamicResource VdfDangerBrush}" />
+      <Setter Property="FontWeight" Value="SemiBold" />
+    </Style>
+    <Style Selector="TextBlock.metric-diff.eq">
+      <Setter Property="Foreground" Value="{DynamicResource VdfMutedBrush}" />
+    </Style>
+    <!-- HDR chip: neutral bordered info chip; green when it wins a mixed group -->
+    <Style Selector="Border.hdrchip">
+      <Setter Property="BorderBrush" Value="{actipro:ThemeResource Container3BorderBrush}" />
+      <Setter Property="BorderThickness" Value="1" />
+      <Setter Property="CornerRadius" Value="4" />
+      <Setter Property="Padding" Value="4,0" />
+      <Setter Property="VerticalAlignment" Value="Center" />
+    </Style>
+    <Style Selector="Border.hdrchip TextBlock">
+      <Setter Property="FontSize" Value="9.5" />
+      <Setter Property="FontWeight" Value="Bold" />
+      <Setter Property="Opacity" Value="0.75" />
+    </Style>
+    <Style Selector="Border.hdrchip.best">
+      <Setter Property="Background" Value="{DynamicResource VdfGoodSoftBrush}" />
+      <Setter Property="BorderBrush" Value="{DynamicResource VdfGoodBorderBrush}" />
+    </Style>
+    <Style Selector="Border.hdrchip.best TextBlock">
+      <Setter Property="Foreground" Value="{DynamicResource VdfGoodBrush}" />
+      <Setter Property="Opacity" Value="1" />
+    </Style>
+  </UserControl.Styles>
+
+  <Grid RowDefinitions="Auto,Auto,Auto,*,Auto,Auto">
+
+    <!-- ======== First-results hint (one-shot, dismissible): thumbnails are small by
+         default — point at the Preview drag handle and the thumbnail-width setting ======== -->
+    <Border
+        Grid.Row="0"
+        Padding="10,6"
+        Background="{actipro:ThemeResource ControlBackgroundBrushSoftAccent}"
+        BorderBrush="{actipro:ThemeResource Container3BorderBrush}"
+        BorderThickness="0,0,0,1"
+        IsVisible="{Binding Source={x:Static Settings:SettingsFile.Instance}, Path=!ResultsHintDismissed}">
+      <DockPanel LastChildFill="True">
+        <Button DockPanel.Dock="Right" Classes="group-action" FontSize="12"
+                Content="{Binding Source={x:Static local:App.Lang}, Path=[Setup.Welcome.Dismiss]}"
+                Command="{Binding DismissResultsHintCommand}" />
+        <Button DockPanel.Dock="Right" Classes="group-action" FontSize="12" Margin="0,0,6,0"
+                Content="{Binding Source={x:Static local:App.Lang}, Path=[Results.Hint.OpenSettings]}"
+                Command="{Binding ShowShellViewCommand}"
+                CommandParameter="Settings" />
+        <TextBlock VerticalAlignment="Center" FontSize="12.5" TextWrapping="Wrap"
+                   Text="{Binding Source={x:Static local:App.Lang}, Path=[Results.Hint.PreviewSize]}" />
+      </DockPanel>
+    </Border>
+
+    <!-- ======== Toolbar: sort + filter chips ======== -->
+    <Border
+        Grid.Row="1"
+        Padding="8,6"
+        Background="{actipro:ThemeResource Container2BackgroundBrush}"
+        BorderBrush="{actipro:ThemeResource Container3BorderBrush}"
+        BorderThickness="0,0,0,1">
+      <WrapPanel VerticalAlignment="Center">
+        <TextBlock Margin="0,0,4,0" VerticalAlignment="Center" FontSize="12"
+                   Text="{Binding Source={x:Static local:App.Lang}, Path=[MainWindow.Filter.Sort]}" />
+        <ComboBox
+            MinWidth="170"
+            FontSize="12"
+            ItemsSource="{Binding ResultsSortOptions}"
+            SelectedItem="{Binding SelectedResultsSort}">
+          <ComboBox.ItemTemplate>
+            <DataTemplate x:DataType="vm:ResultsSortOption">
+              <TextBlock Text="{Binding Name}" />
+            </DataTemplate>
+          </ComboBox.ItemTemplate>
+        </ComboBox>
+        <ToggleButton
+            Classes="chip"
+            Margin="4,0,0,0"
+            IsChecked="{Binding ResultsSortDescending}"
+            Content="{Binding ResultsSortDescending, Converter={StaticResource SortDirectionGlyphConverter}}"
+            ToolTip.Tip="{Binding Source={x:Static local:App.Lang}, Path=[Results.Toolbar.DescendingTip]}" />
+        <Border Width="1" Height="20" Margin="10,0" Background="{actipro:ThemeResource Container3BorderBrush}" />
+        <TextBlock Margin="0,0,4,0" VerticalAlignment="Center" FontSize="12"
+                   Text="{Binding Source={x:Static local:App.Lang}, Path=[MainWindow.Filter.Type]}" />
+        <ComboBox
+            MinWidth="100"
+            FontSize="12"
+            ItemsSource="{Binding TypeFilters}"
+            SelectedItem="{Binding FileType}">
+          <ComboBox.ItemTemplate>
+            <DataTemplate x:DataType="Settings:FileTypeFilterOption">
+              <TextBlock Text="{Binding Name}" />
+            </DataTemplate>
+          </ComboBox.ItemTemplate>
+        </ComboBox>
+        <TextBlock Margin="10,0,4,0" VerticalAlignment="Center" FontSize="12"
+                   Text="{Binding Source={x:Static local:App.Lang}, Path=[MainWindow.Filter.Similarity]}" />
+        <NumericUpDown
+            Width="110" FontSize="12"
+            FormatString="\{0\}%" Maximum="100" Minimum="0"
+            Value="{Binding FilterSimilarityFrom}" />
+        <TextBlock Margin="4,0" VerticalAlignment="Center" FontSize="12"
+                   Text="{Binding Source={x:Static local:App.Lang}, Path=[MainWindow.Filter.To]}" />
+        <NumericUpDown
+            Width="110" FontSize="12"
+            FormatString="\{0\}%" Maximum="100" Minimum="0"
+            Value="{Binding FilterSimilarityTo}" />
+        <ToggleButton
+            Classes="chip"
+            Margin="10,0,0,0"
+            IsChecked="{Binding FilterGroupsWithCheckedItems}"
+            Content="{Binding Source={x:Static local:App.Lang}, Path=[MainWindow.Filter.GroupsWithCheckedItems]}" />
+        <Border Width="1" Height="20" Margin="10,0" Background="{actipro:ThemeResource Container3BorderBrush}" />
+        <!-- Auto-select ▾ (stage 7): home of the old Selection menu — grouped by what
+             the action ranges over (per group vs. across all results) -->
+        <Button FontSize="12" Padding="10,3" CornerRadius="12"
+                AutomationProperties.Name="{Binding Source={x:Static local:App.Lang}, Path=[Results.Toolbar.AutoSelect]}">
+          <Button.Content>
+            <StackPanel Orientation="Horizontal" Spacing="5">
+              <TextBlock Text="{Binding Source={x:Static local:App.Lang}, Path=[Results.Toolbar.AutoSelect]}" />
+              <TextBlock Text="▾" FontSize="10" VerticalAlignment="Center" />
+            </StackPanel>
+          </Button.Content>
+          <Button.Flyout>
+            <MenuFlyout>
+              <MenuItem IsEnabled="False" FontSize="11"
+                  Header="{Binding Source={x:Static local:App.Lang}, Path=[Results.AutoSelect.PerGroup]}" />
+              <MenuItem
+                  Command="{Binding CheckLowestQualityCommand}"
+                  Header="{Binding Source={x:Static local:App.Lang}, Path=[MainWindow.Selection.CheckLowestQuality]}" />
+              <MenuItem
+                  Command="{Binding CheckOldestCommand}"
+                  Header="{Binding Source={x:Static local:App.Lang}, Path=[MainWindow.Selection.CheckOldest]}" />
+              <MenuItem
+                  Command="{Binding CheckNewestCommand}"
+                  Header="{Binding Source={x:Static local:App.Lang}, Path=[MainWindow.Selection.CheckNewest]}" />
+              <MenuItem IsEnabled="False" FontSize="11"
+                  Header="{Binding Source={x:Static local:App.Lang}, Path=[Results.AutoSelect.AcrossResults]}" />
+              <MenuItem
+                  Command="{Binding CheckWhenIdenticalCommand}"
+                  Header="{Binding Source={x:Static local:App.Lang}, Path=[MainWindow.Selection.CheckIdenticalKeepFirst]}" />
+              <MenuItem
+                  Command="{Binding CheckWhenIdenticalButSizeCommand}"
+                  Header="{Binding Source={x:Static local:App.Lang}, Path=[MainWindow.Selection.CheckIdenticalExceptSizeKeepSmallest]}" />
+              <MenuItem
+                  Command="{Binding CheckMissingFilesCommand}"
+                  Header="{Binding Source={x:Static local:App.Lang}, Path=[MainWindow.Selection.CheckMissingFiles]}" />
+              <Separator />
+              <MenuItem
+                  Command="{Binding CheckCustomCommand}"
+                  Header="{Binding Source={x:Static local:App.Lang}, Path=[MainWindow.Selection.ExpressionBuilder]}" />
+              <MenuItem
+                  Command="{Binding OpenCustomSelectionCommand}"
+                  Header="{Binding Source={x:Static local:App.Lang}, Path=[MainWindow.Selection.CustomSelection]}" />
+              <Separator />
+              <MenuItem
+                  Command="{Binding InvertCheckedItemsCommand}"
+                  Header="{Binding Source={x:Static local:App.Lang}, Path=[MainWindow.Selection.InvertCheckedItems]}" />
+              <MenuItem
+                  Command="{Binding ClearCheckedItemsCommand}"
+                  Header="{Binding Source={x:Static local:App.Lang}, Path=[MainWindow.Selection.ClearCheckedItems]}" />
+              <MenuItem
+                  Command="{Binding UndoSelectionCommand}"
+                  Header="{Binding Source={x:Static local:App.Lang}, Path=[Shortcut.UndoSelection]}" />
+            </MenuFlyout>
+          </Button.Flyout>
+        </Button>
+        <Border Width="1" Height="20" Margin="10,0" Background="{actipro:ThemeResource Container3BorderBrush}" />
+        <TextBox
+            MinWidth="170" FontSize="12"
+            Text="{Binding FilterByPath}"
+            PlaceholderText="{Binding Source={x:Static local:App.Lang}, Path=[MainWindow.Filter.Path]}"
+            ToolTip.Tip="{Binding Source={x:Static local:App.Lang}, Path=[MainWindow.Filter.PathNote]}" />
+        <ToggleButton
+            Classes="chip"
+            Margin="10,0,0,0"
+            IsChecked="{Binding Source={x:Static Settings:SettingsFile.Instance}, Path=ResultsCompactRows}"
+            Content="{Binding Source={x:Static local:App.Lang}, Path=[Results.Toolbar.CompactRows]}" />
+      </WrapPanel>
+    </Border>
+
+    <!-- ======== Column header strip (right-click: column menu) ======== -->
+    <Border
+        Grid.Row="2"
+        Padding="8,4"
+        Background="{actipro:ThemeResource Container2BackgroundBrush}"
+        BorderBrush="{actipro:ThemeResource Container3BorderBrush}"
+        BorderThickness="0,0,0,1">
+      <Border.ContextMenu>
+        <ContextMenu>
+          <MenuItem
+              Header="{Binding Source={x:Static local:App.Lang}, Path=[Results.Header.Preview]}"
+              ToggleType="CheckBox"
+              IsChecked="{Binding Source={x:Static Settings:SettingsFile.Instance}, Path=ShowThumbnailColumn}" />
+          <MenuItem
+              Header="{Binding Source={x:Static local:App.Lang}, Path=[Results.Header.DurationRes]}"
+              ToggleType="CheckBox"
+              IsChecked="{Binding Source={x:Static Settings:SettingsFile.Instance}, Path=ShowDurationColumn}" />
+          <MenuItem
+              Header="{Binding Source={x:Static local:App.Lang}, Path=[Results.Header.SizeDate]}"
+              ToggleType="CheckBox"
+              IsChecked="{Binding Source={x:Static Settings:SettingsFile.Instance}, Path=ShowSizeDateColumn}" />
+          <MenuItem
+              Header="{Binding Source={x:Static local:App.Lang}, Path=[Results.Header.Bitrate]}"
+              ToggleType="CheckBox"
+              IsChecked="{Binding Source={x:Static Settings:SettingsFile.Instance}, Path=ShowBitrateColumn}" />
+          <MenuItem
+              Header="{Binding Source={x:Static local:App.Lang}, Path=[Results.Header.FormatAudio]}"
+              ToggleType="CheckBox"
+              IsChecked="{Binding Source={x:Static Settings:SettingsFile.Instance}, Path=ShowFormatColumn}" />
+          <MenuItem
+              Header="{Binding Source={x:Static local:App.Lang}, Path=[Results.Header.Match]}"
+              ToggleType="CheckBox"
+              IsChecked="{Binding Source={x:Static Settings:SettingsFile.Instance}, Path=ShowSimilarityColumn}" />
+          <Separator />
+          <MenuItem
+              Header="{Binding Source={x:Static local:App.Lang}, Path=[Results.Toolbar.CompactRows]}"
+              ToggleType="CheckBox"
+              IsChecked="{Binding Source={x:Static Settings:SettingsFile.Instance}, Path=ResultsCompactRows}" />
+        </ContextMenu>
+      </Border.ContextMenu>
+      <DockPanel LastChildFill="True">
+        <Border DockPanel.Dock="Left" Width="30" />
+        <Grid DockPanel.Dock="Left"
+              Width="{Binding Source={x:Static Settings:SettingsFile.Instance}, Path=ResultsPreviewWidth}"
+              IsVisible="{Binding Source={x:Static Settings:SettingsFile.Instance}, Path=ShowThumbnailColumn}">
+          <TextBlock Classes="colheader" Text="{Binding Source={x:Static local:App.Lang}, Path=[Results.Header.Preview]}" />
+          <Thumb
+              Width="10"
+              HorizontalAlignment="Right"
+              Cursor="SizeWestEast"
+              DragDelta="OnPreviewGripDragDelta"
+              ToolTip.Tip="{Binding Source={x:Static local:App.Lang}, Path=[Results.Header.PreviewResizeTip]}">
+            <Thumb.Template>
+              <ControlTemplate>
+                <Border Background="Transparent">
+                  <TextBlock Text="⋮" FontSize="13" Opacity="0.55" HorizontalAlignment="Center" VerticalAlignment="Center" />
+                </Border>
+              </ControlTemplate>
+            </Thumb.Template>
+          </Thumb>
+        </Grid>
+        <TextBlock DockPanel.Dock="Right" Classes="colheader" Width="76" TextAlignment="Right"
+                   IsVisible="{Binding Source={x:Static Settings:SettingsFile.Instance}, Path=ShowSimilarityColumn}"
+                   Text="{Binding Source={x:Static local:App.Lang}, Path=[Results.Header.Match]}" />
+        <TextBlock DockPanel.Dock="Right" Classes="colheader" Width="80"
+                   IsVisible="{Binding ResultsShowClipOffsetColumn}"
+                   Text="{Binding Source={x:Static local:App.Lang}, Path=[DuplicateList.Header.ClipOffset]}" />
+        <TextBlock DockPanel.Dock="Right" Classes="colheader" Width="150"
+                   IsVisible="{Binding Source={x:Static Settings:SettingsFile.Instance}, Path=ShowFormatColumn}"
+                   Text="{Binding Source={x:Static local:App.Lang}, Path=[Results.Header.FormatAudio]}" />
+        <TextBlock DockPanel.Dock="Right" Classes="colheader" Width="90"
+                   IsVisible="{Binding Source={x:Static Settings:SettingsFile.Instance}, Path=ShowBitrateColumn}"
+                   Text="{Binding Source={x:Static local:App.Lang}, Path=[Results.Header.Bitrate]}" />
+        <TextBlock DockPanel.Dock="Right" Classes="colheader" Width="110"
+                   IsVisible="{Binding Source={x:Static Settings:SettingsFile.Instance}, Path=ShowSizeDateColumn}"
+                   Text="{Binding Source={x:Static local:App.Lang}, Path=[Results.Header.SizeDate]}" />
+        <TextBlock DockPanel.Dock="Right" Classes="colheader" Width="110"
+                   IsVisible="{Binding Source={x:Static Settings:SettingsFile.Instance}, Path=ShowDurationColumn}"
+                   Text="{Binding Source={x:Static local:App.Lang}, Path=[Results.Header.DurationRes]}" />
+        <TextBlock Classes="colheader" Margin="6,0,0,0"
+                   Text="{Binding Source={x:Static local:App.Lang}, Path=[Results.Header.File]}" />
+      </DockPanel>
+    </Border>
+
+    <!-- ======== Flattened results list ======== -->
+    <ListBox
+        x:Name="ResultsList"
+        Grid.Row="3"
+        Classes="results"
+        Background="Transparent"
+        ItemsSource="{Binding ResultsRows}"
+        SelectionMode="Multiple"
+        SelectionChanged="OnResultsSelectionChanged"
+        PointerPressed="OnResultsPointerPressed"
+        ScrollViewer.HorizontalScrollBarVisibility="Disabled">
+      <ListBox.DataTemplates>
+
+        <!-- ~~~~ Group header row ~~~~ -->
+        <DataTemplate DataType="vm:ResultsGroupHeader">
+          <Border
+              Padding="6,5"
+              Background="{actipro:ThemeResource Container2BackgroundBrush}"
+              BorderBrush="{actipro:ThemeResource Container3BorderBrush}"
+              BorderThickness="0,1,0,1">
+            <Border.ContextMenu>
+              <ContextMenu>
+                <MenuItem
+                    Command="{Binding $parent[UserControl].((vm:MainWindowVM)DataContext).MarkGroupHeaderNotAMatchCommand}"
+                    CommandParameter="{Binding}"
+                    Header="{Binding Source={x:Static local:App.Lang}, Path=[MainWindow.ContextMenu.MarkNotMatch]}"
+                    ToolTip.Tip="{Binding Source={x:Static local:App.Lang}, Path=[MainWindow.ContextMenu.MarkNotMatchTooltip]}" />
+                <MenuItem
+                    Command="{Binding $parent[UserControl].((vm:MainWindowVM)DataContext).LoadThumbnailsForGroupHeaderCommand}"
+                    CommandParameter="{Binding}"
+                    Header="{Binding Source={x:Static local:App.Lang}, Path=[MainWindow.ContextMenu.LoadThumbnailsForGroup]}" />
+                <Separator />
+                <MenuItem
+                    Command="{Binding $parent[UserControl].((vm:MainWindowVM)DataContext).ExpandAllGroupsCommand}"
+                    Header="{Binding Source={x:Static local:App.Lang}, Path=[MainWindow.ContextMenu.ExpandAll]}" />
+                <MenuItem
+                    Command="{Binding $parent[UserControl].((vm:MainWindowVM)DataContext).CollapseAllGroupsCommand}"
+                    Header="{Binding Source={x:Static local:App.Lang}, Path=[MainWindow.ContextMenu.CollapseAll]}" />
+              </ContextMenu>
+            </Border.ContextMenu>
+            <DockPanel LastChildFill="True">
+              <Button
+                  DockPanel.Dock="Left"
+                  Classes="group-action"
+                  Width="24"
+                  Padding="0"
+                  Command="{Binding $parent[UserControl].((vm:MainWindowVM)DataContext).ToggleGroupCollapsedCommand}"
+                  CommandParameter="{Binding}"
+                  Content="{Binding IsCollapsed, Converter={StaticResource ChevronConverter}}" />
+              <StackPanel DockPanel.Dock="Right" Orientation="Horizontal" Spacing="4">
+                <Button
+                    Classes="group-action"
+                    Command="{Binding $parent[UserControl].((vm:MainWindowVM)DataContext).CompareGroupHeaderCommand}"
+                    CommandParameter="{Binding}"
+                    Content="{Binding Source={x:Static local:App.Lang}, Path=[Results.Group.Compare]}" />
+                <Button
+                    Classes="group-action"
+                    Command="{Binding $parent[UserControl].((vm:MainWindowVM)DataContext).KeepBestInGroupHeaderCommand}"
+                    CommandParameter="{Binding}"
+                    Content="{Binding Source={x:Static local:App.Lang}, Path=[Results.Group.KeepBest]}" />
+              </StackPanel>
+              <StackPanel Orientation="Horizontal" Spacing="10" VerticalAlignment="Center" Margin="8,0,0,0">
+                <TextBlock FontSize="13" FontWeight="SemiBold" Text="{Binding Title}" />
+                <TextBlock Classes="meta" VerticalAlignment="Center" Text="{Binding Summary}" />
+                <TextBlock FontSize="11" Opacity="0.6" VerticalAlignment="Center" Text="{Binding SimilarityRangeDisplay}" />
+              </StackPanel>
+            </DockPanel>
+          </Border>
+        </DataTemplate>
+
+        <!-- ~~~~ File row ~~~~ -->
+        <DataTemplate DataType="vm:ResultsItemRow">
+          <Border
+              Classes="resultrow"
+              Classes.checked="{Binding Item.Checked}"
+              Padding="6,0">
+            <!-- Uniform row height follows the Preview column width so dragging the
+                 grip (or raising the thumbnail width setting) scales the whole layout. -->
+            <Border.Height>
+              <MultiBinding Converter="{StaticResource ResultsRowSizingConverter}" ConverterParameter="row">
+                <Binding Source="{x:Static Settings:SettingsFile.Instance}" Path="ResultsPreviewWidth" />
+                <Binding Source="{x:Static Settings:SettingsFile.Instance}" Path="ResultsCompactRows" />
+                <Binding Source="{x:Static Settings:SettingsFile.Instance}" Path="ShowThumbnailColumn" />
+              </MultiBinding>
+            </Border.Height>
+            <Border.ContextMenu>
+              <ContextMenu>
+                <MenuItem
+                    Command="{Binding $parent[UserControl].((vm:MainWindowVM)DataContext).OpenItemCommand}"
+                    CommandParameter="{Binding Item}"
+                    Header="{Binding Source={x:Static local:App.Lang}, Path=[MainWindow.ContextMenu.OpenFile]}"
+                    InputGesture="{Binding Source={x:Static Settings:KeyboardShortcutManager.Instance}, Path=[OpenItemsByColId]}" />
+                <MenuItem
+                    Command="{Binding $parent[UserControl].((vm:MainWindowVM)DataContext).OpenItemInFolderCommand}"
+                    Header="{Binding Source={x:Static local:App.Lang}, Path=[MainWindow.ContextMenu.OpenInFolder]}"
+                    InputGesture="{Binding Source={x:Static Settings:KeyboardShortcutManager.Instance}, Path=[OpenItemInFolder]}" />
+                <MenuItem
+                    Command="{Binding $parent[UserControl].((vm:MainWindowVM)DataContext).RenameFileCommand}"
+                    Header="{Binding Source={x:Static local:App.Lang}, Path=[MainWindow.ContextMenu.RenameFile]}"
+                    InputGesture="{Binding Source={x:Static Settings:KeyboardShortcutManager.Instance}, Path=[RenameFile]}" />
+                <Separator />
+                <MenuItem
+                    Command="{Binding $parent[UserControl].((vm:MainWindowVM)DataContext).ToggleCheckboxCommand}"
+                    Header="{Binding Source={x:Static local:App.Lang}, Path=[Results.Row.ToggleCheck]}"
+                    InputGesture="{Binding Source={x:Static Settings:KeyboardShortcutManager.Instance}, Path=[ToggleCheckbox]}" />
+                <MenuItem
+                    Command="{Binding $parent[UserControl].((vm:MainWindowVM)DataContext).CopyPathsToClipboardCommand}"
+                    Header="{Binding Source={x:Static local:App.Lang}, Path=[MainWindow.ContextMenu.CopyPaths]}" />
+                <MenuItem
+                    Command="{Binding $parent[UserControl].((vm:MainWindowVM)DataContext).CopyFilenamesToClipboardCommand}"
+                    Header="{Binding Source={x:Static local:App.Lang}, Path=[MainWindow.ContextMenu.CopyFilenames]}" />
+                <MenuItem
+                    Command="{Binding $parent[UserControl].((vm:MainWindowVM)DataContext).RemoveSingleItemCommand}"
+                    CommandParameter="{Binding Item}"
+                    Header="{Binding Source={x:Static local:App.Lang}, Path=[MainWindow.ContextMenu.RemoveFromListOnly]}" />
+                <Separator />
+                <MenuItem
+                    Command="{Binding $parent[UserControl].((vm:MainWindowVM)DataContext).CompareGroupHeaderCommand}"
+                    CommandParameter="{Binding Group}"
+                    Header="{Binding Source={x:Static local:App.Lang}, Path=[MainWindow.ContextMenu.CompareFullsizeThumbnails]}"
+                    InputGesture="{Binding Source={x:Static Settings:KeyboardShortcutManager.Instance}, Path=[ShowGroupInThumbnailComparer]}" />
+                <MenuItem
+                    Command="{Binding $parent[UserControl].((vm:MainWindowVM)DataContext).MarkGroupHeaderNotAMatchCommand}"
+                    CommandParameter="{Binding Group}"
+                    Header="{Binding Source={x:Static local:App.Lang}, Path=[MainWindow.ContextMenu.MarkNotMatch]}"
+                    InputGesture="{Binding Source={x:Static Settings:KeyboardShortcutManager.Instance}, Path=[MarkGroupAsNotAMatch]}" />
+              </ContextMenu>
+            </Border.ContextMenu>
+            <DockPanel LastChildFill="True">
+              <!-- checkbox -->
+              <CheckBox
+                  DockPanel.Dock="Left"
+                  Width="30"
+                  VerticalAlignment="Center"
+                  IsChecked="{Binding Item.Checked}" />
+              <!-- preview filmstrip -->
+              <Grid DockPanel.Dock="Left"
+                    Width="{Binding Source={x:Static Settings:SettingsFile.Instance}, Path=ResultsPreviewWidth}"
+                    IsVisible="{Binding Source={x:Static Settings:SettingsFile.Instance}, Path=ShowThumbnailColumn}">
+                <Border
+                    Classes="skeleton-shimmer"
+                    Margin="0,4,8,4"
+                    Background="#18808080">
+                  <Border.Height>
+                    <MultiBinding Converter="{StaticResource ResultsRowSizingConverter}" ConverterParameter="image">
+                      <Binding Source="{x:Static Settings:SettingsFile.Instance}" Path="ResultsPreviewWidth" />
+                      <Binding Source="{x:Static Settings:SettingsFile.Instance}" Path="ResultsCompactRows" />
+                    </MultiBinding>
+                  </Border.Height>
+                  <Border.IsVisible>
+                    <MultiBinding Converter="{StaticResource ShowSkeletonConverter}">
+                      <Binding Path="Item.Thumbnail" />
+                      <Binding Source="{x:Static Settings:SettingsFile.Instance}" Path="GeneratePreviewThumbnails" />
+                    </MultiBinding>
+                  </Border.IsVisible>
+                </Border>
+                <!-- Height tracks the Preview column width; Uniform keeps the aspect,
+                     DownOnly never upscales past the extracted bitmap (#787). -->
+                <Image
+                    Source="{Binding Item.Thumbnail}"
+                    Stretch="Uniform"
+                    StretchDirection="DownOnly"
+                    Margin="0,2,8,2"
+                    HorizontalAlignment="Left"
+                    VerticalAlignment="Center"
+                    DoubleTapped="OnThumbnailDoubleTapped"
+                    ToolTip.Tip="{Binding Item.ItemInfo.Path}">
+                  <Image.Height>
+                    <MultiBinding Converter="{StaticResource ResultsRowSizingConverter}" ConverterParameter="image">
+                      <Binding Source="{x:Static Settings:SettingsFile.Instance}" Path="ResultsPreviewWidth" />
+                      <Binding Source="{x:Static Settings:SettingsFile.Instance}" Path="ResultsCompactRows" />
+                    </MultiBinding>
+                  </Image.Height>
+                </Image>
+              </Grid>
+              <!-- similarity chip -->
+              <Border
+                  Classes="simchip"
+                  Classes.mid="{Binding Item.ItemInfo.Similarity, Converter={StaticResource SimilarityTierConverter}, ConverterParameter=mid}"
+                  Classes.low="{Binding Item.ItemInfo.Similarity, Converter={StaticResource SimilarityTierConverter}, ConverterParameter=low}"
+                  DockPanel.Dock="Right"
+                  Width="70"
+                  Margin="6,0,0,0"
+                  Padding="6,2"
+                  VerticalAlignment="Center"
+                  IsVisible="{Binding Source={x:Static Settings:SettingsFile.Instance}, Path=ShowSimilarityColumn}">
+                <TextBlock
+                    FontSize="12"
+                    FontWeight="Bold"
+                    HorizontalAlignment="Center"
+                    Text="{Binding Item.ItemInfo.Similarity, Converter={StaticResource SimilarityToFormattedConverter}}" />
+              </Border>
+              <!-- Clip offset: position of a partial clip inside the longer source video.
+                   The column only exists while partial-clip detection is on or the
+                   results contain partial clips (maintainer decision). -->
+              <TextBlock
+                  DockPanel.Dock="Right"
+                  Width="80"
+                  VerticalAlignment="Center"
+                  FontSize="12"
+                  IsVisible="{Binding $parent[UserControl].((vm:MainWindowVM)DataContext).ResultsShowClipOffsetColumn}"
+                  Text="{Binding Item.ItemInfo.PartialClipOffsetDisplay}" />
+              <!-- Format · Audio -->
+              <StackPanel
+                  DockPanel.Dock="Right"
+                  Width="150"
+                  VerticalAlignment="Center"
+                  IsVisible="{Binding Source={x:Static Settings:SettingsFile.Instance}, Path=ShowFormatColumn}">
+                <StackPanel Orientation="Horizontal" Spacing="3" IsVisible="{Binding !Item.ItemInfo.IsImage}">
+                  <TextBlock FontSize="12" Text="{Binding Item.ItemInfo.Format, TargetNullValue=''}" />
+                  <TextBlock FontSize="12" Opacity="0.5" Text="·" />
+                  <Border Tag="fps" Background="Transparent"
+                          PointerEntered="OnMetricPointerEntered" PointerExited="OnMetricPointerExited">
+                    <TextBlock FontSize="12" Classes="metric-diff">
+                      <TextBlock.Text>
+                        <MultiBinding Converter="{StaticResource MetricDisplayConverter}" ConverterParameter="{}{0} fps">
+                          <Binding Path="Item.ItemInfo.Fps" />
+                          <Binding Path="Item.FpsDiff" />
+                        </MultiBinding>
+                      </TextBlock.Text>
+                    </TextBlock>
+                  </Border>
+                </StackPanel>
+                <TextBlock FontSize="12" IsVisible="{Binding Item.ItemInfo.IsImage}"
+                           Text="{Binding Item.ItemInfo.Format, TargetNullValue=''}" />
+                <StackPanel Orientation="Horizontal" Spacing="3"
+                            IsVisible="{Binding !Item.ItemInfo.IsImage}">
+                  <TextBlock FontSize="11.5" Opacity="0.8" Text="{Binding Item.ItemInfo.AudioFormat, TargetNullValue=''}" />
+                  <TextBlock FontSize="11.5" Opacity="0.8" Text="{Binding Item.ItemInfo.AudioChannel, TargetNullValue=''}" />
+                </StackPanel>
+              </StackPanel>
+              <!-- Bitrate: video over audio, same two-line convention as the other columns -->
+              <StackPanel
+                  DockPanel.Dock="Right"
+                  Width="90"
+                  VerticalAlignment="Center"
+                  IsVisible="{Binding Source={x:Static Settings:SettingsFile.Instance}, Path=ShowBitrateColumn}">
+                <TextBlock FontSize="12" Classes="metric-diff"
+                           IsVisible="{Binding !Item.ItemInfo.IsImage}"
+                           Classes.hi="{Binding Item.ItemInfo.IsBestBitRateKbs}"
+                           Classes.lo="{Binding !Item.ItemInfo.IsBestBitRateKbs}"
+                           Text="{Binding Item.ItemInfo.BitRateKbs, Converter={StaticResource BitrateDisplayConverter}}" />
+                <TextBlock FontSize="11.5" Classes="metric-diff"
+                           IsVisible="{Binding !Item.ItemInfo.IsImage}"
+                           Classes.hi="{Binding Item.ItemInfo.IsBestAudioBitRateKbs}"
+                           Classes.lo="{Binding !Item.ItemInfo.IsBestAudioBitRateKbs}"
+                           Text="{Binding Item.ItemInfo.AudioBitRateKbs, Converter={StaticResource BitrateDisplayConverter}}" />
+              </StackPanel>
+              <!-- Size · Date -->
+              <StackPanel
+                  DockPanel.Dock="Right"
+                  Width="110"
+                  VerticalAlignment="Center"
+                  IsVisible="{Binding Source={x:Static Settings:SettingsFile.Instance}, Path=ShowSizeDateColumn}">
+                <Border Tag="size" Background="Transparent"
+                        PointerEntered="OnMetricPointerEntered" PointerExited="OnMetricPointerExited">
+                  <TextBlock FontSize="12" Classes="metric-diff"
+                             Classes.hi="{Binding Item.ItemInfo.IsBestSize}"
+                             Classes.lo="{Binding !Item.ItemInfo.IsBestSize}"
+                             Classes.eq="{Binding Item.SizeDiff, Converter={StaticResource EqualDiffConverter}}">
+                    <TextBlock.Text>
+                      <MultiBinding Converter="{StaticResource MetricDisplayConverter}">
+                        <Binding Path="Item.ItemInfo.Size" />
+                        <Binding Path="Item.SizeDiff" />
+                      </MultiBinding>
+                    </TextBlock.Text>
+                  </TextBlock>
+                </Border>
+                <TextBlock FontSize="11.5" Opacity="0.8"
+                           Text="{Binding Item.ItemInfo.DateCreated, Converter={StaticResource ExtraShortDateTimeConverter}}" />
+              </StackPanel>
+              <!-- Duration · Resolution -->
+              <StackPanel
+                  DockPanel.Dock="Right"
+                  Width="110"
+                  VerticalAlignment="Center"
+                  IsVisible="{Binding Source={x:Static Settings:SettingsFile.Instance}, Path=ShowDurationColumn}">
+                <Border Tag="duration" Background="Transparent"
+                        IsVisible="{Binding !Item.ItemInfo.IsImage}"
+                        PointerEntered="OnMetricPointerEntered" PointerExited="OnMetricPointerExited">
+                  <TextBlock FontSize="12" Classes="metric-diff"
+                             Classes.hi="{Binding Item.ItemInfo.IsBestDuration}"
+                             Classes.lo="{Binding !Item.ItemInfo.IsBestDuration}"
+                             Classes.eq="{Binding Item.DurationDiff, Converter={StaticResource EqualDiffConverter}}">
+                    <TextBlock.Text>
+                      <MultiBinding Converter="{StaticResource MetricDisplayConverter}" ConverterParameter="{}{0:hh\:mm\:ss}">
+                        <Binding Path="Item.ItemInfo.Duration" />
+                        <Binding Path="Item.DurationDiff" />
+                      </MultiBinding>
+                    </TextBlock.Text>
+                  </TextBlock>
+                </Border>
+                <StackPanel Orientation="Horizontal" Spacing="5">
+                  <Border Tag="framesize" Background="Transparent"
+                          PointerEntered="OnMetricPointerEntered" PointerExited="OnMetricPointerExited">
+                    <TextBlock FontSize="11.5" Classes="metric-diff"
+                               Classes.hi="{Binding Item.ItemInfo.IsBestFrameSize}"
+                               Classes.lo="{Binding !Item.ItemInfo.IsBestFrameSize}"
+                               Classes.eq="{Binding Item.FrameSizeDiff, Converter={StaticResource EqualDiffConverter}}">
+                      <TextBlock.Text>
+                        <MultiBinding Converter="{StaticResource MetricDisplayConverter}">
+                          <Binding Path="Item.ItemInfo.FrameSize" />
+                          <Binding Path="Item.FrameSizeDiff" />
+                        </MultiBinding>
+                      </TextBlock.Text>
+                    </TextBlock>
+                  </Border>
+                  <!-- HDR chip: neutral information; green only when this member's
+                       format outranks another member of the group -->
+                  <Border Classes="hdrchip" Classes.best="{Binding HdrIsUpgrade}"
+                          IsVisible="{Binding Item.ItemInfo.HdrFormat, Converter={x:Static StringConverters.IsNotNullOrEmpty}}">
+                    <TextBlock Text="{Binding Item.ItemInfo.HdrFormat}" />
+                  </Border>
+                </StackPanel>
+              </StackPanel>
+              <!-- File name + path (fills remaining width) -->
+              <StackPanel Margin="6,0,6,0" VerticalAlignment="Center" Spacing="1">
+                <!-- Badges dock right so the name gets a finite width and its trimming
+                     engages; a plain horizontal StackPanel let long names paint over
+                     the neighboring metadata columns. -->
+                <DockPanel LastChildFill="True">
+                  <StackPanel DockPanel.Dock="Right" Orientation="Horizontal" Spacing="6" Margin="6,0,0,0">
+                  <Border IsVisible="{Binding IsBest}"
+                          Background="{DynamicResource VdfGoodSoftBrush}"
+                          BorderBrush="{DynamicResource VdfGoodBorderBrush}" BorderThickness="1"
+                          CornerRadius="3" Padding="5,0" VerticalAlignment="Center">
+                    <TextBlock Text="{Binding Source={x:Static local:App.Lang}, Path=[Results.Row.Best]}"
+                               FontSize="10" FontWeight="Bold"
+                               Foreground="{DynamicResource VdfGoodBrush}" />
+                  </Border>
+                  <Border IsVisible="{Binding Item.IsTombstone}"
+                          Background="{DynamicResource VdfTombBrush}"
+                          CornerRadius="3" Padding="5,0" VerticalAlignment="Center"
+                          ToolTip.Tip="{Binding Source={x:Static local:App.Lang}, Path=[DupList.AlreadyDeletedTooltip]}">
+                    <TextBlock Text="{Binding Source={x:Static local:App.Lang}, Path=[DupList.AlreadyDeleted]}"
+                               FontSize="10" FontWeight="Bold" Foreground="White" />
+                  </Border>
+                  <Border IsVisible="{Binding Item.IsOffline}"
+                          Background="{DynamicResource VdfMutedSoftBrush}"
+                          BorderBrush="{DynamicResource VdfMutedBorderBrush}" BorderThickness="1"
+                          CornerRadius="3" Padding="5,0" VerticalAlignment="Center"
+                          ToolTip.Tip="{Binding Source={x:Static local:App.Lang}, Path=[DupList.OfflineTooltip]}">
+                    <TextBlock Text="{Binding Source={x:Static local:App.Lang}, Path=[DupList.Offline]}"
+                               FontSize="10" FontWeight="Bold"
+                               Foreground="{DynamicResource VdfMutedBrush}" />
+                  </Border>
+                  <!-- Tier-2 metadata: toggles the details panel under this row -->
+                  <Button Classes="group-action" Padding="4,0" FontSize="12" Content="ⓘ"
+                          ToolTip.Tip="{Binding Source={x:Static local:App.Lang}, Path=[Results.Row.DetailsTip]}"
+                          Command="{Binding $parent[UserControl].((vm:MainWindowVM)DataContext).ToggleItemDetailsCommand}"
+                          CommandParameter="{Binding Item}" />
+                  </StackPanel>
+                  <TextBlock
+                      FontSize="13"
+                      FontWeight="SemiBold"
+                      HorizontalAlignment="Left"
+                      TextTrimming="CharacterEllipsis"
+                      Text="{Binding Item.ItemInfo.Path, Converter={StaticResource FileNameConverter}}"
+                      ToolTip.Tip="{Binding Item.ItemInfo.Path, Converter={StaticResource FileNameConverter}}" />
+                </DockPanel>
+                <!-- Border supplies the hit-test surface for hover tooltip + click-to-copy -->
+                <Border
+                    Background="Transparent"
+                    IsVisible="{Binding Source={x:Static Settings:SettingsFile.Instance}, Path=!ResultsCompactRows}"
+                    ToolTip.Tip="{Binding Item.ItemInfo.Path}"
+                    PointerPressed="OnPathPointerPressed">
+                  <ctl:MiddleEllipsisTextBlock
+                      FontSize="11.5"
+                      Opacity="0.65"
+                      Text="{Binding Item.ItemInfo.Path, Converter={StaticResource DirectoryPathConverter}}" />
+                </Border>
+              </StackPanel>
+            </DockPanel>
+          </Border>
+        </DataTemplate>
+
+        <!-- ~~~~ Details panel (Tier 2 metadata, expanded via ⓘ) ~~~~ -->
+        <DataTemplate DataType="vm:ResultsDetailsRow">
+          <Border Margin="36,2,16,6" Padding="14,8" CornerRadius="8"
+                  Background="{actipro:ThemeResource Container2BackgroundBrush}"
+                  BorderBrush="{actipro:ThemeResource Container3BorderBrush}"
+                  BorderThickness="1">
+            <DockPanel LastChildFill="True">
+              <StackPanel DockPanel.Dock="Right" VerticalAlignment="Center" Margin="16,0,0,0">
+                <Button Classes="group-action" FontSize="11.5"
+                        Content="{Binding Source={x:Static local:App.Lang}, Path=[Results.Details.Copy]}"
+                        Command="{Binding $parent[UserControl].((vm:MainWindowVM)DataContext).CopyItemDetailsCommand}"
+                        CommandParameter="{Binding Item}" />
+              </StackPanel>
+              <WrapPanel>
+                <StackPanel Margin="0,0,26,2" MinWidth="220">
+                  <StackPanel Orientation="Horizontal">
+                    <TextBlock Classes="colheader" IsVisible="{Binding !IsImage}"
+                               Text="{Binding Source={x:Static local:App.Lang}, Path=[Results.Details.Video]}" />
+                    <TextBlock Classes="colheader" IsVisible="{Binding IsImage}"
+                               Text="{Binding Source={x:Static local:App.Lang}, Path=[Results.Details.Image]}" />
+                  </StackPanel>
+                  <TextBlock FontSize="12" Opacity="0.8" TextWrapping="Wrap" Text="{Binding VideoText}" />
+                </StackPanel>
+                <StackPanel Margin="0,0,26,2" MinWidth="180" IsVisible="{Binding HasAudio}">
+                  <TextBlock Classes="colheader"
+                             Text="{Binding Source={x:Static local:App.Lang}, Path=[Results.Details.Audio]}" />
+                  <TextBlock FontSize="12" Opacity="0.8" TextWrapping="Wrap" Text="{Binding AudioText}" />
+                </StackPanel>
+                <StackPanel Margin="0,0,26,2" MinWidth="160">
+                  <TextBlock Classes="colheader"
+                             Text="{Binding Source={x:Static local:App.Lang}, Path=[Results.Details.File]}" />
+                  <TextBlock FontSize="12" Opacity="0.8" TextWrapping="Wrap" Text="{Binding FileText}" />
+                </StackPanel>
+              </WrapPanel>
+            </DockPanel>
+          </Border>
+        </DataTemplate>
+      </ListBox.DataTemplates>
+    </ListBox>
+
+    <!-- ======== Action bar (appears with checked items) ======== -->
+    <Border
+        Grid.Row="4"
+        Padding="10,7"
+        Background="{actipro:ThemeResource Container2BackgroundBrush}"
+        BorderBrush="{actipro:ThemeResource Container3BorderBrush}"
+        BorderThickness="0,1,0,0"
+        IsVisible="{Binding !!DuplicatesCheckedCounter}">
+      <DockPanel LastChildFill="False">
+        <TextBlock DockPanel.Dock="Left" VerticalAlignment="Center" FontSize="13" FontWeight="SemiBold">
+          <Run Text="{Binding DuplicatesCheckedCounter, Mode=OneWay}" />
+          <Run Text="{Binding Source={x:Static local:App.Lang}, Path=[Results.Action.CheckedSuffix]}" />
+          <Run Text=" · " />
+          <Run Text="{Binding DuplicatesCheckedSize, Mode=OneWay}" />
+        </TextBlock>
+        <StackPanel DockPanel.Dock="Left" Orientation="Horizontal" Spacing="8" Margin="16,0,0,0">
+          <Button
+              Background="{actipro:ThemeResource ControlBackgroundBrushSolidDanger}"
+              Foreground="White"
+              FontSize="12.5"
+              FontWeight="SemiBold"
+              Padding="14,5">
+            <Button.Content>
+              <StackPanel Orientation="Horizontal" Spacing="6">
+                <TextBlock Text="{Binding Source={x:Static local:App.Lang}, Path=[Results.Action.Delete]}" />
+                <TextBlock Text="▾" FontSize="10" VerticalAlignment="Center" />
+              </StackPanel>
+            </Button.Content>
+            <Button.Flyout>
+              <MenuFlyout>
+                <MenuItem
+                    Command="{Binding DeleteCheckedItemsCommand}"
+                    Header="{Binding Source={x:Static local:App.Lang}, Path=[MainWindow.ContextMenu.DeleteFromDiskRecycle]}" />
+                <MenuItem
+                    Command="{Binding DeleteCheckedItemsPermanentlyCommand}"
+                    Header="{Binding Source={x:Static local:App.Lang}, Path=[MainWindow.ContextMenu.DeletePermanently]}" />
+                <Separator />
+                <MenuItem
+                    Command="{Binding CopyCheckedItemsCommand}"
+                    Header="{Binding Source={x:Static local:App.Lang}, Path=[MainWindow.ContextMenu.CopyToFolderEllipsis]}" />
+                <MenuItem
+                    Command="{Binding MoveCheckedItemsCommand}"
+                    Header="{Binding Source={x:Static local:App.Lang}, Path=[MainWindow.ContextMenu.MoveToFolderEllipsis]}" />
+                <Separator />
+                <MenuItem
+                    Command="{Binding ExportCheckedItemsCleanupDryRunReportCommand}"
+                    Header="{Binding Source={x:Static local:App.Lang}, Path=[MainWindow.Selection.ExportCheckedItemsCleanupDryRun]}" />
+              </MenuFlyout>
+            </Button.Flyout>
+          </Button>
+          <Button FontSize="12.5" Padding="14,5">
+            <Button.Content>
+              <StackPanel Orientation="Horizontal" Spacing="6">
+                <TextBlock Text="{Binding Source={x:Static local:App.Lang}, Path=[Results.Action.Remove]}" />
+                <TextBlock Text="▾" FontSize="10" VerticalAlignment="Center" />
+              </StackPanel>
+            </Button.Content>
+            <Button.Flyout>
+              <MenuFlyout>
+                <MenuItem
+                    Command="{Binding RemoveCheckedItemsFromListCommand}"
+                    Header="{Binding Source={x:Static local:App.Lang}, Path=[MainWindow.ContextMenu.RemoveFromListOnly]}" />
+                <MenuItem
+                    Command="{Binding RemoveCheckedItemsFromListAndBlacklistCommand}"
+                    Header="{Binding Source={x:Static local:App.Lang}, Path=[MainWindow.ContextMenu.RemoveFromListAndExclude]}" />
+                <Separator />
+                <MenuItem
+                    Command="{Binding CreateSymbolLinksForCheckedItemsCommand}"
+                    Header="{Binding Source={x:Static local:App.Lang}, Path=[MainWindow.ContextMenu.RemoveFromListAndSymbolLinks]}"
+                    ToolTip.Tip="{Binding Source={x:Static local:App.Lang}, Path=[MainWindow.ContextMenu.SymbolLinkTooltip]}" />
+                <MenuItem
+                    Command="{Binding CreateSymbolLinksForCheckedItemsAndBlacklistCommand}"
+                    Header="{Binding Source={x:Static local:App.Lang}, Path=[MainWindow.ContextMenu.RemoveFromListSymbolLinksExclude]}" />
+                <MenuItem
+                    Command="{Binding CreateHardLinksForCheckedItemsCommand}"
+                    Header="{Binding Source={x:Static local:App.Lang}, Path=[MainWindow.ContextMenu.RemoveFromListAndHardLinks]}"
+                    ToolTip.Tip="{Binding Source={x:Static local:App.Lang}, Path=[MainWindow.ContextMenu.HardLinkTooltip]}" />
+                <MenuItem
+                    Command="{Binding CreateHardLinksForCheckedItemsAndBlacklistCommand}"
+                    Header="{Binding Source={x:Static local:App.Lang}, Path=[MainWindow.ContextMenu.RemoveFromListHardLinksExclude]}" />
+              </MenuFlyout>
+            </Button.Flyout>
+          </Button>
+          <Button
+              FontSize="12.5"
+              Padding="14,5"
+              Command="{Binding ClearCheckedItemsCommand}"
+              Content="{Binding Source={x:Static local:App.Lang}, Path=[Results.Action.ClearSelection]}" />
+        </StackPanel>
+        <TextBlock DockPanel.Dock="Right" VerticalAlignment="Center" FontSize="12" Opacity="0.55"
+                   Text="{Binding Source={x:Static local:App.Lang}, Path=[Results.Action.Hint]}" />
+      </DockPanel>
+    </Border>
+
+    <!-- ======== Statusline (mockup .statusline): results stats, Review only.
+         Checked count/size live in the action bar; scan progress lives in the
+         Scanning state. Thumbnail loading (#791) stays visible here. ======== -->
+    <Border
+        Grid.Row="5"
+        Padding="10,4"
+        BorderBrush="{actipro:ThemeResource Container3BorderBrush}"
+        BorderThickness="0,1,0,0">
+      <DockPanel LastChildFill="False">
+        <StackPanel Orientation="Horizontal" Spacing="16">
+          <TextBlock FontSize="12" Opacity="0.55">
+            <Run Text="{Binding TotalDuplicateGroups, Mode=OneWay}" /><Run Text=" " /><Run Text="{Binding Source={x:Static local:App.Lang}, Path=[Results.Status.Groups]}" />
+            <Run Text="· " /><Run Text="{Binding TotalDuplicates, Mode=OneWay}" /><Run Text=" " /><Run Text="{Binding Source={x:Static local:App.Lang}, Path=[Results.Status.Duplicates]}" />
+            <Run Text="· " /><Run Text="{Binding TotalDuplicatesSize, Mode=OneWay}" /><Run Text=" " /><Run Text="{Binding Source={x:Static local:App.Lang}, Path=[Results.Status.TotalSize]}" />
+          </TextBlock>
+          <TextBlock FontSize="12" Opacity="0.55"
+                     ToolTip.Tip="{Binding Source={x:Static local:App.Lang}, Path=[MainWindow.Stats.PotentialSavingsTooltip]}">
+            <Run Text="{Binding Source={x:Static local:App.Lang}, Path=[MainWindow.Stats.PotentialSavings]}" />
+            <Run Text="{Binding PotentialSavings, Mode=OneWay}" />
+          </TextBlock>
+          <TextBlock FontSize="12" Opacity="0.55">
+            <Run Text="{Binding TotalSizeRemoved, Mode=OneWay}" /><Run Text=" " /><Run Text="{Binding Source={x:Static local:App.Lang}, Path=[Results.Status.RemovedSuffix]}" />
+          </TextBlock>
+        </StackPanel>
+        <!-- determinate thumbnail-load progress (#791) -->
+        <StackPanel DockPanel.Dock="Right" Orientation="Horizontal" Spacing="8"
+                    VerticalAlignment="Center"
+                    IsVisible="{Binding ShowThumbnailRetrievalProgress}">
+          <TextBlock FontSize="12" Opacity="0.55" VerticalAlignment="Center"
+                     Text="{Binding ThumbnailRetrievalProgressText}" />
+          <ProgressBar Width="90" Height="5"
+                       IsIndeterminate="{Binding !ThumbnailProgressMax}"
+                       Maximum="{Binding ThumbnailProgressMax, Mode=OneWay}"
+                       Value="{Binding ThumbnailProgressCurrent, Mode=OneWay}" />
+        </StackPanel>
+      </DockPanel>
+    </Border>
+  </Grid>
+</UserControl>

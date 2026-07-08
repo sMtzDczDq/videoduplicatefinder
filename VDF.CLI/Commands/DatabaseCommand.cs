@@ -24,6 +24,8 @@ namespace VDF.CLI.Commands {
 			var cmd = new Command("db", "Database maintenance commands.");
 			cmd.Subcommands.Add(BuildClean());
 			cmd.Subcommands.Add(BuildClear());
+			cmd.Subcommands.Add(BuildExport());
+			cmd.Subcommands.Add(BuildExportGrayBytes());
 			return cmd;
 		}
 
@@ -43,6 +45,7 @@ namespace VDF.CLI.Commands {
 				DatabaseUtils.CleanupDatabase();
 				int removed = before - DatabaseUtils.Database.Count;
 				Console.Error.WriteLine($"Cleanup complete: {removed:N0} entries removed, {DatabaseUtils.Database.Count:N0} remaining.");
+				return 0;
 			});
 
 			return cmd;
@@ -67,8 +70,9 @@ namespace VDF.CLI.Commands {
 				Console.Error.WriteLine($"Database loaded: {count:N0} entries.");
 
 				if (count == 0) {
+					// Already in the desired (empty) state — not an error.
 					Console.Error.WriteLine("Database is already empty.");
-					return;
+					return 0;
 				}
 
 				bool confirmed = parseResult.GetValue(confirmOpt);
@@ -76,13 +80,108 @@ namespace VDF.CLI.Commands {
 					Console.Error.Write($"WARNING: This will permanently delete all {count:N0} entries. Type 'yes' to confirm: ");
 					string? input = Console.ReadLine();
 					if (!string.Equals(input?.Trim(), "yes", StringComparison.OrdinalIgnoreCase)) {
+						// User declined (or no input in a non-interactive run): nothing was
+						// deleted, so report non-zero rather than a misleading success.
 						Console.Error.WriteLine("Aborted.");
-						return;
+						return 1;
 					}
 				}
 
 				ScanEngine.ClearDatabase();
 				Console.Error.WriteLine($"Database cleared. {count:N0} entries removed.");
+				return 0;
+			});
+
+			return cmd;
+		}
+
+		static Command BuildExport() {
+			var cmd = new Command("export",
+				"Export the scan database to a JSON file (includes fingerprints, media info, and perceptual hashes).");
+
+			var outputOpt = new Option<FileInfo>("--output", "-o") {
+				Description = "Path for the exported JSON file.",
+				Required = true,
+			};
+			cmd.Options.Add(outputOpt);
+
+			var prettyOpt = new Option<bool>("--pretty") {
+				Description = "Write indented (pretty-printed) JSON."
+			};
+			cmd.Options.Add(prettyOpt);
+
+			cmd.Options.Add(SharedOptions.Database);
+
+			cmd.SetAction(async (parseResult, ct) => {
+				var db = parseResult.GetValue(SharedOptions.Database);
+				if (db != null) DatabaseUtils.CustomDatabaseFolder = db;
+
+				await ScanEngine.LoadDatabase();
+				int count = DatabaseUtils.Database.Count;
+				Console.Error.WriteLine($"Database loaded: {count:N0} entries.");
+
+				if (count == 0) {
+					Console.Error.WriteLine("Database is empty. Nothing to export.");
+					return 1;
+				}
+
+				var outputPath = parseResult.GetValue(outputOpt)!;
+				bool pretty = parseResult.GetValue(prettyOpt);
+
+				var options = new System.Text.Json.JsonSerializerOptions {
+					IncludeFields = true,
+					WriteIndented = pretty,
+				};
+
+				bool ok = ScanEngine.ExportDataBaseToJson(outputPath.FullName, options);
+				if (ok) {
+					var fi = new System.IO.FileInfo(outputPath.FullName);
+					Console.Error.WriteLine($"Exported {count:N0} entries to {outputPath.FullName} ({fi.Length / 1_048_576.0:F1} MB).");
+					return 0;
+				} else {
+					Console.Error.WriteLine("Export failed.");
+					return 1;
+				}
+			});
+
+			return cmd;
+		}
+
+		static Command BuildExportGrayBytes() {
+			var cmd = new Command("export-graybytes",
+				"Export only the 32x32 grayscale hashes and pHashes VDF computed, with NO file paths or names. " +
+				"Safe to attach to a bug report when diagnosing false matches.");
+
+			var outputOpt = new Option<FileInfo>("--output", "-o") {
+				Description = "Path for the exported JSON file.",
+				Required = true,
+			};
+			cmd.Options.Add(outputOpt);
+			cmd.Options.Add(SharedOptions.Database);
+
+			cmd.SetAction(async (parseResult, ct) => {
+				var db = parseResult.GetValue(SharedOptions.Database);
+				if (db != null) DatabaseUtils.CustomDatabaseFolder = db;
+
+				await ScanEngine.LoadDatabase();
+				int count = DatabaseUtils.Database.Count;
+				Console.Error.WriteLine($"Database loaded: {count:N0} entries.");
+
+				if (count == 0) {
+					Console.Error.WriteLine("Database is empty. Nothing to export.");
+					return 1;
+				}
+
+				var outputPath = parseResult.GetValue(outputOpt)!;
+				bool ok = DatabaseUtils.ExportGrayBytesDiagnostic(outputPath.FullName);
+				if (ok) {
+					var fi = new System.IO.FileInfo(outputPath.FullName);
+					Console.Error.WriteLine($"Exported graybytes for {count:N0} entries to {outputPath.FullName} " +
+						$"({fi.Length / 1_048_576.0:F1} MB). This file contains no file paths or names.");
+					return 0;
+				}
+				Console.Error.WriteLine("Export failed.");
+				return 1;
 			});
 
 			return cmd;

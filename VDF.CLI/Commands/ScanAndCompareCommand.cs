@@ -26,7 +26,8 @@ namespace VDF.CLI.Commands {
 			SharedOptions.AddScanOptions(cmd);
 
 			var actionOpt = new Option<Strategy?>("--action") {
-				Description = "Automatically mark files for deletion using a strategy (see 'mark --help'). Implies --dry-run unless --delete or --delete-permanent is also specified."
+				Description = "Automatically mark files for deletion using a strategy (see 'mark --help'). Implies --dry-run unless --delete or --delete-permanent is also specified.",
+				CustomParser = StrategyParser.ParseNullable
 			};
 			var dryRunOpt = new Option<bool>("--dry-run") {
 				Description = "Print which files would be deleted without deleting anything. Default when --action is specified."
@@ -54,7 +55,7 @@ namespace VDF.CLI.Commands {
 
 				if (engine.Settings.IncludeList.Count == 0) {
 					Console.Error.WriteLine("Error: at least one --include path is required.");
-					return;
+					return 1;
 				}
 
 				ScanRunner.WireProgress(engine);
@@ -64,17 +65,19 @@ namespace VDF.CLI.Commands {
 				var format = Enum.TryParse<OutputFormat>(parseResult.GetValue(SharedOptions.Format), true, out var fmt) ? fmt : OutputFormat.Text;
 				var outFile = parseResult.GetValue(SharedOptions.Output);
 
+				int failed = 0;
 				var strategy = parseResult.GetValue(actionOpt);
 				if (strategy.HasValue) {
 					var marked = DeletionStrategy.SelectForDeletion(duplicates, strategy.Value);
 					bool doPermanent = parseResult.GetValue(deletePermanentOpt);
 					bool doDelete = parseResult.GetValue(deleteOpt) || doPermanent;
 					bool dryRun = !doDelete || parseResult.GetValue(dryRunOpt);
-					await MarkCommand.ExecuteDeletion(marked, dryRun, doPermanent);
+					failed = await MarkCommand.ExecuteDeletion(marked, dryRun, doPermanent);
 				}
 
 				string output = ResultFormatter.Format(duplicates, format);
 				WriteOutput(output, outFile);
+				return failed > 0 ? 1 : 0;
 			});
 
 			return cmd;

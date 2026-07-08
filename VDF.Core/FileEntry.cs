@@ -80,6 +80,14 @@ namespace VDF.Core {
 		/// </summary>
 		[MemoryPackOrder(9)]
 		public uint[]? AudioFingerprint;
+		/// <summary>
+		/// OpenSubtitles-style content fingerprint (size + head/tail 64 KiB checksum), cached so a
+		/// later scan can recognise a MOVED file (same OsHash, old path now gone) and relink it —
+		/// reusing its thumbnails/mediaInfo instead of re-decoding. <c>null</c> = not yet computed
+		/// (or the file was too small / unreadable when last seen).
+		/// </summary>
+		[MemoryPackOrder(10)]
+		public string? OsHash;
 
 		[MemoryPackIgnore]
 		internal bool invalid = true;
@@ -129,6 +137,23 @@ namespace VDF.Core {
 		}
 
 		[MethodImpl(MethodImplOptions.AggressiveInlining)]
+		/// <summary>
+		/// Drops everything derived from the file's content so the next scan re-probes and
+		/// re-extracts it: media info, gray frames, pHashes, audio fingerprint and every
+		/// error/audio flag. Identity data stays (path, dates, size, OsHash, manual
+		/// exclusion, reparse-point state) — this is the database editor's "clear cached
+		/// hashes" repair action, the lighter alternative to deleting the entry.
+		/// </summary>
+		public void ClearCachedMediaData() {
+			mediaInfo = null;
+			grayBytes.Clear();
+			PHashes.Clear();
+			AudioFingerprint = null;
+			Flags.Set(EntryFlags.ThumbnailError | EntryFlags.MetadataError | EntryFlags.TooDark |
+				EntryFlags.NoAudioTrack | EntryFlags.AudioFingerprintError | EntryFlags.SilentAudioTrack, false);
+			invalid = true;
+		}
+
 		public double GetGrayBytesIndex(float position) => mediaInfo!.Duration.TotalSeconds * position;
 		[MethodImpl(MethodImplOptions.AggressiveInlining)]
 		public double GetGrayBytesIndex(float position, double? maxSamplingDurationSeconds) {

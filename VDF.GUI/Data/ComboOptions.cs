@@ -14,22 +14,11 @@
 // */
 //
 
-using Avalonia.Collections;
-
 namespace VDF.GUI.Data {
 	// These lists were KeyValuePair<string, T> with reflection-bound item templates
 	// (x:DataType cannot express closed generic types). Under Native AOT the
 	// KeyValuePair property metadata is trimmed and the labels rendered empty, so
 	// each list gets a small named type instead, compiled-bindable like everything else.
-
-	public sealed class SortOrderOption {
-		public string Name { get; }
-		public DataGridSortDescription? Sort { get; }
-		public SortOrderOption(string name, DataGridSortDescription? sort) {
-			Name = name;
-			Sort = sort;
-		}
-	}
 
 	public sealed class FileTypeFilterOption {
 		public string Name { get; }

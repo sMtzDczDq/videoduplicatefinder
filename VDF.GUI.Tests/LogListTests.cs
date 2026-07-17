@@ -251,4 +251,68 @@ public class LogListTests {
 		Assert.Equal("Exception happened …", row.DisplayMessage);
 		Assert.Contains("at Foo.Bar()", row.Message);
 	}
+
+	// ---------- scanning-screen tail (#832) ----------
+
+	[Fact]
+	public void FormatTailLine_SingleLine_KeptVerbatim() =>
+		Assert.Equal("09:41:00 · Scan done.", LogList.FormatTailLine(Info("Scan done.")));
+
+	[Fact]
+	public void FormatTailLine_FfmpegStderrDump_CollapsesToFirstLine() {
+		var entry = Error(
+			@"ERROR: Failed to retrieve graybytes from: C:\clips\a.mp4" +
+			"\r\n[h264 @ 000001d618a01840] Invalid NAL unit size (386048 > 162)." +
+			"\r\n[h264 @ 000001d618a01840] missing picture in access unit with size 942");
+		Assert.Equal(@"09:41:00 · ERROR: Failed to retrieve graybytes from: C:\clips\a.mp4 …",
+			LogList.FormatTailLine(entry));
+	}
+
+	[Fact]
+	public void FormatTailLine_KeepsTrailingHintLine() {
+		var entry = Error(
+			@"ERROR: Failed to retrieve graybytes from: C:\clips\a.mp4" +
+			"\r\n[h264 @ 000001d618a01840] Invalid NAL unit size (386048 > 162)." +
+			"\r\nHint: The file appears to be truncated or corrupt.");
+		Assert.Equal(
+			@"09:41:00 · ERROR: Failed to retrieve graybytes from: C:\clips\a.mp4 … Hint: The file appears to be truncated or corrupt.",
+			LogList.FormatTailLine(entry));
+	}
+
+	[Fact]
+	public void FormatTailLine_HintMidLine_IsNotTreatedAsHint() {
+		var entry = Error("first line\r\nstderr mentioning Hint: mid-line");
+		Assert.Equal("09:41:00 · first line …", LogList.FormatTailLine(entry));
+	}
+
+	[Fact]
+	public void FormatTailLine_HintFollowedByMoreLines_TakesHintLineOnly() {
+		var entry = Error("first line\r\nHint: use software decoding.\r\ntrailing stderr");
+		Assert.Equal("09:41:00 · first line … Hint: use software decoding.", LogList.FormatTailLine(entry));
+	}
+
+	// ---------- scanning-screen tail tooltips (#836) ----------
+
+	[Fact]
+	public void BuildTailRow_CarriesCollapsedDisplayAndFullTooltip() {
+		var entry = Warn("Failed using native FFmpeg binding on 'D:\\clips\\a.mp4', switching to process mode. Exception: X\r\nstderr detail");
+		var row = LogList.BuildTailRow(entry);
+		Assert.Equal(LogList.FormatTailLine(entry), row.Display);
+		Assert.Equal(entry.Message, row.Tooltip);
+		Assert.Contains("switching to process mode", row.Tooltip);
+		Assert.Contains("stderr detail", row.Tooltip);
+	}
+
+	[Fact]
+	public void TooltipText_ShortMessage_Untouched() =>
+		Assert.Equal("Scan done.", LogList.TooltipText("Scan done."));
+
+	[Fact]
+	public void TooltipText_HugeStderrDump_IsCapped() {
+		string huge = string.Join("\r\n", Enumerable.Repeat("[h264 @ 0x1] Invalid NAL unit size (386048 > 162).", 100));
+		string tooltip = LogList.TooltipText(huge);
+		Assert.True(tooltip.Length < huge.Length);
+		Assert.Equal(1500 + 2, tooltip.Length); // 1500 chars + " …"
+		Assert.EndsWith(" …", tooltip);
+	}
 }

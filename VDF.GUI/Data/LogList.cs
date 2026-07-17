@@ -77,7 +77,16 @@ namespace VDF.GUI.Data {
 				return nl < 0 ? Message : Message[..nl] + " …";
 			}
 		}
+		/// <summary>Hover text: the untrimmed message, size-capped (see LogList.TooltipText).</summary>
+		public string TooltipMessage => LogList.TooltipText(Message);
 	}
+
+	/// <summary>
+	/// One scanning-screen tail line: the collapsed display form plus the full message
+	/// for the hover tooltip, so a line clipped by the window width can still be read
+	/// in place (#836).
+	/// </summary>
+	public sealed record LogTailRow(string Display, string Tooltip);
 
 	public sealed class LogListResult {
 		internal LogListResult(IReadOnlyList<LogRow> rows, int infoCount, int warningCount, int errorCount) {
@@ -220,6 +229,42 @@ namespace VDF.GUI.Data {
 			}
 
 			return new LogListResult(rows, info, warning, error);
+		}
+
+		/// <summary>
+		/// Single-line form for the scanning screen's live tail (#832): multi-line payloads
+		/// (FFmpeg stderr dumps, stack traces) collapse to their first line so one failed
+		/// file cannot flood the screen, keeping the classifier's trailing "Hint:" line —
+		/// that is the plain-language part a user needs mid-scan. The full text stays
+		/// available in the Log window and the log file.
+		/// </summary>
+		public static string FormatTailLine(LogEntry entry) {
+			string message = entry.Message;
+			int nl = message.IndexOfAny(new[] { '\r', '\n' });
+			if (nl >= 0) {
+				string collapsed = message[..nl] + " …";
+				int hint = message.LastIndexOf("Hint: ", StringComparison.Ordinal);
+				if (hint > nl && message[hint - 1] is '\n' or '\r') {
+					string hintText = message[hint..];
+					int hintEnd = hintText.IndexOfAny(new[] { '\r', '\n' });
+					collapsed += " " + (hintEnd < 0 ? hintText : hintText[..hintEnd]);
+				}
+				message = collapsed;
+			}
+			return $"{entry.Timestamp:HH:mm:ss} · {message}";
+		}
+
+		public static LogTailRow BuildTailRow(LogEntry entry) =>
+			new(FormatTailLine(entry), TooltipText(entry.Message));
+
+		/// <summary>
+		/// Tooltip form of a tail line: the untrimmed message, so the remediation part a
+		/// clipped line hides ("switching to pro…") is a hover away — but capped so a
+		/// hundred lines of FFmpeg stderr cannot cover the whole screen (#836).
+		/// </summary>
+		internal static string TooltipText(string message) {
+			const int MaxChars = 1500;
+			return message.Length <= MaxChars ? message : message[..MaxChars] + " …";
 		}
 
 		/// <summary>Plain-text form used by copy/save — mirrors the log file's line shape.</summary>

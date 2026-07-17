@@ -27,6 +27,31 @@ namespace VDF.CLI.Commands {
 			return await RunCompareAsync(engine, ct);
 		}
 
+		/// <summary>
+		/// Headless first-use download of the AI components (ONNX Runtime + model) when an
+		/// AI option is enabled — the CLI counterpart of the GUI's download prompt. Must run
+		/// before StartSearch, whose PrepareSearch fails fast on missing components.
+		/// </summary>
+		internal static async Task EnsureAiComponentsAsync(VDF.Core.Settings settings, CancellationToken ct) {
+			if (!settings.NeedsAiComponents)
+				return;
+			if (VDF.Core.AI.AiComponents.IsReady)
+				return;
+			Console.Error.WriteLine($"[scan] Downloading AI components (ONNX Runtime {VDF.Core.AI.AiComponents.RuntimeVersion} + model, ~100 MB) to '{VDF.Core.AI.AiComponents.AiFolder}'...");
+			// One line per ~5 MB, not per chunk — CI logs stay readable. Buckets are
+			// per step: the runtime and model download concurrently, and a shared
+			// counter would swallow whichever step reaches a bucket second.
+			var lastReported = new System.Collections.Concurrent.ConcurrentDictionary<string, long>();
+			var progress = new Progress<VDF.Core.AI.AiDownloadProgress>(p => {
+				long bucket = p.BytesDone / (5 * 1024 * 1024);
+				if (lastReported.TryGetValue(p.Step, out long prev) && prev == bucket) return;
+				lastReported[p.Step] = bucket;
+				Console.Error.WriteLine($"[scan]   {p.Step}: {p.BytesDone / (1024 * 1024)} MB{(p.BytesTotal.HasValue ? $" / {p.BytesTotal.Value / (1024 * 1024)} MB" : string.Empty)}");
+			});
+			await VDF.Core.AI.AiComponents.DownloadAsync(progress, ct);
+			Console.Error.WriteLine("[scan] AI components ready.");
+		}
+
 		/// <summary>Runs StartSearch() only (enumerate files and build hashes).</summary>
 		internal static async Task RunSearchAsync(ScanEngine engine, CancellationToken ct) {
 			var tcs = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);

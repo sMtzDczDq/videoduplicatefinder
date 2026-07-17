@@ -23,6 +23,7 @@ using VDF.Core;
 using VDF.Core.Utils;
 using VDF.GUI.Data;
 using VDF.GUI.Utils;
+using VDF.GUI.Views;
 
 namespace VDF.GUI.ViewModels {
 
@@ -96,9 +97,49 @@ namespace VDF.GUI.ViewModels {
 			RaiseShellNavChanged(); // "New scan" nav link follows the Review state
 		}
 
+		/// <summary>
+		/// Titlebar "New scan": discards the current results and returns to the Setup
+		/// screen so folders/profile can be changed first — it does NOT start the scan
+		/// (the Setup screen's own Scan button does). Quick re-runs with unchanged
+		/// settings live in the ⋯ menu (Rescan). The saved-results backup file on disk
+		/// is left untouched.
+		/// </summary>
+		public ReactiveCommand<Unit, Unit> NewScanCommand => ReactiveCommand.CreateFromTask(async () => {
+			if (Duplicates.Count > 0 &&
+				await MessageBoxService.Show(App.Lang["Message.NewScanDiscardPrompt"],
+					MessageBoxButtons.Yes | MessageBoxButtons.No) != MessageBoxButtons.Yes)
+				return;
+			DiscardResultsToSetup();
+		});
+
+		internal void DiscardResultsToSetup() {
+			Duplicates.Clear(); // Reset event → checked counters/undo stack clear + state raise
+			ShowNoDuplicatesNotice = false;
+			BuildActiveResultsView();
+			RefreshGroupStats();
+			// The fingerprint database may have grown since these results were produced.
+			RebuildSetupFolders();
+		}
+
 		// ---------- welcome strip ----------
 		public ReactiveCommand<Unit, Unit> DismissWelcomeStripCommand => ReactiveCommand.Create(() => {
 			SettingsFile.Instance.WelcomeStripDismissed = true;
+		});
+
+		// ---------- "no duplicates found" notice ----------
+		bool _ShowNoDuplicatesNotice;
+		/// <summary>
+		/// Raised after a completed scan that found nothing, so the Setup screen a returning
+		/// user lands on can be told apart from the never-scanned state. Persists until the
+		/// next scan starts (see <see cref="StartScanCommand"/>) or the user dismisses it.
+		/// </summary>
+		public bool ShowNoDuplicatesNotice {
+			get => _ShowNoDuplicatesNotice;
+			set => this.RaiseAndSetIfChanged(ref _ShowNoDuplicatesNotice, value);
+		}
+
+		public ReactiveCommand<Unit, Unit> DismissNoDuplicatesNoticeCommand => ReactiveCommand.Create(() => {
+			ShowNoDuplicatesNotice = false;
 		});
 
 		// ---------- folder list ----------
@@ -219,6 +260,7 @@ namespace VDF.GUI.ViewModels {
 		public ScanProfileOptionVM[] ScanProfileOptions { get; } = {
 			new(ScanProfile.ExactAndNear, App.Lang["Profile.Exact.Name"], App.Lang["Profile.Exact.Desc"], App.Lang["Profile.Exact.Time"]),
 			new(ScanProfile.EditedAndAltered, App.Lang["Profile.Edited.Name"], App.Lang["Profile.Edited.Desc"], App.Lang["Profile.Edited.Time"]),
+			new(ScanProfile.AiScan, App.Lang["Profile.Ai.Name"], App.Lang["Profile.Ai.Desc"], App.Lang["Profile.Ai.Time"]),
 			new(ScanProfile.DeepClean, App.Lang["Profile.Deep.Name"], App.Lang["Profile.Deep.Desc"], App.Lang["Profile.Deep.Time"]),
 			new(ScanProfile.Custom, App.Lang["Profile.Custom.Name"], App.Lang["Profile.Custom.Desc"], string.Empty),
 		};
@@ -264,10 +306,10 @@ namespace VDF.GUI.ViewModels {
 		}
 
 		/// <summary>Last few log lines, shown under the scan card.</summary>
-		public ObservableCollection<string> LogTail { get; } = new();
+		public ObservableCollection<LogTailRow> LogTail { get; } = new();
 		internal const int LogTailLength = 4;
-		internal void AppendLogTail(string message) {
-			LogTail.Add(message);
+		internal void AppendLogTail(LogTailRow row) {
+			LogTail.Add(row);
 			while (LogTail.Count > LogTailLength)
 				LogTail.RemoveAt(0);
 		}

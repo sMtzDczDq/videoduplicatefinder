@@ -29,6 +29,7 @@ namespace VDF.Web.Services {
 			public float Percent { get; set; } = 96f;
 			public double PercentDurationDifference { get; set; } = 20d;
 			public int MaxDegreeOfParallelism { get; set; } = 1;
+			public int MatchingMaxDegreeOfParallelism { get; set; }
 			public int ThumbnailCount { get; set; } = 1;
 			public bool IncludeSubDirectories { get; set; } = true;
 			public bool IncludeImages { get; set; } = true;
@@ -69,6 +70,10 @@ namespace VDF.Web.Services {
 			public double PartialClipSimilarityThreshold { get; set; } = 0.80;
 			public bool PartialClipRequireVisualMatch { get; set; } = true;
 			public double PartialClipVisualThreshold { get; set; } = 0.85;
+			public bool UseAiMatching { get; set; }
+			public float AiPercent { get; set; } = 94f;
+			public bool EnableAiPartialDetection { get; set; }
+			public float AiPartialHitPercent { get; set; } = 89f;
 
 			// WebUI-only settings (not in VDF.Core Settings)
 			/// <summary>Whether to automatically load HQ thumbnails on the results page.</summary>
@@ -84,8 +89,12 @@ namespace VDF.Web.Services {
 		public int ThumbnailWidth { get; set; } = 480;
 		public int ThumbnailJpegQuality { get; set; } = 85;
 
+		/// <summary>Test hook: redirects the settings file away from the user's real one.</summary>
+		internal static string? TestOverrideSettingsPath;
+
 		static string SettingsPath {
 			get {
+				if (TestOverrideSettingsPath != null) return TestOverrideSettingsPath;
 				string folder;
 				if (OperatingSystem.IsWindows())
 					folder = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData), "VDF");
@@ -109,6 +118,7 @@ namespace VDF.Web.Services {
 				s.Percent = dto.Percent;
 				s.PercentDurationDifference = dto.PercentDurationDifference;
 				s.MaxDegreeOfParallelism = dto.MaxDegreeOfParallelism;
+				s.MatchingMaxDegreeOfParallelism = dto.MatchingMaxDegreeOfParallelism;
 				s.ThumbnailCount = dto.ThumbnailCount;
 				s.IncludeSubDirectories = dto.IncludeSubDirectories;
 				s.IncludeImages = dto.IncludeImages;
@@ -147,6 +157,13 @@ namespace VDF.Web.Services {
 				s.PartialClipSimilarityThreshold = dto.PartialClipSimilarityThreshold;
 				s.PartialClipRequireVisualMatch = dto.PartialClipRequireVisualMatch;
 				s.PartialClipVisualThreshold = dto.PartialClipVisualThreshold;
+				s.UseAiMatching = dto.UseAiMatching;
+				// Same clamps as the GUI setters and the CLI options: a hand-edited value
+				// like 0.94 (cosine fraction instead of percent) would otherwise flow into
+				// the engine as a ~0.01 threshold and flag nearly every pair as AI-matched.
+				s.AiPercent = Math.Clamp(dto.AiPercent, 50f, 100f);
+				s.EnableAiPartialDetection = dto.EnableAiPartialDetection;
+				s.AiPartialHitPercent = Math.Clamp(dto.AiPartialHitPercent, 70f, 99f);
 				// WebUI-only
 				AutoLoadThumbnails = dto.AutoLoadThumbnails;
 				ThumbnailWidth = Math.Clamp(dto.ThumbnailWidth, 48, 960);
@@ -166,6 +183,7 @@ namespace VDF.Web.Services {
 					Percent = s.Percent,
 					PercentDurationDifference = s.PercentDurationDifference,
 					MaxDegreeOfParallelism = s.MaxDegreeOfParallelism,
+					MatchingMaxDegreeOfParallelism = s.MatchingMaxDegreeOfParallelism,
 					ThumbnailCount = s.ThumbnailCount,
 					IncludeSubDirectories = s.IncludeSubDirectories,
 					IncludeImages = s.IncludeImages,
@@ -204,6 +222,10 @@ namespace VDF.Web.Services {
 					PartialClipSimilarityThreshold = s.PartialClipSimilarityThreshold,
 					PartialClipRequireVisualMatch = s.PartialClipRequireVisualMatch,
 					PartialClipVisualThreshold = s.PartialClipVisualThreshold,
+					UseAiMatching = s.UseAiMatching,
+					AiPercent = s.AiPercent,
+					EnableAiPartialDetection = s.EnableAiPartialDetection,
+					AiPartialHitPercent = s.AiPartialHitPercent,
 					// WebUI-only
 					AutoLoadThumbnails = AutoLoadThumbnails,
 					ThumbnailWidth = ThumbnailWidth,

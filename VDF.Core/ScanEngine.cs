@@ -48,9 +48,21 @@ namespace VDF.Core {
 		/// <summary>Encoded placeholder image (PNG/JPEG bytes) shown when thumbnail extraction fails.</summary>
 		public byte[]? NoThumbnailImage;
 
-		PauseTokenSource pauseTokenSource = new();
+		internal PauseTokenSource pauseTokenSource = new();
 		CancellationTokenSource cancelationTokenSource = new();
-		readonly List<float> positionList = new();
+		internal readonly List<float> positionList = new();
+		// Live only while a scan's hashing phase runs (see StartSearch): receives decoded
+		// 224x224 RGB frames and writes int8 embeddings into the union embedding sidecar.
+		AI.EmbeddingPipeline? aiEmbeddingPipeline;
+		// The union pass's embedding sidecar. Loaded when an AI-enabled scan starts (or
+		// lazily for a compare-only run), saved after the hashing phase, and released once
+		// the compare snapshots are built — embeddings only occupy memory while needed.
+		internal AI.UnionEmbeddingStore? unionEmbeddingStore;
+
+		public ScanEngine() =>
+			// Armed and disarmed by the isScanning setter, so an idle engine owns no ticking timer.
+			progressHeartbeat = new Timer(_ => HeartbeatTick(), null,
+											Timeout.InfiniteTimeSpan, Timeout.InfiniteTimeSpan);
 
 		bool _isScanning;
 		// The main process yields CPU to foreground apps while a scan runs, restored the
@@ -62,6 +74,12 @@ namespace VDF.Core {
 			set {
 				if (_isScanning == value) return;
 				_isScanning = value;
+				progressHeartbeat.Change(
+					value ? progressHeartbeatIntervall : Timeout.InfiniteTimeSpan,
+					value ? progressHeartbeatIntervall : Timeout.InfiniteTimeSpan);
+				if (!value)
+					lock (progressSnapshotLock)
+						hasProgressSnapshot = false; // a late tick must not repaint a finished scan
 				try {
 					using var p = Process.GetCurrentProcess();
 					p.PriorityClass = value ? ProcessPriorityClass.BelowNormal
@@ -77,6 +95,19 @@ namespace VDF.Core {
 		DateTime startTime = DateTime.Now;
 		DateTime lastProgressUpdate = DateTime.MinValue;
 		static readonly TimeSpan progressUpdateIntervall = TimeSpan.FromMilliseconds(300);
+		// Elapsed and Remaining only ever reach a frontend on a Progress event, and a phase can
+		// run for minutes without completing a single file — the partial-clip visual gate decodes
+		// frames for a handful of assignments, one slow source stalling the counter. The whole
+		// status block (counter, ETA, stage label and clock) then sat frozen while the scan ran
+		// on, which reads as a hang (#831). The heartbeat re-sends the last snapshot with a live
+		// clock whenever real progress has gone quiet.
+		static readonly TimeSpan progressHeartbeatIntervall = TimeSpan.FromMilliseconds(500);
+		readonly Timer progressHeartbeat;
+		// ScanProgressChangedEventArgs is a struct: the heartbeat thread reads the snapshot while
+		// worker threads write it, so both sides go through the lock to avoid a torn copy.
+		readonly object progressSnapshotLock = new();
+		ScanProgressChangedEventArgs lastProgressSnapshot;
+		bool hasProgressSnapshot;
 		const int maxExcludedLogsPerReason = 5;
 		readonly ConcurrentDictionary<string, int> excludedReasonCounts = new();
 		readonly ConcurrentDictionary<string, int> excludedReasonLoggedCounts = new();
@@ -97,13 +128,26 @@ namespace VDF.Core {
 		string T(string key, params object[] args) =>
 			LanguageService.Instance.Get(Settings.LanguageCode, key, args);
 
-		void InitProgress(int count) {
+		internal void InitProgress(int count) {
 			startTime = DateTime.UtcNow;
 			scanProgressMaxValue = count;
 			processedFiles = 0;
-			lastProgressUpdate = DateTime.MinValue;
 			lastCheckpointTime = DateTime.UtcNow;
 			driveProgressTracker = null; // compare phases re-init progress; they have no per-drive data
+			// Publish the new phase's zeroed counters at once. A phase whose first item takes minutes
+			// (the visual gate decodes frames off disk) would otherwise leave the previous phase's
+			// finished-looking numbers on screen, and leave the heartbeat with nothing to refresh.
+			// Callers set currentStageLabel before calling, so the label switches with the counters.
+			PushProgress(new ScanProgressChangedEventArgs {
+				CurrentPosition = 0,
+				CurrentFile = string.Empty,
+				Elapsed = ElapsedTimer.Elapsed,
+				Remaining = TimeSpan.Zero,
+				MaxPosition = scanProgressMaxValue,
+				CurrentStage = currentStageLabel,
+			});
+			// After the push, so the phase's first completed item reports without waiting out the throttle.
+			lastProgressUpdate = DateTime.MinValue;
 		}
 		void ResetExcludedLogging() {
 			excludedReasonCounts.Clear();
@@ -113,6 +157,35 @@ namespace VDF.Core {
 		// Only 0 needs correcting — clamping with Math.Max(1, ...) turned the -1 default
 		// into single-threaded execution.
 		int ParallelDegree => Settings.MaxDegreeOfParallelism == 0 ? -1 : Settings.MaxDegreeOfParallelism;
+
+		/// <summary>
+		/// Resolves the worker count for the CPU-bound matching phases, independent of
+		/// <see cref="Settings.MaxDegreeOfParallelism"/> (a media-READ knob tuned to
+		/// storage — throttling it for an HDD must not serialize the compare phase,
+		/// and its -1/"unlimited" sentinel is likewise a poor fit for pure CPU work).
+		/// A positive configured value is honored up to the logical CPU count;
+		/// 0 or negative selects automatic: most of the machine, minus one or two
+		/// reserved cores so the UI and the system stay responsive.
+		/// </summary>
+		internal static int CalculateMatchingParallelism(int configured, int processorCount) {
+			processorCount = Math.Max(1, processorCount);
+			if (configured > 0)
+				return Math.Min(configured, processorCount);
+
+			int reservedProcessors = processorCount >= 8 ? 2 : processorCount >= 2 ? 1 : 0;
+			int reserveCap = Math.Max(1, processorCount - reservedProcessors);
+			int percentageCap = Math.Max(1, (int)Math.Ceiling(processorCount * 0.80d));
+			return Math.Min(reserveCap, percentageCap);
+		}
+
+		int MatchingParallelDegree => CalculateMatchingParallelism(Settings.MatchingMaxDegreeOfParallelism, Environment.ProcessorCount);
+
+		// The pHash quorum's requiredMatches is identical for every pair in a scan
+		// (sampleCount always equals positionList.Count), so the compare phase precomputes
+		// it once here and the per-pair hot path in CheckIfDuplicate reads it instead of
+		// re-clamping and re-ceiling on every candidate. Null outside a scan — the direct
+		// and diagnostic callers fall back to computing it locally.
+		int? matchingRequiredSampleMatches;
 
 		// Status-bar label for the current phase. Empty during per-file analysis (which reports
 		// its own sub-stages via ReportStage); set by the compare phases so the UI shows
@@ -141,7 +214,69 @@ namespace VDF.Core {
 				Logger.Instance.Warn(T("Log.ExcludedFilesSummaryItem", reason.Key, reason.Value, suppressionText));
 			}
 		}
-		void IncrementProgress(string path) {
+		/// <summary>
+		/// Raises <see cref="Progress"/> and keeps the snapshot the heartbeat re-sends.
+		/// </summary>
+		void PushProgress(ScanProgressChangedEventArgs args) {
+			lock (progressSnapshotLock) {
+				lastProgressSnapshot = args;
+				hasProgressSnapshot = true;
+			}
+			Progress?.Invoke(this, args);
+		}
+
+		/// <summary>
+		/// Linear extrapolation of the current phase's remaining time from what it has spent so far.
+		/// Clamped at zero: the final item's push has processed == maxPosition, which drove the old
+		/// expression negative — rendering as "~0s left" while the phase was still working (#831).
+		/// </summary>
+		internal static TimeSpan EstimateRemaining(TimeSpan phaseElapsed, int processed, int maxPosition) {
+			int remaining = maxPosition - (processed + 1);
+			if (remaining <= 0 || processed < 0 || phaseElapsed <= TimeSpan.Zero)
+				return TimeSpan.Zero;
+			return TimeSpan.FromTicks(phaseElapsed.Ticks * remaining / (processed + 1));
+		}
+
+		TimeSpan EstimateRemaining(int processed, int maxPosition) =>
+			EstimateRemaining(DateTime.UtcNow.Subtract(startTime), processed, maxPosition);
+
+		/// <summary>
+		/// <see cref="progressHeartbeat"/>'s callback. The worker-thread pushes raise Progress inside
+		/// the scan task, where StartSearch/StartCompare own the catch; this one runs on a threadpool
+		/// thread, where a subscriber's exception would take the process down instead. The clock is
+		/// cosmetic — never let it end a scan.
+		/// </summary>
+		internal void HeartbeatTick() {
+			try {
+				EmitProgressHeartbeat();
+			}
+			catch (Exception ex) {
+				Logger.Instance.Warn($"Progress heartbeat failed (the scan continues): {ex.Message}");
+			}
+		}
+
+		/// <summary>
+		/// Re-raises the last progress snapshot with a fresh clock and re-estimated remaining time.
+		/// Fires off <see cref="progressHeartbeat"/> while a scan is active, and stays quiet while
+		/// real progress is already flowing or the scan is paused (Pause stops ElapsedTimer, so the
+		/// clock is meant to stand still).
+		/// </summary>
+		internal void EmitProgressHeartbeat() {
+			if (!ElapsedTimer.IsRunning) return;
+			if (lastProgressUpdate + progressUpdateIntervall > DateTime.UtcNow) return;
+			ScanProgressChangedEventArgs snapshot;
+			lock (progressSnapshotLock) {
+				if (!hasProgressSnapshot) return;
+				snapshot = lastProgressSnapshot;
+			}
+			// Deliberately does not touch lastProgressUpdate: a heartbeat must never delay or
+			// suppress the next real push from a worker.
+			snapshot.Elapsed = ElapsedTimer.Elapsed;
+			snapshot.Remaining = EstimateRemaining(snapshot.CurrentPosition, snapshot.MaxPosition);
+			Progress?.Invoke(this, snapshot);
+		}
+
+		internal void IncrementProgress(string path) {
 			// Atomic: workers of all concurrent drive groups increment this counter, and a
 			// torn increment would lose the processedFiles == scanProgressMaxValue final push.
 			int processed = Interlocked.Increment(ref processedFiles);
@@ -149,18 +284,15 @@ namespace VDF.Core {
 								lastProgressUpdate + progressUpdateIntervall < DateTime.UtcNow;
 			if (!pushUpdate) return;
 			lastProgressUpdate = DateTime.UtcNow;
-			var timeRemaining = TimeSpan.FromTicks(DateTime.UtcNow.Subtract(startTime).Ticks *
-									(scanProgressMaxValue - (processed + 1)) / (processed + 1));
-			Progress?.Invoke(this,
-							new ScanProgressChangedEventArgs {
-								CurrentPosition = processed,
-								CurrentFile = path,
-								Elapsed = ElapsedTimer.Elapsed,
-								Remaining = timeRemaining,
-								MaxPosition = scanProgressMaxValue,
-								CurrentStage = currentStageLabel,
-								Drives = driveProgressTracker?.Snapshot(),
-							});
+			PushProgress(new ScanProgressChangedEventArgs {
+				CurrentPosition = processed,
+				CurrentFile = path,
+				Elapsed = ElapsedTimer.Elapsed,
+				Remaining = EstimateRemaining(processed, scanProgressMaxValue),
+				MaxPosition = scanProgressMaxValue,
+				CurrentStage = currentStageLabel,
+				Drives = driveProgressTracker?.Snapshot(),
+			});
 			TryDatabaseCheckpoint();
 		}
 
@@ -170,20 +302,17 @@ namespace VDF.Core {
 		void ReportStage(string path, string stage, int stageCurrent = 0, int stageMax = 0) {
 			if (lastProgressUpdate + progressUpdateIntervall > DateTime.UtcNow) return;
 			lastProgressUpdate = DateTime.UtcNow;
-			var timeRemaining = TimeSpan.FromTicks(DateTime.UtcNow.Subtract(startTime).Ticks *
-									(scanProgressMaxValue - (processedFiles + 1)) / (processedFiles + 1));
-			Progress?.Invoke(this,
-							new ScanProgressChangedEventArgs {
-								CurrentPosition = processedFiles,
-								CurrentFile = path,
-								Elapsed = ElapsedTimer.Elapsed,
-								Remaining = timeRemaining,
-								MaxPosition = scanProgressMaxValue,
-								CurrentStage = stage,
-								StageCurrent = stageCurrent,
-								StageMax = stageMax,
-								Drives = driveProgressTracker?.Snapshot(),
-							});
+			PushProgress(new ScanProgressChangedEventArgs {
+				CurrentPosition = processedFiles,
+				CurrentFile = path,
+				Elapsed = ElapsedTimer.Elapsed,
+				Remaining = EstimateRemaining(processedFiles, scanProgressMaxValue),
+				MaxPosition = scanProgressMaxValue,
+				CurrentStage = stage,
+				StageCurrent = stageCurrent,
+				StageMax = stageMax,
+				Drives = driveProgressTracker?.Snapshot(),
+			});
 		}
 
 		void TryDatabaseCheckpoint() {
@@ -247,9 +376,31 @@ namespace VDF.Core {
 				await BuildFileList(cancelationTokenSource.Token);
 				Logger.Instance.Info(T("Log.FinishedBuildingFileList", SearchTimer.StopGetElapsedAndRestart()));
 				FilesEnumerated?.Invoke(this, new EventArgs());
-				Logger.Instance.Info(T("Log.GatheringMediaInfo"));
-				if (!cancelationTokenSource.IsCancellationRequested)
-					await GatherInfos();
+				try {
+					if (!cancelationTokenSource.IsCancellationRequested && Settings.UseAiMatching) {
+						unionEmbeddingStore = AI.UnionEmbeddingStore.Load();
+						aiEmbeddingPipeline = new AI.EmbeddingPipeline(AI.AiComponents.ModelPath, unionEmbeddingStore, cancelationTokenSource.Token);
+					}
+					Logger.Instance.Info(T("Log.GatheringMediaInfo"));
+					if (!cancelationTokenSource.IsCancellationRequested)
+						await GatherInfos();
+					if (aiEmbeddingPipeline != null) {
+						// The bounded queue keeps this drain short, but on a slow CPU a few
+						// hundred frames can still be pending — give the wait its own stage.
+						currentStageLabel = T("Scan.Stage.AiEmbedding");
+						InitProgress(1);
+						await aiEmbeddingPipeline.CompleteAsync();
+						IncrementProgress(string.Empty);
+						Logger.Instance.Info($"AI embeddings computed for this scan: {aiEmbeddingPipeline.EmbeddedCount}");
+					}
+				}
+				finally {
+					aiEmbeddingPipeline?.Dispose();
+					aiEmbeddingPipeline = null;
+					// Persist whatever got embedded — also on cancel/error, the work is
+					// expensive. The store stays loaded for the chained compare phase.
+					unionEmbeddingStore?.Save(AllDatabasePaths());
+				}
 				Logger.Instance.Info(T("Log.FinishedGatheringHashes", SearchTimer.StopGetElapsedAndRestart()));
 				// Save before signaling completion: consumers (e.g. the CLI) may treat the
 				// event as "done" and exit the process, which previously killed this thread
@@ -292,6 +443,17 @@ namespace VDF.Core {
 					await Task.Run(ScanForDuplicates, cancelationTokenSource.Token);
 				if (!cancelationTokenSource.IsCancellationRequested && Settings.EnablePartialClipDetection)
 					await Task.Run(ScanForPartialDuplicates, cancelationTokenSource.Token);
+				// After the audio pass: videos it already grouped are excluded, the visual
+				// pass only adds pairs audio could not see (no/replaced audio, music-only).
+				if (!cancelationTokenSource.IsCancellationRequested && Settings.EnableAiPartialDetection)
+					await Task.Run(ScanForPartialDuplicatesVisual, cancelationTokenSource.Token);
+				if (cancelationTokenSource.IsCancellationRequested) {
+					// The passes swallow their internal OperationCanceledExceptions, so a
+					// Stop pressed during any of them would otherwise fall through to
+					// ScanDone and present partial results as a completed scan.
+					AbortScanOnError(new OperationCanceledException());
+					return;
+				}
 				SearchTimer.Stop();
 				ElapsedTimer.Stop();
 				Logger.Instance.Info(T("Log.FinishedScanForDuplicates", SearchTimer.Elapsed));
@@ -343,6 +505,9 @@ namespace VDF.Core {
 				throw new FFNotFoundException("Cannot find FFprobe");
 			if (Settings.UseNativeFfmpegBinding && !FFTools.FFmpegNative.FFmpegHelper.DoFFmpegLibraryFilesExist)
 				throw new FFNotFoundException($"Cannot find FFmpeg libraries. {FFTools.FFmpegNative.FFmpegHelper.DescribeExpectedLibraries()}");
+			// Fail fast with an actionable message instead of erroring on every file later.
+			if (Settings.NeedsAiComponents)
+				AI.AiComponents.EnsureReady();
 
 			CancelAllTasks();
 
@@ -398,7 +563,23 @@ namespace VDF.Core {
 		double GetGrayBytesIndex(FileEntry entry, float position) =>
 			entry.GetGrayBytesIndex(position, Settings.MaxSamplingDurationSeconds);
 
+		/// <summary>
+		/// Keep-set for the AI sidecar caches: every path the scan database knows. Sidecar
+		/// records are pruned only when their file left the database entirely — pruning by
+		/// the current scan's eligible set would wipe other libraries' expensive embeddings
+		/// on every alternating scan.
+		/// </summary>
+		static HashSet<string> AllDatabasePaths() =>
+			DatabaseUtils.Database.Select(e => e.Path).ToHashSet(
+				CoreUtils.IsWindows ? StringComparer.OrdinalIgnoreCase : StringComparer.Ordinal);
+
 		void PrepareCompare() {
+			// Fail fast like PrepareSearch: the visual partial pass constructs the ONNX
+			// session at the END of a compare run — without this gate a compare-only run
+			// with missing components dies hours in with a raw DllNotFoundException. The
+			// union pass only reads cached embeddings at compare time and needs nothing.
+			if (Settings.EnableAiPartialDetection)
+				AI.AiComponents.EnsureReady();
 			if (positionList.Count == 0) {
 				// Fresh process running compare-only (CLI 'compare' on an existing database):
 				// the list is built during PrepareSearch, which never ran here (issue #790).
@@ -828,6 +1009,18 @@ namespace VDF.Core {
 									break;
 								}
 							}
+							// A gray-complete entry may still need embedding backfill — but only
+							// when the file is actually readable; tombstones (deleted files kept
+							// for comparison) stay fully-cached and the AI pass abstains for them.
+							if (hasAllInformation && aiEmbeddingPipeline != null && File.Exists(entry.Path)) {
+								if (entry.IsImage) {
+									hasAllInformation = !aiEmbeddingPipeline.WantsEmbedding(entry, 0);
+								}
+								else {
+									for (int i = 0; i < positionList.Count && hasAllInformation; i++)
+										hasAllInformation = !aiEmbeddingPipeline.WantsEmbedding(entry, GetGrayBytesIndex(entry, positionList[i]));
+								}
+							}
 							if (hasAllInformation) {
 								// Thumbnails are cached but audio fingerprint might still be needed
 								if (Settings.EnablePartialClipDetection &&
@@ -876,17 +1069,24 @@ namespace VDF.Core {
 						entry.PHashes ??= new Dictionary<double, ulong?>();
 
 
-						if (entry.IsImage && entry.grayBytes.Count == 0) {
-							if (!GetGrayBytesFromImage(entry, Settings.UseExifCreationDate, Settings.ExtendedFFToolsLogging))
-								entry.invalid = true;
+						if (entry.IsImage) {
+							if (entry.grayBytes.Count == 0) {
+								if (!GetGrayBytesFromImage(entry, Settings.UseExifCreationDate, Settings.ExtendedFFToolsLogging, aiEmbeddingPipeline))
+									entry.invalid = true;
+							}
+							else {
+								// Gray bytes cached from an earlier scan — backfill just the embedding.
+								TryQueueImageEmbeddingFrame(entry, aiEmbeddingPipeline, Settings.ExtendedFFToolsLogging);
+							}
 						}
-						else if (!entry.IsImage) {
+						else {
 							string entryPath = entry.Path;
 							int totalSamples = positionList.Count;
 							string samplingLabel = T("Scan.Stage.SamplingFrames");
 							if (!FfmpegEngine.GetGrayBytesFromVideo(entry, positionList, Settings.MaxSamplingDurationSeconds,
 									Settings.ExtendedFFToolsLogging,
-									onSampleComplete: (done) => ReportStage(entryPath, samplingLabel, done, totalSamples)))
+									onSampleComplete: (done) => ReportStage(entryPath, samplingLabel, done, totalSamples),
+									embeddingSink: aiEmbeddingPipeline))
 								entry.invalid = true;
 						}
 
@@ -1020,6 +1220,21 @@ namespace VDF.Core {
 			return flipped;
 		}
 
+		// For the flip path this runs once per entry before its pair loop — never per
+		// pair, the DCT is far too expensive for the per-pair hot path. Null when any
+		// position cannot be hashed (legacy 16x16 data): pHash checks using the result
+		// are skipped for that entry.
+		internal static ulong[]? ComputePHashesFromGray(byte[]?[] grayBytes) {
+			var phashes = new ulong[grayBytes.Length];
+			for (int j = 0; j < grayBytes.Length; j++) {
+				byte[]? gray = grayBytes[j];
+				if (gray == null || gray.Length != GrayBytesUtils.Side * GrayBytesUtils.Side)
+					return null;
+				phashes[j] = pHash.PerceptualHash.ComputePHashFromGray32x32(gray);
+			}
+			return phashes;
+		}
+
 		/// <summary>Returns true if the last <paramref name="depth"/> path segments of both folder paths are equal (case-insensitive).</summary>
 	static bool SameFolderAtDepth(ReadOnlySpan<char> a, ReadOnlySpan<char> b, int depth) {
 		for (int i = 0; i < depth; i++) {
@@ -1059,42 +1274,143 @@ namespace VDF.Core {
 	/// <summary>
 		/// Builds the transient compare snapshot for <paramref name="entry"/>: gray-byte
 		/// arrays aligned with <see cref="positionList"/> order and, when pHashing is
-		/// enabled, the first-position pHash (computed once and cached back into
-		/// <see cref="FileEntry.PHashes"/> if it was missing). Returns false when the
-		/// stored data is incomplete for the current scan settings — those entries are
-		/// excluded from the comparison instead of failing on every pair.
+		/// enabled, the pHash of every sampled position (computed once and cached back
+		/// into <see cref="FileEntry.PHashes"/> where missing — this prefill is what
+		/// keeps the parallel per-pair hot path free of dictionary writes). Returns
+		/// false when the stored data is incomplete for the current scan settings —
+		/// those entries are excluded from the comparison instead of failing on every
+		/// pair.
 		/// </summary>
-		bool TryBuildCompareSnapshot(FileEntry entry, bool usePHashing) {
+		internal bool TryBuildCompareSnapshot(FileEntry entry, bool usePHashing) {
 			if (entry.IsImage) {
 				if (!entry.grayBytes.TryGetValue(0, out byte[]? imageGray) || imageGray == null)
 					return false;
 				entry.compareGray = new[] { imageGray };
+				if (Settings.UseAiMatching)
+					BuildAiCompareSnapshot(entry, new[] { (double)0 }, entry.compareGray);
 				return true;
 			}
 
 			var gray = new byte[]?[positionList.Count];
+			var positionKeys = Settings.UseAiMatching ? new double[positionList.Count] : null;
 			for (int j = 0; j < positionList.Count; j++) {
 				double idx = GetGrayBytesIndex(entry, positionList[j]);
+				if (positionKeys != null)
+					positionKeys[j] = idx;
 				if (!entry.grayBytes.TryGetValue(idx, out byte[]? data) || data == null)
 					return false;
 				gray[j] = data;
 			}
-			entry.compareGray = gray;
 
 			if (usePHashing) {
-				double idx0 = GetGrayBytesIndex(entry, positionList[0]);
-				if (!entry.PHashes.TryGetValue(idx0, out ulong? phash)) {
-					phash = pHash.PerceptualHash.ComputePHashFromGray32x32(gray[0]);
-					entry.PHashes[idx0] = phash; // cache for future quick rescans
+				var phashes = new ulong[positionList.Count];
+				for (int j = 0; j < positionList.Count; j++) {
+					double idx = GetGrayBytesIndex(entry, positionList[j]);
+					if (entry.PHashes.TryGetValue(idx, out ulong? cached) && cached.HasValue) {
+						phashes[j] = cached.Value;
+						continue;
+					}
+					if (gray[j]!.Length != GrayBytesUtils.Side * GrayBytesUtils.Side) {
+						// Legacy 16x16 data slipped past the DbVersion gate (mixed database).
+						// Return before assigning compareGray so a dropped entry leaves no
+						// dangling snapshot behind (the end-of-phase cleanup only visits the
+						// validated ScanList).
+						LogMissingPHash(entry.Path);
+						return false;
+					}
+					phashes[j] = pHash.PerceptualHash.ComputePHashFromGray32x32(gray[j]);
+					entry.PHashes[idx] = phashes[j]; // cache for future quick rescans; also heals stored nulls
 				}
-				if (phash == null)
-					LogMissingPHash(entry.Path);
-				entry.comparePHash = phash;
+				entry.comparePHashes = phashes;
 			}
+			// AI snapshot last, after every validation that can still drop the entry —
+			// a dropped entry must leave no dangling snapshot behind (the end-of-phase
+			// cleanup only visits the validated ScanList). Missing embeddings never drop
+			// an entry — the classic modes still work and the AI pass abstains for null slots.
+			if (positionKeys != null)
+				BuildAiCompareSnapshot(entry, positionKeys, gray);
+			entry.compareGray = gray;
 			return true;
 		}
 
-		bool CheckIfDuplicate(FileEntry entry, byte[]?[]? overrideGray, ulong? overridePHash, FileEntry compItem, out float difference) {
+		/// <summary>
+		/// AI-pass snapshot: the entry's quantized embeddings aligned with the compare
+		/// order, plus the black-frame guard — an embedding only participates when its
+		/// gray frame has enough non-dark pixels (dark frames embed near-identically
+		/// regardless of content, which would turn the union pass into a false-positive
+		/// generator on fade-outs and night scenes).
+		/// </summary>
+		void BuildAiCompareSnapshot(FileEntry entry, double[] positionKeys, byte[]?[] gray) {
+			AI.UnionEmbeddingStore? store = unionEmbeddingStore;
+			var embeddings = new byte[]?[positionKeys.Length];
+			var valid = new bool[positionKeys.Length];
+			for (int j = 0; j < positionKeys.Length; j++) {
+				embeddings[j] = store?.GetEmbedding(entry, positionKeys[j]);
+				valid[j] = gray[j] != null && GrayBytesUtils.VerifyGrayScaleValues(gray[j]!);
+			}
+			entry.compareEmbeddings = embeddings;
+			entry.compareEmbeddingValid = valid;
+		}
+
+		/// <summary>
+		/// Mean embedding similarity over the positions where both entries have a valid
+		/// (non-dark, successfully embedded) vector; -1 when fewer than half of the
+		/// compared positions qualify — the AI pass then abstains for this pair rather
+		/// than letting one coincidental bright frame decide a mostly-dark file.
+		/// </summary>
+		internal static float ComputeAiSimilarity(FileEntry entry, FileEntry compItem) {
+			byte[]?[]? ea = entry.compareEmbeddings;
+			byte[]?[]? eb = compItem.compareEmbeddings;
+			if (ea == null || eb == null)
+				return -1f;
+			bool[]? va = entry.compareEmbeddingValid;
+			bool[]? vb = compItem.compareEmbeddingValid;
+			int n = Math.Min(ea.Length, eb.Length);
+			float sum = 0f;
+			int count = 0;
+			for (int j = 0; j < n; j++) {
+				byte[]? x = ea[j];
+				byte[]? y = eb[j];
+				if (x == null || y == null)
+					continue;
+				if (va != null && j < va.Length && !va[j])
+					continue;
+				if (vb != null && j < vb.Length && !vb[j])
+					continue;
+				sum += AI.EmbeddingMath.CosineSimilarity(x, y);
+				count++;
+			}
+			int requiredPositions = Math.Max(1, (n + 1) / 2);
+			return count < requiredPositions ? -1f : sum / count;
+		}
+
+		internal bool CheckIfDuplicate(FileEntry entry, byte[]?[]? overrideGray, ulong[]? overridePHashes, FileEntry compItem, out float difference) =>
+			CheckIfDuplicate(entry, overrideGray, overridePHashes, compItem, out difference, out _);
+
+		/// <summary>
+		/// The pair verdict: the classic gray-bytes/pHash check, unioned with the AI
+		/// embedding pass when <see cref="Settings.UseAiMatching"/> is on — a pair the
+		/// classic mode rejects still counts as a duplicate when the mean embedding
+		/// similarity reaches <see cref="Settings.AiPercent"/> (<paramref name="aiMatched"/>
+		/// reports that case so callers can flag it). The AI pass only runs on the
+		/// normal orientation: embeddings are measured flip-robust, so re-running it
+		/// for the flipped comparison would only duplicate work.
+		/// </summary>
+		internal bool CheckIfDuplicate(FileEntry entry, byte[]?[]? overrideGray, ulong[]? overridePHashes, FileEntry compItem, out float difference, out bool aiMatched) {
+			aiMatched = false;
+			if (CheckIfDuplicateClassic(entry, overrideGray, overridePHashes, compItem, out difference))
+				return true;
+			if (overrideGray != null || !Settings.UseAiMatching)
+				return false;
+			float aiSimilarity = ComputeAiSimilarity(entry, compItem);
+			if (aiSimilarity < Settings.AiPercent / 100f)
+				return false;
+			difference = 1f - aiSimilarity;
+			aiMatched = true;
+			return true;
+		}
+
+		bool CheckIfDuplicateClassic(FileEntry entry, byte[]?[]? overrideGray, ulong[]? overridePHashes, FileEntry compItem, out float difference) {
 			byte[]?[] grayBytes = overrideGray ?? entry.compareGray!;
 			float differenceLimit = 1.0f - Settings.Percent / 100f;
 			bool ignoreBlackPixels = Settings.IgnoreBlackPixels;
@@ -1111,18 +1427,49 @@ namespace VDF.Core {
 			if (Settings.UsePHashing) {
 				float differenceLimitpHash = Settings.Percent / 100f;
 
-				// Entries with unrecoverable pHash data were logged once during
-				// snapshot building; they simply never match in pHash mode.
-				ulong? phash = overrideGray != null ? overridePHash : entry.comparePHash;
-				ulong? phash_comp = compItem.comparePHash;
-				if (phash == null || phash_comp == null) {
-					difference = 1f;
+				// Entries with unrecoverable pHash data were dropped during snapshot
+				// building; a null array only occurs on the flip path when the flipped
+				// hashes could not be computed.
+				ulong[]? phashes = overrideGray != null ? overridePHashes : entry.comparePHashes;
+				ulong[]? phashesComp = compItem.comparePHashes;
+				if (phashes == null || phashesComp == null)
 					return false;
-				}
-				bool isDup = pHash.PHashCompare.IsDuplicateByPercent(phash.Value, phash_comp.Value, out float similarity, differenceLimitpHash, strict: true);
-				difference = 1f - similarity;
-				return isDup;
 
+				// A pair is a duplicate when at least PHashRequiredMatchingSampleRatio
+				// of the sampled positions individually pass the similarity threshold.
+				// Comparing only one position made a single coincidental frame (black
+				// intro, title card) enough to report two unrelated videos as
+				// duplicates — and a single divergent frame enough to miss real ones.
+				int sampleCount = Math.Min(phashes.Length, phashesComp.Length);
+				if (sampleCount == 0)
+					return false;
+				// requiredMatches is the same for every pair in a scan; the compare phase
+				// precomputes it (matchingRequiredSampleMatches). Direct/diagnostic callers
+				// leave it null and compute locally.
+				int requiredMatches = matchingRequiredSampleMatches is int precomputed && sampleCount == positionList.Count
+					? precomputed
+					: Math.Max(1, (int)Math.Ceiling(sampleCount * Math.Clamp(Settings.PHashRequiredMatchingSampleRatio, 0.01f, 1f)));
+				int matches = 0;
+				// Mean dissimilarity over ALL sampled positions, not just the matching ones:
+				// dividing both orientations by the same sampleCount keeps the normal and
+				// flipped `difference` values comparable for the flip-vs-normal selection in
+				// TryCheckDuplicate, and stops a fully divergent frame from being hidden
+				// behind the high average of the few frames that happened to pass.
+				float pHashDiffSum = 0f;
+
+				for (int j = 0; j < sampleCount; j++) {
+					bool pass = pHash.PHashCompare.IsDuplicateByPercent(phashes[j], phashesComp[j], out float similarity, differenceLimitpHash, strict: true);
+					pHashDiffSum += 1f - similarity;
+					if (pass)
+						matches++;
+					else if (matches + (sampleCount - j - 1) < requiredMatches)
+						return false; // quorum unreachable — skip the remaining samples
+				}
+				if (matches < requiredMatches)
+					return false;
+
+				difference = pHashDiffSum / sampleCount;
+				return !float.IsNaN(difference);
 			}
 
 			byte[]?[] compGray = compItem.compareGray!;
@@ -1169,6 +1516,12 @@ namespace VDF.Core {
 			bool usePHashing = Settings.UsePHashing;
 			int droppedSnapshots = 0;
 			{
+				if (Settings.UseAiMatching && unionEmbeddingStore == null) {
+					// Compare-only run (no scan phase loaded the sidecar in this process).
+					unionEmbeddingStore = AI.UnionEmbeddingStore.Load();
+					if (unionEmbeddingStore.Count == 0)
+						Logger.Instance.Info("AI matching: no cached embeddings found — the AI pass will abstain. Run a scan to compute them.");
+				}
 				List<FileEntry> validated = new(ScanList.Count);
 				foreach (FileEntry entry in ScanList) {
 					if (TryBuildCompareSnapshot(entry, usePHashing)) {
@@ -1180,11 +1533,20 @@ namespace VDF.Core {
 						droppedSnapshots++;
 				}
 				ScanList = validated;
+				// The snapshots now hold references to every embedding this compare needs;
+				// drop the store so the sidecar's memory is reclaimable after the phase.
+				unionEmbeddingStore = null;
 			}
 			if (droppedSnapshots > 0)
 				Logger.Instance.Warn($"Excluded {droppedSnapshots} file(s) with incomplete cached scan data (missing gray bytes for the current thumbnail positions). Rescan to repopulate.");
 
 			Logger.Instance.Info($"Scanning for duplicates in {ScanList.Count:N0} files");
+			// Precompute the pHash quorum threshold once for the whole phase (see field note).
+			matchingRequiredSampleMatches = usePHashing
+				? Math.Max(1, (int)Math.Ceiling(positionList.Count * Math.Clamp(Settings.PHashRequiredMatchingSampleRatio, 0.01f, 1f)))
+				: null;
+			int matchingParallelism = MatchingParallelDegree;
+			Logger.Instance.Info($"Matching concurrency: {matchingParallelism} worker(s) on {Environment.ProcessorCount} logical processor(s) (configured: matching={Settings.MatchingMaxDegreeOfParallelism}, media reads={Settings.MaxDegreeOfParallelism})");
 
 			currentStageLabel = T("Scan.Stage.ComparingDuplicates");
 			InitProgress(ScanList.Count);
@@ -1278,14 +1640,18 @@ namespace VDF.Core {
 				}
 			}
 
-			bool TryCheckDuplicate(FileEntry entry, FileEntry compItem, byte[]?[]? flippedGrayBytes, ulong? flippedPHash, out float difference, out DuplicateFlags flags) {
+			bool TryCheckDuplicate(FileEntry entry, FileEntry compItem, byte[]?[]? flippedGrayBytes, ulong[]? flippedPHashes, out float difference, out DuplicateFlags flags) {
 				flags = DuplicateFlags.None;
 				difference = 0;
-				bool isDuplicate = CheckIfDuplicate(entry, null, null, compItem, out difference);
+				bool isDuplicate = CheckIfDuplicate(entry, null, null, compItem, out difference, out bool aiMatched);
+				if (aiMatched)
+					flags |= DuplicateFlags.AiMatched;
 				if (Settings.CompareHorizontallyFlipped &&
-					CheckIfDuplicate(entry, flippedGrayBytes, flippedPHash, compItem, out float flippedDifference)) {
+					CheckIfDuplicate(entry, flippedGrayBytes, flippedPHashes, compItem, out float flippedDifference)) {
 					if (!isDuplicate || flippedDifference < difference) {
-						flags |= DuplicateFlags.Flipped;
+						// The flipped pass is classic-only, so a better flipped match
+						// supersedes an AI-only verdict (and its flag) with a classic one.
+						flags = (flags & ~DuplicateFlags.AiMatched) | DuplicateFlags.Flipped;
 						isDuplicate = true;
 						difference = flippedDifference;
 					}
@@ -1305,14 +1671,14 @@ namespace VDF.Core {
 				bool isDuplicate;
 				DuplicateFlags flags;
 				byte[]?[]? flippedGrayBytes = null;
-				ulong? flippedPHash = null;
+				ulong[]? flippedPHashes = null;
 				double entryDurationSeconds = entry.mediaInfo!.Duration.TotalSeconds;
 				double entryToleranceSeconds = GetDurationToleranceSeconds(entryDurationSeconds);
 
 				if (Settings.CompareHorizontallyFlipped) {
 					flippedGrayBytes = CreateFlippedGrayBytes(entry);
 					if (usePHashing)
-						flippedPHash = pHash.PerceptualHash.ComputePHashFromGray32x32(flippedGrayBytes[0]!);
+						flippedPHashes = ComputePHashesFromGray(flippedGrayBytes);
 				}
 
 				foreach (int bucketKey in candidateBucketKeys) {
@@ -1339,7 +1705,7 @@ namespace VDF.Core {
 							SameFolderAtDepth(entry.Folder, compItem.Folder, Settings.SameFolderDepth))
 							continue;
 
-						isDuplicate = TryCheckDuplicate(entry, compItem, flippedGrayBytes, flippedPHash, out difference, out flags);
+						isDuplicate = TryCheckDuplicate(entry, compItem, flippedGrayBytes, flippedPHashes, out difference, out flags);
 
 						if (isDuplicate &&
 							entry.FileSize == compItem.FileSize &&
@@ -1391,7 +1757,7 @@ namespace VDF.Core {
 
 				try {
 					if (imageEntries.Count >= largeBucketThreshold) {
-						Parallel.For(0, imageEntries.Count, new ParallelOptions { CancellationToken = cancelationTokenSource.Token, MaxDegreeOfParallelism = Settings.MaxDegreeOfParallelism }, compareAction);
+						Parallel.For(0, imageEntries.Count, new ParallelOptions { CancellationToken = cancelationTokenSource.Token, MaxDegreeOfParallelism = matchingParallelism }, compareAction);
 					}
 					else {
 						for (int i = 0; i < imageEntries.Count; i++)
@@ -1411,14 +1777,14 @@ namespace VDF.Core {
 					float difference = 0;
 					DuplicateFlags flags;
 					byte[]?[]? flippedGrayBytes = null;
-					ulong? flippedPHash = null;
+					ulong[]? flippedPHashes = null;
 					double entryDurationSeconds = entry.mediaInfo!.Duration.TotalSeconds;
 					double entryToleranceSeconds = GetDurationToleranceSeconds(entryDurationSeconds);
 
 					if (Settings.CompareHorizontallyFlipped) {
 						flippedGrayBytes = CreateFlippedGrayBytes(entry);
 						if (usePHashing)
-							flippedPHash = pHash.PerceptualHash.ComputePHashFromGray32x32(flippedGrayBytes[0]!);
+							flippedPHashes = ComputePHashesFromGray(flippedGrayBytes);
 					}
 
 					for (int n = i + 1; n < videoEntries.Count; n++) {
@@ -1437,7 +1803,7 @@ namespace VDF.Core {
 							SameFolderAtDepth(entry.Folder, compItem.Folder, Settings.SameFolderDepth))
 							continue;
 
-						bool isDuplicate = TryCheckDuplicate(entry, compItem, flippedGrayBytes, flippedPHash, out difference, out flags);
+						bool isDuplicate = TryCheckDuplicate(entry, compItem, flippedGrayBytes, flippedPHashes, out difference, out flags);
 						if (isDuplicate &&
 							entry.FileSize == compItem.FileSize &&
 							entry.mediaInfo!.Duration == compItem.mediaInfo!.Duration &&
@@ -1455,7 +1821,7 @@ namespace VDF.Core {
 
 				try {
 					if (videoEntries.Count >= largeBucketThreshold) {
-						Parallel.For(0, videoEntries.Count, new ParallelOptions { CancellationToken = cancelationTokenSource.Token, MaxDegreeOfParallelism = Settings.MaxDegreeOfParallelism }, compareAction);
+						Parallel.For(0, videoEntries.Count, new ParallelOptions { CancellationToken = cancelationTokenSource.Token, MaxDegreeOfParallelism = matchingParallelism }, compareAction);
 					}
 					else {
 						// compareAction returns early on cancellation instead of throwing,
@@ -1479,7 +1845,7 @@ namespace VDF.Core {
 					var smallBuckets = videoBuckets.Where(kvp => kvp.Value.Count < largeBucketThreshold).ToList();
 					var largeBuckets = videoBuckets.Where(kvp => kvp.Value.Count >= largeBucketThreshold).ToList();
 
-					Parallel.ForEach(smallBuckets, new ParallelOptions { CancellationToken = cancelationTokenSource.Token, MaxDegreeOfParallelism = Settings.MaxDegreeOfParallelism }, bucket => {
+					Parallel.ForEach(smallBuckets, new ParallelOptions { CancellationToken = cancelationTokenSource.Token, MaxDegreeOfParallelism = matchingParallelism }, bucket => {
 						foreach (var entry in bucket.Value) {
 							int entryIndex = entry.compareIndex;
 							double durationSeconds = entry.mediaInfo!.Duration.TotalSeconds;
@@ -1493,7 +1859,7 @@ namespace VDF.Core {
 					});
 
 					foreach (var bucket in largeBuckets) {
-						Parallel.For(0, bucket.Value.Count, new ParallelOptions { CancellationToken = cancelationTokenSource.Token, MaxDegreeOfParallelism = Settings.MaxDegreeOfParallelism }, i => {
+						Parallel.For(0, bucket.Value.Count, new ParallelOptions { CancellationToken = cancelationTokenSource.Token, MaxDegreeOfParallelism = matchingParallelism }, i => {
 							var entry = bucket.Value[i];
 							int entryIndex = entry.compareIndex;
 							double durationSeconds = entry.mediaInfo!.Duration.TotalSeconds;
@@ -1519,8 +1885,11 @@ namespace VDF.Core {
 			// owned by entry.grayBytes, only the alignment wrappers are dropped.
 			foreach (FileEntry entry in ScanList) {
 				entry.compareGray = null;
-				entry.comparePHash = null;
+				entry.comparePHashes = null;
+				entry.compareEmbeddings = null;
+				entry.compareEmbeddingValid = null;
 			}
+			matchingRequiredSampleMatches = null;
 		}
 
 
@@ -1529,18 +1898,14 @@ namespace VDF.Core {
 		/// using audio fingerprint sliding-window matching.  Results are added to Duplicates.
 		/// The comparison loop runs in parallel; grouping is applied sequentially afterward.
 		/// </summary>
-		void ScanForPartialDuplicates() {
+		internal void ScanForPartialDuplicates() {
 			Logger.Instance.Info("Partial clip detection: building fingerprint index...");
-
-			// Build a quick lookup for paths already covered by visual duplicate groups.
-			var alreadyGrouped = new HashSet<string>(
-				Duplicates.Select(d => d.Path),
-				CoreUtils.IsWindows ? StringComparer.OrdinalIgnoreCase : StringComparer.Ordinal);
 
 			// Collect eligible videos: not an image, has a usable fingerprint, not already grouped.
 			// Exclude silent/all-zero fingerprints: they Hamming-match any other silent track
 			// at 100% and produce meaningless partial-clip groups. Older scan databases written
 			// before this check may still contain all-zero fingerprints, so filter at read time.
+			var alreadyGrouped = BuildAlreadyGroupedPathSet();
 			var videos = DatabaseUtils.Database
 				.Where(e => !e.invalid && !e.IsImage &&
 						!e.Flags.Has(EntryFlags.SilentAudioTrack) &&
@@ -1561,44 +1926,16 @@ namespace VDF.Core {
 			currentStageLabel = T("Scan.Stage.PartialCompare");
 			InitProgress(videos.Count - 1);
 
-			// --- Parallel phase: compute all matches without mutating shared state ---
-			var matches = new ConcurrentBag<(int sourceIdx, int clipIdx, float sim, int offsetSec)>();
-			int pairsChecked = 0;
-
-			Parallel.For(0, videos.Count - 1,
-				new ParallelOptions {
-					CancellationToken = cancelationTokenSource.Token,
-					MaxDegreeOfParallelism = ParallelDegree
+			(var matches, int pairsChecked) = CollectPartialMatchCandidates(videos,
+				pairPrefilter: (i, j) => {
+					if ((videos[j].mediaInfo?.Duration ?? TimeSpan.Zero).TotalSeconds < 1.0)
+						return false;
+					// Fingerprint block sanity (each block ≈ 1 second)
+					return videos[j].AudioFingerprint!.Length < videos[i].AudioFingerprint!.Length;
 				},
-				i => {
-					FileEntry source = videos[i];
-					IncrementProgress(Path.GetFileName(source.Path));
-					double sourceSec = (source.mediaInfo?.Duration ?? TimeSpan.Zero).TotalSeconds;
-					if (sourceSec < 1.0) return;
-
-					for (int j = i + 1; j < videos.Count; j++) {
-						if (cancelationTokenSource.IsCancellationRequested) break;
-						FileEntry clip = videos[j];
-						double clipSec = (clip.mediaInfo?.Duration ?? TimeSpan.Zero).TotalSeconds;
-						if (clipSec < 1.0) continue;
-
-						// Pre-filter 1: clip must be at least PartialClipMinRatio of source
-						if (clipSec / sourceSec < Settings.PartialClipMinRatio) continue;
-
-						// Pre-filter 2: clip must be shorter than 95% of source (visual dup handles the rest)
-						if (clipSec / sourceSec >= 0.95) continue;
-
-						// Fingerprint block sanity (each block ≈ 1 second)
-						uint[] fpSource = source.AudioFingerprint!;
-						uint[] fpClip = clip.AudioFingerprint!;
-						if (fpClip.Length >= fpSource.Length) continue;
-
-						Interlocked.Increment(ref pairsChecked);
-						var (sim, offsetSec) = SlidingWindowCompare(fpClip, fpSource, simThreshold);
-
-						if (sim >= simThreshold)
-							matches.Add((i, j, sim, offsetSec));
-					}
+				tryMatchPair: (i, j) => {
+					var (sim, offsetSec) = SlidingWindowCompare(videos[j].AudioFingerprint!, videos[i].AudioFingerprint!, simThreshold);
+					return sim >= simThreshold ? (sim, offsetSec) : null;
 				});
 
 			// --- Sequential phase: build groups from matches (preserving longest-source-first order) ---
@@ -1610,49 +1947,149 @@ namespace VDF.Core {
 			// Optional visual gate: drop pairs that match audio but differ visually at the
 			// matched offset (e.g. videos sharing a backing track but otherwise unrelated).
 			// Uses pHash when Settings.UsePHashing is on, else 32x32 grayscale percentage diff.
-			if (Settings.PartialClipRequireVisualMatch && assignments.Count > 0) {
-				int beforeCount = assignments.Count;
-				int dropped = 0;
-				var verified = new ConcurrentBag<(int, int, float, int, Guid)>();
-				try {
-					Parallel.ForEach(assignments, new ParallelOptions {
-						CancellationToken = cancelationTokenSource.Token,
-						MaxDegreeOfParallelism = ParallelDegree
-					}, a => {
-						bool pass = VerifyPartialClipVisually(videos[a.sourceIdx], videos[a.clipIdx], a.offsetSec, out float visualSim);
-						if (pass) {
-							verified.Add(a);
-						}
-						else {
-							Interlocked.Increment(ref dropped);
-							if (Settings.ExtendedFFToolsLogging)
-								Logger.Instance.Info($"[Partial] Visual gate dropped {System.IO.Path.GetFileName(videos[a.clipIdx].Path)} in {System.IO.Path.GetFileName(videos[a.sourceIdx].Path)}: visualSim={visualSim:P1} (threshold {Settings.PartialClipVisualThreshold:P0})");
-						}
+			if (Settings.PartialClipRequireVisualMatch && assignments.Count > 0)
+				assignments = RunPartialClipVisualGate(videos, assignments,
+					(source, clip, offsetSec) => {
+						bool pass = VerifyPartialClipVisually(source, clip, offsetSec, out float visualSim);
+						return (pass, visualSim);
 					});
-				}
-				catch (OperationCanceledException) { }
-				assignments = verified.OrderBy(a => a.Item1).ThenBy(a => a.Item2).ToList();
-				Logger.Instance.Info($"Partial clip detection: visual gate kept {assignments.Count}/{beforeCount} assignment(s), dropped {dropped}");
+
+			EmitPartialClipAssignments(videos, assignments, DuplicateFlags.PartialClip,
+				(source, clip, sim, offsetSec) => Logger.Instance.Info(
+					$"[Partial] {Path.GetFileName(clip.Path)} in {Path.GetFileName(source.Path)}: sim={sim:P1} @ {offsetSec}s (threshold {Settings.PartialClipSimilarityThreshold:P0}, fp {clip.AudioFingerprint!.Length}/{source.AudioFingerprint!.Length} blocks)"));
+
+			Logger.Instance.Info($"Partial clip detection: checked {pairsChecked} pair(s), found {matches.Count} candidate match(es), formed {assignments.Count} clip-source assignment(s).");
+		}
+
+		/// <summary>Paths already covered by earlier passes' duplicate groups.</summary>
+		HashSet<string> BuildAlreadyGroupedPathSet() =>
+			new(Duplicates.Select(d => d.Path),
+				CoreUtils.IsWindows ? StringComparer.OrdinalIgnoreCase : StringComparer.Ordinal);
+
+		/// <summary>
+		/// The candidate pair loop both partial passes (audio fingerprint and visual/AI)
+		/// share: an upper-triangular parallel sweep over duration-descending videos with
+		/// the common duration prefilters — the clip must be shorter than 95% of the
+		/// source (near-full-length pairs belong to the visual duplicate scan) and at
+		/// least <see cref="Settings.PartialClipMinRatio"/> of it. The list is sorted by
+		/// duration descending, so the ratio only shrinks as j grows: once below the
+		/// minimum nothing further in the row can qualify.
+		/// Progress counts a source as done only once its whole row of pairs has been
+		/// checked (counting at the loop head reported work that had not happened yet).
+		/// <paramref name="pairPrefilter"/> runs before a pair counts as checked;
+		/// <paramref name="tryMatchPair"/> returns similarity+offset for a match, null otherwise.
+		/// </summary>
+		(ConcurrentBag<(int sourceIdx, int clipIdx, float sim, int offsetSec)> Matches, int PairsChecked)
+			CollectPartialMatchCandidates(
+				List<FileEntry> videos,
+				Func<int, int, bool>? pairPrefilter,
+				Func<int, int, (float sim, int offsetSec)?> tryMatchPair) {
+			var matches = new ConcurrentBag<(int sourceIdx, int clipIdx, float sim, int offsetSec)>();
+			int pairsChecked = 0;
+			try {
+				Parallel.For(0, videos.Count - 1,
+					new ParallelOptions {
+						CancellationToken = cancelationTokenSource.Token,
+						MaxDegreeOfParallelism = MatchingParallelDegree
+					},
+					i => {
+						if (!pauseTokenSource.TryWaitWhilePaused(cancelationTokenSource.Token))
+							return; // canceled while paused — the loop's token ends the remaining iterations
+
+						double sourceSec = (videos[i].mediaInfo?.Duration ?? TimeSpan.Zero).TotalSeconds;
+						if (sourceSec >= 1.0) {
+							for (int j = i + 1; j < videos.Count; j++) {
+								if (cancelationTokenSource.IsCancellationRequested) break;
+								double clipSec = (videos[j].mediaInfo?.Duration ?? TimeSpan.Zero).TotalSeconds;
+								double ratio = clipSec / sourceSec;
+								if (ratio >= 0.95) continue;
+								if (ratio < Settings.PartialClipMinRatio) break;
+								if (pairPrefilter != null && !pairPrefilter(i, j)) continue;
+								Interlocked.Increment(ref pairsChecked);
+								if (tryMatchPair(i, j) is { } match)
+									matches.Add((i, j, match.sim, match.offsetSec));
+							}
+						}
+						IncrementProgress(Path.GetFileName(videos[i].Path));
+					});
 			}
+			catch (OperationCanceledException) { }
+			return (matches, pairsChecked);
+		}
 
+		/// <summary>
+		/// Adds the verified clip→source assignments to <see cref="Duplicates"/>: one
+		/// shared group per source (added once, difference 0) plus each clip flagged
+		/// with <paramref name="clipFlags"/> and its matched offset.
+		/// </summary>
+		void EmitPartialClipAssignments(
+			List<FileEntry> videos,
+			List<(int sourceIdx, int clipIdx, float sim, int offsetSec, Guid groupId)> assignments,
+			DuplicateFlags clipFlags,
+			Action<FileEntry, FileEntry, float, int> logMatch) {
 			var addedSources = new HashSet<int>();
-
 			foreach (var (si, ci, sim, offsetSec, groupId) in assignments) {
 				FileEntry source = videos[si];
 				FileEntry clip = videos[ci];
 
 				if (Settings.ExtendedFFToolsLogging)
-					Logger.Instance.Info($"[Partial] {System.IO.Path.GetFileName(clip.Path)} in {System.IO.Path.GetFileName(source.Path)}: sim={sim:P1} @ {offsetSec}s (threshold {Settings.PartialClipSimilarityThreshold:P0}, fp {clip.AudioFingerprint!.Length}/{source.AudioFingerprint!.Length} blocks)");
+					logMatch(source, clip, sim, offsetSec);
 
 				if (addedSources.Add(si))
 					Duplicates.Add(new DuplicateItem(source, 0f, groupId, DuplicateFlags.None));
 
-				Duplicates.Add(new DuplicateItem(clip, 1f - sim, groupId, DuplicateFlags.PartialClip) {
+				Duplicates.Add(new DuplicateItem(clip, 1f - sim, groupId, clipFlags) {
 					PartialClipOffset = TimeSpan.FromSeconds(offsetSec)
 				});
 			}
+		}
 
-			Logger.Instance.Info($"Partial clip detection: checked {pairsChecked} pair(s), found {matches.Count} candidate match(es), formed {assignments.Count} clip-source assignment(s).");
+		/// <summary>
+		/// Runs <paramref name="verify"/> over every candidate assignment and returns the ones that
+		/// pass, ordered deterministically. Its own progress phase: the gate decodes frames off disk
+		/// and can outlast the audio pass that produced the assignments, so leaving it silent left
+		/// the UI showing that pass's completed counters for minutes on end (#831).
+		/// <paramref name="verify"/> is injected so tests can drive the phase without FFmpeg.
+		/// </summary>
+		internal List<(int sourceIdx, int clipIdx, float sim, int offsetSec, Guid groupId)> RunPartialClipVisualGate(
+			List<FileEntry> videos,
+			List<(int sourceIdx, int clipIdx, float sim, int offsetSec, Guid groupId)> assignments,
+			Func<FileEntry, FileEntry, int, (bool pass, float visualSim)> verify) {
+
+			currentStageLabel = T("Scan.Stage.PartialVisualVerify");
+			InitProgress(assignments.Count);
+
+			int beforeCount = assignments.Count;
+			int dropped = 0;
+			var verified = new ConcurrentBag<(int, int, float, int, Guid)>();
+			try {
+				// Storage-tuned degree, NOT MatchingParallelDegree: unlike the audio
+				// fingerprint pass above (pure CPU over in-memory fingerprints), the visual
+				// gate decodes frames live off disk via GetGrayFrames, so it must respect the
+				// media-read cap that HDD users lower to avoid seek-thrash.
+				Parallel.ForEach(assignments, new ParallelOptions {
+					CancellationToken = cancelationTokenSource.Token,
+					MaxDegreeOfParallelism = ParallelDegree
+				}, a => {
+					if (!pauseTokenSource.TryWaitWhilePaused(cancelationTokenSource.Token))
+						return; // canceled while paused — the loop's token ends the remaining iterations
+
+					var (pass, visualSim) = verify(videos[a.sourceIdx], videos[a.clipIdx], a.offsetSec);
+					if (pass) {
+						verified.Add(a);
+					}
+					else {
+						Interlocked.Increment(ref dropped);
+						if (Settings.ExtendedFFToolsLogging)
+							Logger.Instance.Info($"[Partial] Visual gate dropped {System.IO.Path.GetFileName(videos[a.clipIdx].Path)} in {System.IO.Path.GetFileName(videos[a.sourceIdx].Path)}: visualSim={visualSim:P1} (threshold {Settings.PartialClipVisualThreshold:P0})");
+					}
+					IncrementProgress(System.IO.Path.GetFileName(videos[a.clipIdx].Path));
+				});
+			}
+			catch (OperationCanceledException) { }
+			var kept = verified.OrderBy(a => a.Item1).ThenBy(a => a.Item2).ToList();
+			Logger.Instance.Info($"Partial clip detection: visual gate kept {kept.Count}/{beforeCount} assignment(s), dropped {dropped}");
+			return kept;
 		}
 
 		/// <summary>
@@ -2356,11 +2793,34 @@ namespace VDF.Core {
 			ThumbnailsRetrieved?.Invoke(this, new EventArgs());
 		}
 
-		static bool GetGrayBytesFromImage(FileEntry imageFile, bool useExifIfAvailable, bool extendedLogging) {
+		/// <summary>
+		/// Fetches the 224x224 RGB frame for an image and queues it for embedding when the
+		/// sink still needs it. Failures are non-fatal: the image just stays without an
+		/// embedding and the AI pass abstains for it.
+		/// </summary>
+		static void TryQueueImageEmbeddingFrame(FileEntry imageFile, AI.IEmbeddingFrameSink? embeddingSink, bool extendedLogging) {
+			if (embeddingSink?.WantsEmbedding(imageFile, 0) != true)
+				return;
+			byte[]? rgb = FfmpegEngine.GetThumbnail(new FfmpegSettings {
+				File = imageFile.Path,
+				Position = TimeSpan.Zero,
+				Rgb224 = true,
+				SoftwareDecodeOnly = true,
+			}, extendedLogging);
+			if (rgb != null)
+				embeddingSink.SubmitFrame(imageFile, 0, rgb);
+		}
+
+		static bool GetGrayBytesFromImage(FileEntry imageFile, bool useExifIfAvailable, bool extendedLogging, AI.IEmbeddingFrameSink? embeddingSink = null) {
 			try {
 				// Decode through FFmpeg — the same pipeline videos use — so image and video
 				// gray bytes share identical grayscale conversion and scaling.
 				byte[]? grayBytes;
+				// RGB frame from the combined CLI fallback; submitted only after the
+				// dark check below, so failed/too-dark images stay without an embedding
+				// exactly like on the two-call path.
+				byte[]? pendingRgb = null;
+				bool rgbFromCombinedCall = false;
 				int width, height;
 				if (!FfmpegEngine.TryGetImageInfoAndGrayBytes(imageFile.Path, out grayBytes, out width, out height, extendedLogging)) {
 					// CLI fallback. Read dimensions straight from the file header first: some
@@ -2373,12 +2833,20 @@ namespace VDF.Core {
 						width = stream?.Width ?? 0;
 						height = stream?.Height ?? 0;
 					}
-					grayBytes = FfmpegEngine.GetThumbnail(new FfmpegSettings {
-						File = imageFile.Path,
-						Position = TimeSpan.Zero,
-						GrayScale = 1,
-						SoftwareDecodeOnly = true,
-					}, extendedLogging);
+					if (embeddingSink?.WantsEmbedding(imageFile, 0) == true &&
+						string.IsNullOrWhiteSpace(FfmpegEngine.CustomFFArguments)) {
+						// Embedding wanted too: fetch gray + RGB in one decode instead of two.
+						(grayBytes, pendingRgb) = FfmpegEngine.GetGrayAndRgb224Cli(imageFile.Path, TimeSpan.Zero, softwareDecodeOnly: true, extendedLogging);
+						rgbFromCombinedCall = true;
+					}
+					else {
+						grayBytes = FfmpegEngine.GetThumbnail(new FfmpegSettings {
+							File = imageFile.Path,
+							Position = TimeSpan.Zero,
+							GrayScale = 1,
+							SoftwareDecodeOnly = true,
+						}, extendedLogging);
+					}
 				}
 
 				if (grayBytes == null) {
@@ -2416,6 +2884,16 @@ namespace VDF.Core {
 				}
 
 				imageFile.grayBytes.Add(0, grayBytes);
+				if (rgbFromCombinedCall) {
+					// The RGB frame came out of the same decode; a null here means the RGB
+					// branch failed — non-fatal, the AI pass abstains (no second attempt:
+					// the native path already failed for this file and the CLI just ran).
+					if (pendingRgb != null && embeddingSink?.WantsEmbedding(imageFile, 0) == true)
+						embeddingSink.SubmitFrame(imageFile, 0, pendingRgb);
+				}
+				else {
+					TryQueueImageEmbeddingFrame(imageFile, embeddingSink, extendedLogging);
+				}
 				return true;
 			}
 			catch (Exception ex) {

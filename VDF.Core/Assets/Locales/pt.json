@@ -19,5 +19,9 @@
   "Scan.Stage.SamplingFrames": "amostrando quadros",
   "Scan.Stage.AudioFingerprint": "impressão digital de áudio",
   "Scan.Stage.ComparingDuplicates": "comparando duplicados",
-  "Scan.Stage.PartialCompare": "comparando clipes parciais"
+  "Scan.Stage.PartialCompare": "comparando clipes parciais",
+  "Scan.Stage.PartialVisualVerify": "verificando clipes parciais",
+  "Scan.Stage.AiEmbedding": "calculando embeddings de IA",
+  "Scan.Stage.AiDenseSampling": "IA parcial: amostrando quadros-chave",
+  "Scan.Stage.AiPartialCompare": "IA parcial: comparando clipes"
 }

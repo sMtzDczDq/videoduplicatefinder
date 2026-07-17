@@ -63,6 +63,12 @@ namespace VDF.Core {
 
 		public byte Threshhold = 5;
 		public float Percent = 96f;
+		/// <summary>
+		/// Minimum fraction (0..1) of sampled frame positions that must individually pass
+		/// the pHash similarity threshold for a pair to count as duplicates. Only used
+		/// when <see cref="UsePHashing"/> is on.
+		/// </summary>
+		public float PHashRequiredMatchingSampleRatio = 0.6f;
 		public double PercentDurationDifference = 20d;
 		public double DurationDifferenceMinSeconds;
 		public double DurationDifferenceMaxSeconds;
@@ -79,6 +85,13 @@ namespace VDF.Core {
 		/// <see cref="MaxDegreeOfParallelism"/> budget. 0 or negative = default of 2.
 		/// </summary>
 		public int HddMaxDegreeOfParallelism = 2;
+		/// <summary>
+		/// Worker cap for the CPU-bound duplicate-matching phases (visual compare,
+		/// partial-clip compare). Separate from <see cref="MaxDegreeOfParallelism"/>,
+		/// which governs media READS and is tuned to storage, not CPU. 0 or negative =
+		/// automatic: use most of the machine while reserving headroom for the UI.
+		/// </summary>
+		public int MatchingMaxDegreeOfParallelism;
 
 		Dictionary<string, string> driveTypeOverrides = new(StringComparer.OrdinalIgnoreCase);
 		/// <summary>
@@ -134,6 +147,34 @@ namespace VDF.Core {
 		/// 32×32 grayscale percentage difference.
 		/// </summary>
 		public double PartialClipVisualThreshold = 0.85;
+
+		// ── AI matching (neural embeddings) ─────────────────────────────────
+		/// <summary>
+		/// Additional matching pass using neural image embeddings (DINOv2 via ONNX
+		/// Runtime). A pair that fails the classic gray-bytes/pHash check is still
+		/// reported (flagged <see cref="DuplicateFlags.AiMatched"/>) when the mean
+		/// embedding similarity of its sampled positions reaches <see cref="AiPercent"/>.
+		/// Requires the AI components (ONNX Runtime + model) — see AI.AiComponents.
+		/// </summary>
+		public bool UseAiMatching;
+		/// <summary>Similarity threshold (percent = cosine·100) for the AI matching pass.</summary>
+		public float AiPercent = 94f;
+		/// <summary>
+		/// Detect partial/time-shifted duplicates visually: dense keyframe embeddings
+		/// matched by temporal offset consistency. Unlike <see cref="EnablePartialClipDetection"/>
+		/// this needs no audio track, so it also covers silent, muted and re-dubbed copies.
+		/// Requires the same AI components as <see cref="UseAiMatching"/>.
+		/// </summary>
+		public bool EnableAiPartialDetection;
+		/// <summary>Per-frame hit threshold (percent) for visual partial detection.</summary>
+		public float AiPartialHitPercent = 89f;
+		/// <summary>
+		/// True when any enabled feature requires the AI components (ONNX Runtime + model)
+		/// — the single gate every frontend and the engine check before scanning. New
+		/// AI-backed settings must be added here, not at the call sites.
+		/// </summary>
+		[System.Text.Json.Serialization.JsonIgnore]
+		public bool NeedsAiComponents => UseAiMatching || EnableAiPartialDetection;
 
 		// ── Database checkpoints ────────────────────────────────────────────
 		/// <summary>

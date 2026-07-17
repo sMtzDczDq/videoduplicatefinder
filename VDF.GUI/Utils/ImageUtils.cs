@@ -29,33 +29,53 @@ namespace VDF.GUI.Utils {
 		const long MaxCompositeBufferBytes = 256_000_000;
 
 		/// <summary>
-		/// Composes <paramref name="encodedImages"/> (JPEG/PNG bytes) into a horizontal-strip
-		/// thumbnail and returns a Bitmap for immediate UI use. If <paramref name="jpegOut"/> is
-		/// supplied, the strip JPEG is written there FIRST, before the UI bitmap is built — that
-		/// way a failure on the Avalonia side still produces a valid cache entry (issue #751).
-		/// Decoding uses Avalonia/Skia; the strip JPEG is encoded via FFmpeg.
+		/// Composes <paramref name="encodedImages"/> (JPEG/PNG bytes) into a composite
+		/// thumbnail and returns a Bitmap for immediate UI use. The frames are packed
+		/// into a grid purely for storage (texture-size limits); the results view slices
+		/// the cells back out and re-wraps them to the Preview column width at display
+		/// time (WrappedFilmstrip, #834/#847). <paramref name="gridColumns"/> is the
+		/// caller's column count (from ThumbnailGridLayout, persisted on the item) so
+		/// compose and display always agree on the cell geometry; each frame occupies
+		/// the cell of its list index, even when a neighbor fails to decode. Pass 0 to
+		/// let the layout be derived from the decoded frames.
+		/// If <paramref name="jpegOut"/> is supplied, the composite JPEG is written there
+		/// FIRST, before the UI bitmap is built — that way a failure on the Avalonia side
+		/// still produces a valid cache entry (issue #751).
+		/// Decoding uses Avalonia/Skia; the composite JPEG is encoded via FFmpeg.
 		/// </summary>
-		public static unsafe Bitmap? JoinImages(IReadOnlyList<byte[]> encodedImages, Stream? jpegOut = null) {
+		public static unsafe Bitmap? JoinImages(IReadOnlyList<byte[]> encodedImages, Stream? jpegOut = null, int gridColumns = 0) {
 			if (encodedImages == null || encodedImages.Count == 0) return null;
 
-			var parts = new List<WriteableBitmap>(encodedImages.Count);
+			var parts = new WriteableBitmap?[encodedImages.Count];
 			try {
-				int totalWidth = 0, maxHeight = 0;
-				foreach (var bytes in encodedImages) {
+				int cellWidth = 0, cellHeight = 0, decoded = 0;
+				for (int i = 0; i < encodedImages.Count; i++) {
+					var bytes = encodedImages[i];
 					if (bytes == null || bytes.Length == 0) continue;
 					using var ms = new MemoryStream(bytes);
 					var part = WriteableBitmap.Decode(ms);
-					parts.Add(part);
-					totalWidth += part.PixelSize.Width;
-					maxHeight = Math.Max(maxHeight, part.PixelSize.Height);
+					parts[i] = part;
+					decoded++;
+					cellWidth = Math.Max(cellWidth, part.PixelSize.Width);
+					cellHeight = Math.Max(cellHeight, part.PixelSize.Height);
 				}
-				if (parts.Count == 0 || totalWidth <= 0 || maxHeight <= 0) return null;
-				if ((long)totalWidth * maxHeight * 4 > MaxCompositeBufferBytes) return null;
+				if (decoded == 0 || cellWidth <= 0 || cellHeight <= 0) return null;
 
-				// Compose raw BGRA strip (rows shorter than maxHeight stay transparent).
-				byte[] strip = new byte[totalWidth * maxHeight * 4];
-				int xOffset = 0;
-				foreach (var part in parts) {
+				int frameCount = encodedImages.Count;
+				int columns = gridColumns >= 1
+					? Math.Min(gridColumns, frameCount)
+					: ThumbnailGridLayout.Columns(frameCount, (double)cellWidth / cellHeight);
+				int rows = ThumbnailGridLayout.Rows(frameCount, columns);
+				int gridWidth = columns * cellWidth, gridHeight = rows * cellHeight;
+				if ((long)gridWidth * gridHeight * 4 > MaxCompositeBufferBytes) return null;
+
+				// Compose raw BGRA grid (cells smaller than the grid cell stay transparent).
+				byte[] strip = new byte[(long)gridWidth * gridHeight * 4];
+				for (int i = 0; i < parts.Length; i++) {
+					var part = parts[i];
+					if (part == null) continue;
+					int xOffset = (i % columns) * cellWidth;
+					int yOffset = (i / columns) * cellHeight;
 					using var fb = part.Lock();
 					int w = fb.Size.Width, h = fb.Size.Height;
 					bool isRgba = fb.Format == PixelFormat.Rgba8888;
@@ -64,7 +84,7 @@ namespace VDF.GUI.Utils {
 					byte* src = (byte*)fb.Address;
 					for (int y = 0; y < h; y++) {
 						var srcRow = new ReadOnlySpan<byte>(src + (long)y * fb.RowBytes, w * 4);
-						var dstRow = strip.AsSpan(((y * totalWidth) + xOffset) * 4, w * 4);
+						var dstRow = strip.AsSpan((((yOffset + y) * gridWidth) + xOffset) * 4, w * 4);
 						if (!isRgba) {
 							srcRow.CopyTo(dstRow);
 						}
@@ -77,12 +97,11 @@ namespace VDF.GUI.Utils {
 							}
 						}
 					}
-					xOffset += part.PixelSize.Width;
 				}
 
-				// Encode the strip via FFmpeg. The cache write happens before the UI bitmap is
-				// decoded, preserving the cache-first guarantee.
-				byte[]? jpeg = FfmpegEngine.EncodeJpegFromBgra(strip, totalWidth, maxHeight, MaxDisplayableCompositeWidth);
+				// Encode the composite via FFmpeg. The cache write happens before the UI bitmap
+				// is decoded, preserving the cache-first guarantee.
+				byte[]? jpeg = FfmpegEngine.EncodeJpegFromBgra(strip, gridWidth, gridHeight, MaxDisplayableCompositeWidth);
 				if (jpeg != null) {
 					if (jpegOut != null) {
 						try {
@@ -97,17 +116,17 @@ namespace VDF.GUI.Utils {
 				}
 
 				// FFmpeg encode failed — still give the UI something (no cache entry written).
-				if (totalWidth > MaxDisplayableCompositeWidth) return null;
+				if (gridWidth > MaxDisplayableCompositeWidth) return null;
 				var fallback = new WriteableBitmap(
-					new PixelSize(totalWidth, maxHeight),
+					new PixelSize(gridWidth, gridHeight),
 					new Vector(96, 96),
 					PixelFormat.Bgra8888,
 					AlphaFormat.Unpremul);
 				using (var fb = fallback.Lock()) {
 					byte* dest = (byte*)fb.Address;
-					int rowBytes = totalWidth * 4;
+					int rowBytes = gridWidth * 4;
 					fixed (byte* src = strip) {
-						for (int y = 0; y < maxHeight; y++)
+						for (int y = 0; y < gridHeight; y++)
 							Buffer.MemoryCopy(src + (long)y * rowBytes, dest + (long)y * fb.RowBytes, rowBytes, rowBytes);
 					}
 				}
@@ -118,7 +137,7 @@ namespace VDF.GUI.Utils {
 			}
 			finally {
 				foreach (var part in parts)
-					part.Dispose();
+					part?.Dispose();
 			}
 		}
 		public static unsafe Bitmap? JoinImages(IReadOnlyList<Bitmap> images, Stream? jpegOut = null) {

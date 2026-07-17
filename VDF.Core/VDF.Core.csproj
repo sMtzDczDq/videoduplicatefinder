@@ -11,12 +11,17 @@
     <InternalsVisibleTo Include="VDF.Web" />
     <InternalsVisibleTo Include="VDF.Core.Tests" />
     <InternalsVisibleTo Include="VDF.CLI.Tests" />
+    <InternalsVisibleTo Include="VDF.Web.Tests" />
     <InternalsVisibleTo Include="VDF.IntegrationTests" />
     <InternalsVisibleTo Include="VDF.Benchmarks" />
   </ItemGroup>
   <ItemGroup>
     <PackageReference Include="FFmpeg.AutoGen" Version="8.1.0" />
     <PackageReference Include="MemoryPack" Version="1.21.4" />
+    <!-- Managed-only wrapper (pure P/Invoke, Native-AOT-safe). The native onnxruntime
+         library is NOT bundled: AI.AiComponents downloads the pinned version on demand
+         and routes the DllImport to it. Version must equal AiComponents.RuntimeVersion. -->
+    <PackageReference Include="Microsoft.ML.OnnxRuntime.Managed" Version="1.23.2" />
     <PackageReference Include="Mono.Posix.NETStandard" Version="5.20.1-preview" />
   </ItemGroup>
   <ItemGroup>

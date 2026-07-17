@@ -17,11 +17,8 @@
 using System.Linq;
 using System.Reactive;
 using System.Text.Json;
-using System.Text.RegularExpressions;
 using Avalonia.Platform.Storage;
 using Avalonia.Threading;
-using DynamicExpresso;
-using DynamicExpresso.Exceptions;
 using ReactiveUI;
 using VDF.Core;
 using VDF.Core.Utils;
@@ -64,20 +61,9 @@ namespace VDF.GUI.ViewModels {
 			bool skipIfAllMatches = false;
 			bool userAsked = false;
 
-			const string shortIdentifier = "item";
-
 			Func<DuplicateItem, bool> interpreter;
 			try {
-				// Use PrimitiveTypes only — avoids registering types like Convert, Activator, etc.
-				// that could be abused if a malicious expression is loaded from a crafted settings file.
-				// Assignments are disabled: "item.IsBestSize = true" (a typo for ==) would otherwise
-				// WRITE the property on every item and match everything; now it's a parse error.
-				interpreter = new Interpreter(InterpreterOptions.PrimitiveTypes | InterpreterOptions.SystemKeywords)
-					.EnableAssignment(AssignmentOperators.None)
-					.Reference(typeof(TimeSpan))
-					.Reference(typeof(Math))
-					.Reference(typeof(Regex))
-					.ParseAsDelegate<Func<DuplicateItem, bool>>(SettingsFile.Instance.LastCustomSelectExpression, shortIdentifier);
+				interpreter = Utils.SelectionExpression.Compile(SettingsFile.Instance.LastCustomSelectExpression);
 			}
 			catch (Exception ex) {
 				await MessageBoxService.Show($"Expression error: {ex.Message}");
@@ -392,7 +378,21 @@ namespace VDF.GUI.ViewModels {
 				await MessageBoxService.Show(App.Lang["Message.CopyFailed"]);
 		});
 
-		public ReactiveCommand<Unit, Unit> MoveCheckedItemsCommand => ReactiveCommand.CreateFromTask(async () => {
+		public ReactiveCommand<Unit, Unit> MoveCheckedItemsCommand => ReactiveCommand.CreateFromTask(
+			() => MoveItemsToPickedFolderAsync(() => Duplicates.Where(s => s.Checked).ToList()));
+
+		// Row context menu: moves the highlighted row(s), independent of the checkboxes.
+		// The file being relocated is typically the KEEPER - exactly the one you would
+		// never check, since checked means "marked for deletion" (#843).
+		public ReactiveCommand<Unit, Unit> MoveSelectedItemsCommand => ReactiveCommand.CreateFromTask(
+			() => MoveItemsToPickedFolderAsync(GetSelectedDuplicates));
+
+		/// <summary>
+		/// Folder picker, then moves <paramref name="itemsProvider"/>'s files there with
+		/// database path tracking (same "Set location" semantics as the checked-items
+		/// move; the rows keep pointing at the new paths).
+		/// </summary>
+		async Task MoveItemsToPickedFolderAsync(Func<List<DuplicateItemVM>> itemsProvider) {
 			var result = await Utils.PickerDialogUtils.OpenDialogPicker(
 				new FolderPickerOpenOptions() {
 					Title = App.Lang["Dialog.SelectFolder"]
@@ -400,7 +400,7 @@ namespace VDF.GUI.ViewModels {
 
 			if (result == null || result.Count == 0) return;
 
-			var selectedItems = Duplicates.Where(s => s.Checked).ToList();
+			var selectedItems = itemsProvider();
 			if (selectedItems.Count == 0) return;
 
 			IsBusy = true;
@@ -432,7 +432,7 @@ namespace VDF.GUI.ViewModels {
 				item.ItemInfo.Path = newPath;
 			if (errorCounter > 0)
 				await MessageBoxService.Show(App.Lang["Message.MoveFailed"]);
-		});
+		}
 
 		internal void RunCustomSelection(CustomSelectionData data) {
 			using var undoBatch = BeginSelectionUndoBatch();

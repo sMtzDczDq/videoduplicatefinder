@@ -30,8 +30,11 @@ namespace VDF.GUI.ViewModels {
 		public IReadOnlySet<Guid>? CollapsedGroups { get; init; }
 		/// <summary>Items whose details panel is expanded (a details row follows their row).</summary>
 		public IReadOnlySet<DuplicateItemVM>? ExpandedDetails { get; init; }
-		/// <summary>Picks the member the BEST badge goes to. Null: no badges.</summary>
-		public Func<IReadOnlyList<DuplicateItemVM>, DuplicateItemVM?>? PickBest { get; init; }
+		/// <summary>
+		/// Picks the member the BEST badge goes to, plus the badge's tooltip text
+		/// (which criterion decided, #839). Null: no badges.
+		/// </summary>
+		public Func<IReadOnlyList<DuplicateItemVM>, (DuplicateItemVM? Best, string? Tooltip)>? PickBest { get; init; }
 		/// <summary>Tombstone test, replaceable for tests. Defaults to <see cref="DuplicateItemVM.IsTombstone"/>.</summary>
 		public Func<DuplicateItemVM, bool>? IsTombstone { get; init; }
 		/// <summary>Offline test, replaceable for tests. Defaults to <see cref="DuplicateItemVM.IsOffline"/>.</summary>
@@ -55,8 +58,19 @@ namespace VDF.GUI.ViewModels {
 
 		public static ResultsBuildResult Build(ResultsBuildRequest request) {
 			Func<DuplicateItemVM, bool> filter = request.Filter ?? (_ => true);
-			Func<DuplicateItemVM, bool> isTombstone = request.IsTombstone ?? (d => d.IsTombstone);
-			Func<DuplicateItemVM, bool> isOffline = request.IsOffline ?? (d => d.IsOffline);
+			Func<DuplicateItemVM, bool> isTombstone;
+			Func<DuplicateItemVM, bool> isOffline;
+			if (request.IsTombstone == null && request.IsOffline == null) {
+				// The plain defaults (DuplicateItemVM.IsTombstone/IsOffline) stat each
+				// missing file twice and query DriveInfo per file — Build runs on the UI
+				// thread on every list change, so a large result set with missing files
+				// turned every rebuild into thousands of filesystem probes.
+				(isTombstone, isOffline) = CreateCachedPathStatus(File.Exists, VDF.Core.ScanEngine.IsDriveReady);
+			}
+			else {
+				isTombstone = request.IsTombstone ?? (d => d.IsTombstone);
+				isOffline = request.IsOffline ?? (d => d.IsOffline);
+			}
 
 			// Group in first-appearance order so ties keep a stable, predictable order.
 			var groupsById = new Dictionary<Guid, List<DuplicateItemVM>>();
@@ -73,6 +87,11 @@ namespace VDF.GUI.ViewModels {
 			var headers = new List<ResultsGroupHeader>(groupOrder.Count);
 			foreach (var gid in groupOrder) {
 				var members = groupsById[gid];
+				// A duplicate group needs at least two visible members. Per-item filters
+				// can strand a single row (e.g. similarity 100-100 keeps only the member
+				// that carries exactly 100, #858), which rendered as a meaningless
+				// "group of one" — such groups vanish from the view entirely.
+				if (members.Count < 2) continue;
 				SortMembers(members, request.SortMode, request.SortDescending);
 
 				long total = 0, largest = 0;
@@ -111,10 +130,12 @@ namespace VDF.GUI.ViewModels {
 					row.Group = header;
 
 				if (request.PickBest != null && members.Count >= 2) {
-					var best = request.PickBest(members);
+					var (best, tooltip) = request.PickBest(members);
 					if (best != null)
-						foreach (var row in rows)
+						foreach (var row in rows) {
 							row.IsBest = ReferenceEquals(row.Item, best);
+							row.BestTooltip = row.IsBest ? tooltip : null;
+						}
 				}
 
 				// HDR chip highlight: green only when this member's format outranks
@@ -149,6 +170,32 @@ namespace VDF.GUI.ViewModels {
 			}
 
 			return new ResultsBuildResult { Rows = flat, Groups = headers, HasPartialClips = hasPartialClips };
+		}
+
+		/// <summary>
+		/// Tombstone/offline classification with per-build caching: one existence probe
+		/// per path and one drive-readiness probe per volume root, shared by both
+		/// predicates. Same classification as <see cref="VDF.Core.ScanEngine.PathIsTombstone"/>
+		/// / PathIsOffline, minus the redundant filesystem hits.
+		/// </summary>
+		internal static (Func<DuplicateItemVM, bool> IsTombstone, Func<DuplicateItemVM, bool> IsOffline) CreateCachedPathStatus(
+			Func<string, bool> fileExists, Func<string, bool> driveReady) {
+			var existsCache = new Dictionary<string, bool>(StringComparer.Ordinal);
+			var readyCache = new Dictionary<string, bool>(StringComparer.OrdinalIgnoreCase);
+			bool Exists(string path) {
+				if (!existsCache.TryGetValue(path, out bool v))
+					existsCache[path] = v = fileExists(path);
+				return v;
+			}
+			bool Ready(string path) {
+				string root = Path.GetPathRoot(path) ?? string.Empty;
+				if (!readyCache.TryGetValue(root, out bool v))
+					readyCache[root] = v = driveReady(path);
+				return v;
+			}
+			return (
+				d => !Exists(d.ItemInfo.Path) && Ready(d.ItemInfo.Path),
+				d => !Exists(d.ItemInfo.Path) && !Ready(d.ItemInfo.Path));
 		}
 
 		/// <summary>

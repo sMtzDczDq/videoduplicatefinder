@@ -58,12 +58,25 @@
       <Setter Property="FontSize" Value="12" />
       <Setter Property="CornerRadius" Value="12" />
     </Style>
-    <!-- checked rows use the mockup's exact selection tint (the "sel" token) -->
+    <!-- Checked rows: red tint (checked = marked for deletion) plus a danger-colored
+         left edge bar, so they stay clearly visible in dark mode where a background
+         tint alone drowned against the near-black rows (#841). The 3px edge slot is
+         always reserved (transparent when unchecked) so content never shifts. -->
     <Style Selector="Border.resultrow">
       <Setter Property="Background" Value="Transparent" />
+      <Setter Property="BorderBrush" Value="Transparent" />
+      <Setter Property="BorderThickness" Value="3,0,0,0" />
     </Style>
     <Style Selector="Border.resultrow.checked">
       <Setter Property="Background" Value="{DynamicResource VdfSelBrush}" />
+      <Setter Property="BorderBrush" Value="{DynamicResource VdfDangerBrush}" />
+    </Style>
+    <!-- Checked row that is ALSO list-selected: the opaque checked tint sits on top
+         of the ListBoxItem's own selection highlight, which left selection nearly
+         invisible (only the foreground shifted). A clearly brighter tint step makes
+         the selected row stand out inside a block of checked rows. -->
+    <Style Selector="ListBox.results ListBoxItem:selected Border.resultrow.checked">
+      <Setter Property="Background" Value="{DynamicResource VdfSelActiveBrush}" />
     </Style>
     <!-- similarity chip: mockup .simchip — soft surface, colored text, 45%-alpha
          border; tier classes (mid/low) are bound from the similarity value -->
@@ -103,6 +116,21 @@
     </Style>
     <Style Selector="TextBlock.metric-diff.eq">
       <Setter Property="Foreground" Value="{DynamicResource VdfMutedBrush}" />
+    </Style>
+    <!-- Hover-diff swap fades in instead of snapping (#849 report: values flipping
+         "suddenly forth and back"). Only activation animates; clearing restores the
+         familiar values immediately. -->
+    <Style Selector="TextBlock.metric-diff.diffing">
+      <Style.Animations>
+        <Animation Duration="0:0:0.18" FillMode="Forward">
+          <KeyFrame Cue="0%">
+            <Setter Property="Opacity" Value="0" />
+          </KeyFrame>
+          <KeyFrame Cue="100%">
+            <Setter Property="Opacity" Value="1" />
+          </KeyFrame>
+        </Animation>
+      </Style.Animations>
     </Style>
     <!-- HDR chip: neutral bordered info chip; green when it wins a mixed group -->
     <Style Selector="Border.hdrchip">
@@ -278,10 +306,14 @@
       </WrapPanel>
     </Border>
 
-    <!-- ======== Column header strip (right-click: column menu) ======== -->
+    <!-- ======== Column header strip (right-click: column menu) ========
+         Horizontal padding matches the row padding (6), and HeaderColumns gets a
+         right inset synced to the list's viewport in code-behind — otherwise the
+         vertical scrollbar shifts every row cell left of its header (#837). -->
     <Border
+        x:Name="ColumnHeaderStrip"
         Grid.Row="2"
-        Padding="8,4"
+        Padding="6,4"
         Background="{actipro:ThemeResource Container2BackgroundBrush}"
         BorderBrush="{actipro:ThemeResource Container3BorderBrush}"
         BorderThickness="0,0,0,1">
@@ -318,7 +350,7 @@
               IsChecked="{Binding Source={x:Static Settings:SettingsFile.Instance}, Path=ResultsCompactRows}" />
         </ContextMenu>
       </Border.ContextMenu>
-      <DockPanel LastChildFill="True">
+      <DockPanel x:Name="HeaderColumns" LastChildFill="True">
         <Border DockPanel.Dock="Left" Width="30" />
         <Grid DockPanel.Dock="Left"
               Width="{Binding Source={x:Static Settings:SettingsFile.Instance}, Path=ResultsPreviewWidth}"
@@ -368,6 +400,8 @@
         Grid.Row="3"
         Classes="results"
         Background="Transparent"
+        Padding="0"
+        TemplateApplied="OnResultsListTemplateApplied"
         ItemsSource="{Binding ResultsRows}"
         SelectionMode="Multiple"
         SelectionChanged="OnResultsSelectionChanged"
@@ -434,17 +468,24 @@
 
         <!-- ~~~~ File row ~~~~ -->
         <DataTemplate DataType="vm:ResultsItemRow">
+          <!-- Left padding is 3 because the resultrow style reserves a 3px edge-bar
+               border slot; 3+3 keeps the content aligned with the header row. -->
           <Border
               Classes="resultrow"
               Classes.checked="{Binding Item.Checked}"
-              Padding="6,0">
-            <!-- Uniform row height follows the Preview column width so dragging the
-                 grip (or raising the thumbnail width setting) scales the whole layout. -->
+              Padding="3,0,6,0">
+            <!-- Row height follows the Preview column width and, once loaded, the
+                 preview's real shape: single frames keep their aspect ratio (#834),
+                 multi-frame previews re-wrap to the column width (WrappedFilmstrip,
+                 #847) and the row reserves exactly that wrap height. -->
             <Border.Height>
               <MultiBinding Converter="{StaticResource ResultsRowSizingConverter}" ConverterParameter="row">
                 <Binding Source="{x:Static Settings:SettingsFile.Instance}" Path="ResultsPreviewWidth" />
                 <Binding Source="{x:Static Settings:SettingsFile.Instance}" Path="ResultsCompactRows" />
                 <Binding Source="{x:Static Settings:SettingsFile.Instance}" Path="ShowThumbnailColumn" />
+                <Binding Path="Item.Thumbnail" />
+                <Binding Path="Item.ThumbnailFrameCount" />
+                <Binding Path="Item.ThumbnailGridColumns" />
               </MultiBinding>
             </Border.Height>
             <Border.ContextMenu>
@@ -462,6 +503,12 @@
                     Command="{Binding $parent[UserControl].((vm:MainWindowVM)DataContext).RenameFileCommand}"
                     Header="{Binding Source={x:Static local:App.Lang}, Path=[MainWindow.ContextMenu.RenameFile]}"
                     InputGesture="{Binding Source={x:Static Settings:KeyboardShortcutManager.Instance}, Path=[RenameFile]}" />
+                <!-- Moves the highlighted row(s) with database path tracking - unlike the
+                     action bar's move, this doesn't require checking the file (checked
+                     means "delete"; the file you relocate is usually the keeper) (#843). -->
+                <MenuItem
+                    Command="{Binding $parent[UserControl].((vm:MainWindowVM)DataContext).MoveSelectedItemsCommand}"
+                    Header="{Binding Source={x:Static local:App.Lang}, Path=[MainWindow.ContextMenu.MoveToFolderEllipsis]}" />
                 <Separator />
                 <MenuItem
                     Command="{Binding $parent[UserControl].((vm:MainWindowVM)DataContext).ToggleCheckboxCommand}"
@@ -518,24 +565,21 @@
                     </MultiBinding>
                   </Border.IsVisible>
                 </Border>
-                <!-- Height tracks the Preview column width; Uniform keeps the aspect,
-                     DownOnly never upscales past the extracted bitmap (#787). -->
-                <Image
+                <!-- Frames re-wrap to the column width at display time: they shrink
+                     to stay on one line (#847) and wrap into rows only when they'd
+                     become unreadably small (#834); never upscaled past the
+                     extracted bitmap (#787). Self-measuring — the row height
+                     converter runs the same math. -->
+                <ctl:WrappedFilmstrip
                     Source="{Binding Item.Thumbnail}"
-                    Stretch="Uniform"
-                    StretchDirection="DownOnly"
+                    FrameCount="{Binding Item.ThumbnailFrameCount}"
+                    GridColumns="{Binding Item.ThumbnailGridColumns}"
+                    Compact="{Binding Source={x:Static Settings:SettingsFile.Instance}, Path=ResultsCompactRows}"
                     Margin="0,2,8,2"
                     HorizontalAlignment="Left"
                     VerticalAlignment="Center"
                     DoubleTapped="OnThumbnailDoubleTapped"
-                    ToolTip.Tip="{Binding Item.ItemInfo.Path}">
-                  <Image.Height>
-                    <MultiBinding Converter="{StaticResource ResultsRowSizingConverter}" ConverterParameter="image">
-                      <Binding Source="{x:Static Settings:SettingsFile.Instance}" Path="ResultsPreviewWidth" />
-                      <Binding Source="{x:Static Settings:SettingsFile.Instance}" Path="ResultsCompactRows" />
-                    </MultiBinding>
-                  </Image.Height>
-                </Image>
+                    ToolTip.Tip="{Binding Item.ItemInfo.Path}" />
               </Grid>
               <!-- similarity chip -->
               <Border
@@ -575,7 +619,8 @@
                   <TextBlock FontSize="12" Opacity="0.5" Text="·" />
                   <Border Tag="fps" Background="Transparent"
                           PointerEntered="OnMetricPointerEntered" PointerExited="OnMetricPointerExited">
-                    <TextBlock FontSize="12" Classes="metric-diff">
+                    <TextBlock FontSize="12" Classes="metric-diff"
+                               Classes.diffing="{Binding Item.FpsDiff, Converter={x:Static ObjectConverters.IsNotNull}}">
                       <TextBlock.Text>
                         <MultiBinding Converter="{StaticResource MetricDisplayConverter}" ConverterParameter="{}{0} fps">
                           <Binding Path="Item.ItemInfo.Fps" />
@@ -593,23 +638,46 @@
                   <TextBlock FontSize="11.5" Opacity="0.8" Text="{Binding Item.ItemInfo.AudioChannel, TargetNullValue=''}" />
                 </StackPanel>
               </StackPanel>
-              <!-- Bitrate: video over audio, same two-line convention as the other columns -->
-              <StackPanel
+              <!-- Bitrate: video over audio, same two-line convention as the other
+                   columns. One hover zone for both metrics (this cell previously had
+                   no hover-diff at all - the VM's bitrate cases were unreachable). -->
+              <Border
                   DockPanel.Dock="Right"
                   Width="90"
                   VerticalAlignment="Center"
+                  Background="Transparent"
+                  Tag="bitrate,audiobitrate"
+                  PointerEntered="OnMetricPointerEntered" PointerExited="OnMetricPointerExited"
                   IsVisible="{Binding Source={x:Static Settings:SettingsFile.Instance}, Path=ShowBitrateColumn}">
+                <StackPanel>
                 <TextBlock FontSize="12" Classes="metric-diff"
                            IsVisible="{Binding !Item.ItemInfo.IsImage}"
                            Classes.hi="{Binding Item.ItemInfo.IsBestBitRateKbs}"
                            Classes.lo="{Binding !Item.ItemInfo.IsBestBitRateKbs}"
-                           Text="{Binding Item.ItemInfo.BitRateKbs, Converter={StaticResource BitrateDisplayConverter}}" />
+                           Classes.eq="{Binding Item.BitRateDiff, Converter={StaticResource EqualDiffConverter}}"
+                           Classes.diffing="{Binding Item.BitRateDiff, Converter={x:Static ObjectConverters.IsNotNull}}">
+                  <TextBlock.Text>
+                    <MultiBinding Converter="{StaticResource MetricDisplayConverter}">
+                      <Binding Path="Item.ItemInfo.BitRateKbs" Converter="{StaticResource BitrateDisplayConverter}" />
+                      <Binding Path="Item.BitRateDiff" />
+                    </MultiBinding>
+                  </TextBlock.Text>
+                </TextBlock>
                 <TextBlock FontSize="11.5" Classes="metric-diff"
                            IsVisible="{Binding !Item.ItemInfo.IsImage}"
                            Classes.hi="{Binding Item.ItemInfo.IsBestAudioBitRateKbs}"
                            Classes.lo="{Binding !Item.ItemInfo.IsBestAudioBitRateKbs}"
-                           Text="{Binding Item.ItemInfo.AudioBitRateKbs, Converter={StaticResource BitrateDisplayConverter}}" />
-              </StackPanel>
+                           Classes.eq="{Binding Item.AudioBitRateDiff, Converter={StaticResource EqualDiffConverter}}"
+                           Classes.diffing="{Binding Item.AudioBitRateDiff, Converter={x:Static ObjectConverters.IsNotNull}}">
+                  <TextBlock.Text>
+                    <MultiBinding Converter="{StaticResource MetricDisplayConverter}">
+                      <Binding Path="Item.ItemInfo.AudioBitRateKbs" Converter="{StaticResource BitrateDisplayConverter}" />
+                      <Binding Path="Item.AudioBitRateDiff" />
+                    </MultiBinding>
+                  </TextBlock.Text>
+                </TextBlock>
+                </StackPanel>
+              </Border>
               <!-- Size · Date -->
               <StackPanel
                   DockPanel.Dock="Right"
@@ -621,7 +689,8 @@
                   <TextBlock FontSize="12" Classes="metric-diff"
                              Classes.hi="{Binding Item.ItemInfo.IsBestSize}"
                              Classes.lo="{Binding !Item.ItemInfo.IsBestSize}"
-                             Classes.eq="{Binding Item.SizeDiff, Converter={StaticResource EqualDiffConverter}}">
+                             Classes.eq="{Binding Item.SizeDiff, Converter={StaticResource EqualDiffConverter}}"
+                             Classes.diffing="{Binding Item.SizeDiff, Converter={x:Static ObjectConverters.IsNotNull}}">
                     <TextBlock.Text>
                       <MultiBinding Converter="{StaticResource MetricDisplayConverter}">
                         <Binding Path="Item.ItemInfo.Size" />
@@ -633,42 +702,43 @@
                 <TextBlock FontSize="11.5" Opacity="0.8"
                            Text="{Binding Item.ItemInfo.DateCreated, Converter={StaticResource ExtraShortDateTimeConverter}}" />
               </StackPanel>
-              <!-- Duration · Resolution -->
-              <StackPanel
+              <!-- Duration · Resolution: ONE hover zone for both metrics — two stacked
+                   zones flipped the display on tiny vertical mouse moves (#849) -->
+              <Border
                   DockPanel.Dock="Right"
                   Width="110"
                   VerticalAlignment="Center"
+                  Background="Transparent"
+                  Tag="duration,framesize"
+                  PointerEntered="OnMetricPointerEntered" PointerExited="OnMetricPointerExited"
                   IsVisible="{Binding Source={x:Static Settings:SettingsFile.Instance}, Path=ShowDurationColumn}">
-                <Border Tag="duration" Background="Transparent"
-                        IsVisible="{Binding !Item.ItemInfo.IsImage}"
-                        PointerEntered="OnMetricPointerEntered" PointerExited="OnMetricPointerExited">
-                  <TextBlock FontSize="12" Classes="metric-diff"
-                             Classes.hi="{Binding Item.ItemInfo.IsBestDuration}"
-                             Classes.lo="{Binding !Item.ItemInfo.IsBestDuration}"
-                             Classes.eq="{Binding Item.DurationDiff, Converter={StaticResource EqualDiffConverter}}">
+                <StackPanel>
+                <TextBlock FontSize="12" Classes="metric-diff"
+                           IsVisible="{Binding !Item.ItemInfo.IsImage}"
+                           Classes.hi="{Binding Item.ItemInfo.IsBestDuration}"
+                           Classes.lo="{Binding !Item.ItemInfo.IsBestDuration}"
+                           Classes.eq="{Binding Item.DurationDiff, Converter={StaticResource EqualDiffConverter}}"
+                           Classes.diffing="{Binding Item.DurationDiff, Converter={x:Static ObjectConverters.IsNotNull}}">
+                  <TextBlock.Text>
+                    <MultiBinding Converter="{StaticResource MetricDisplayConverter}" ConverterParameter="{}{0:hh\:mm\:ss}">
+                      <Binding Path="Item.ItemInfo.Duration" />
+                      <Binding Path="Item.DurationDiff" />
+                    </MultiBinding>
+                  </TextBlock.Text>
+                </TextBlock>
+                <StackPanel Orientation="Horizontal" Spacing="5">
+                  <TextBlock FontSize="11.5" Classes="metric-diff"
+                             Classes.hi="{Binding Item.ItemInfo.IsBestFrameSize}"
+                             Classes.lo="{Binding !Item.ItemInfo.IsBestFrameSize}"
+                             Classes.eq="{Binding Item.FrameSizeDiff, Converter={StaticResource EqualDiffConverter}}"
+                             Classes.diffing="{Binding Item.FrameSizeDiff, Converter={x:Static ObjectConverters.IsNotNull}}">
                     <TextBlock.Text>
-                      <MultiBinding Converter="{StaticResource MetricDisplayConverter}" ConverterParameter="{}{0:hh\:mm\:ss}">
-                        <Binding Path="Item.ItemInfo.Duration" />
-                        <Binding Path="Item.DurationDiff" />
+                      <MultiBinding Converter="{StaticResource MetricDisplayConverter}">
+                        <Binding Path="Item.ItemInfo.FrameSize" />
+                        <Binding Path="Item.FrameSizeDiff" />
                       </MultiBinding>
                     </TextBlock.Text>
                   </TextBlock>
-                </Border>
-                <StackPanel Orientation="Horizontal" Spacing="5">
-                  <Border Tag="framesize" Background="Transparent"
-                          PointerEntered="OnMetricPointerEntered" PointerExited="OnMetricPointerExited">
-                    <TextBlock FontSize="11.5" Classes="metric-diff"
-                               Classes.hi="{Binding Item.ItemInfo.IsBestFrameSize}"
-                               Classes.lo="{Binding !Item.ItemInfo.IsBestFrameSize}"
-                               Classes.eq="{Binding Item.FrameSizeDiff, Converter={StaticResource EqualDiffConverter}}">
-                      <TextBlock.Text>
-                        <MultiBinding Converter="{StaticResource MetricDisplayConverter}">
-                          <Binding Path="Item.ItemInfo.FrameSize" />
-                          <Binding Path="Item.FrameSizeDiff" />
-                        </MultiBinding>
-                      </TextBlock.Text>
-                    </TextBlock>
-                  </Border>
                   <!-- HDR chip: neutral information; green only when this member's
                        format outranks another member of the group -->
                   <Border Classes="hdrchip" Classes.best="{Binding HdrIsUpgrade}"
@@ -676,7 +746,8 @@
                     <TextBlock Text="{Binding Item.ItemInfo.HdrFormat}" />
                   </Border>
                 </StackPanel>
-              </StackPanel>
+                </StackPanel>
+              </Border>
               <!-- File name + path (fills remaining width) -->
               <StackPanel Margin="6,0,6,0" VerticalAlignment="Center" Spacing="1">
                 <!-- Badges dock right so the name gets a finite width and its trimming
@@ -684,10 +755,27 @@
                      the neighboring metadata columns. -->
                 <DockPanel LastChildFill="True">
                   <StackPanel DockPanel.Dock="Right" Orientation="Horizontal" Spacing="6" Margin="6,0,0,0">
+                  <!-- AI chip: pair found only by the AI embedding pass, not the classic
+                       check. Lives with the badges — as a docked pseudo-column it shifted
+                       every metadata cell on AI-matched rows out of alignment (#837). -->
+                  <Border
+                      Classes="simchip"
+                      Padding="5,0"
+                      CornerRadius="3"
+                      VerticalAlignment="Center"
+                      IsVisible="{Binding Item.ItemInfo.IsAiMatched}"
+                      ToolTip.Tip="{Binding Source={x:Static local:App.Lang}, Path=[Results.AiMatchedTooltip]}">
+                    <TextBlock
+                        FontSize="10"
+                        FontWeight="Bold"
+                        HorizontalAlignment="Center"
+                        Text="AI" />
+                  </Border>
                   <Border IsVisible="{Binding IsBest}"
                           Background="{DynamicResource VdfGoodSoftBrush}"
                           BorderBrush="{DynamicResource VdfGoodBorderBrush}" BorderThickness="1"
-                          CornerRadius="3" Padding="5,0" VerticalAlignment="Center">
+                          CornerRadius="3" Padding="5,0" VerticalAlignment="Center"
+                          ToolTip.Tip="{Binding BestTooltip}">
                     <TextBlock Text="{Binding Source={x:Static local:App.Lang}, Path=[Results.Row.Best]}"
                                FontSize="10" FontWeight="Bold"
                                Foreground="{DynamicResource VdfGoodBrush}" />
@@ -722,16 +810,27 @@
                       Text="{Binding Item.ItemInfo.Path, Converter={StaticResource FileNameConverter}}"
                       ToolTip.Tip="{Binding Item.ItemInfo.Path, Converter={StaticResource FileNameConverter}}" />
                 </DockPanel>
-                <!-- Border supplies the hit-test surface for hover tooltip + click-to-copy -->
+                <!-- Border supplies the hit-test surface for hover tooltip + click-to-copy
+                     (copy fires only on an already-selected row, #849) -->
                 <Border
                     Background="Transparent"
                     IsVisible="{Binding Source={x:Static Settings:SettingsFile.Instance}, Path=!ResultsCompactRows}"
                     ToolTip.Tip="{Binding Item.ItemInfo.Path}"
                     PointerPressed="OnPathPointerPressed">
-                  <ctl:MiddleEllipsisTextBlock
-                      FontSize="11.5"
-                      Opacity="0.65"
-                      Text="{Binding Item.ItemInfo.Path, Converter={StaticResource DirectoryPathConverter}}" />
+                  <DockPanel>
+                    <TextBlock
+                        DockPanel.Dock="Right"
+                        Margin="8,0,0,0"
+                        FontSize="11.5"
+                        VerticalAlignment="Center"
+                        Foreground="{DynamicResource VdfGoodBrush}"
+                        IsVisible="{Binding Item.PathCopiedFlash}"
+                        Text="{Binding Source={x:Static local:App.Lang}, Path=[Results.Row.PathCopied]}" />
+                    <ctl:MiddleEllipsisTextBlock
+                        FontSize="11.5"
+                        Opacity="0.65"
+                        Text="{Binding Item.ItemInfo.Path, Converter={StaticResource DirectoryPathConverter}}" />
+                  </DockPanel>
                 </Border>
               </StackPanel>
             </DockPanel>
@@ -788,8 +887,7 @@
         IsVisible="{Binding !!DuplicatesCheckedCounter}">
       <DockPanel LastChildFill="False">
         <TextBlock DockPanel.Dock="Left" VerticalAlignment="Center" FontSize="13" FontWeight="SemiBold">
-          <Run Text="{Binding DuplicatesCheckedCounter, Mode=OneWay}" />
-          <Run Text="{Binding Source={x:Static local:App.Lang}, Path=[Results.Action.CheckedSuffix]}" />
+          <Run Text="{Binding CheckedSummaryText, Mode=OneWay}" />
           <Run Text=" · " />
           <Run Text="{Binding DuplicatesCheckedSize, Mode=OneWay}" />
         </TextBlock>

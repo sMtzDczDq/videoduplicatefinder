@@ -263,6 +263,18 @@ namespace VDF.GUI.ViewModels {
 
 		public ReactiveCommand<Unit, Unit>? PreviousGroupCommand { get; }
 		public ReactiveCommand<Unit, Unit>? NextGroupCommand { get; }
+		public ReactiveCommand<Unit, Unit> CancelThumbnailLoadingCommand { get; }
+
+		/// <summary>
+		/// Stops the thumbnail load and any frame extraction. Wired to the loading
+		/// overlay's Cancel button and to window close, so an expensive load (many
+		/// items, slow disk) can neither trap the user in the overlay nor keep
+		/// FFmpeg busy after the window is gone.
+		/// </summary>
+		public void CancelBackgroundWork() {
+			_loadCts?.Cancel();
+			_frameExtractCts?.Cancel();
+		}
 
 		public ThumbnailComparerVM(List<LargeThumbnailDuplicateItem> duplicateItemVMs)
 			: this(duplicateItemVMs, null, null, null) { }
@@ -327,6 +339,7 @@ namespace VDF.GUI.ViewModels {
 			SelectBasePositionCommand = ReactiveCommand.Create<FrameStripEntry>(entry => {
 				if (entry != null) BaseThumbnailIndex = entry.Index;
 			});
+			CancelThumbnailLoadingCommand = ReactiveCommand.Create(CancelBackgroundWork);
 			UpdateGroupInfo();
 		}
 
@@ -536,6 +549,12 @@ namespace VDF.GUI.ViewModels {
 			UpdateCullingInfo();
 		}
 
+		// Dual modes need two SELECTED items, not two loaded bitmaps: thumbnails load
+		// asynchronously, so keying off ImageA/ImageB knocked the dropdown back to
+		// Single whenever a mode was picked while thumbnails were still loading.
+		internal static bool ShouldForceSingleView(CompareMode mode, bool hasSelectionA, bool hasSelectionB) =>
+			mode != CompareMode.Single && (!hasSelectionA || !hasSelectionB);
+
 		// Auto-fallback to Single when only one image is available. Must not write to
 		// settings — otherwise the persisted user preference gets clobbered on every open.
 		void ForceSingleViewWithoutPersist() {
@@ -582,7 +601,7 @@ namespace VDF.GUI.ViewModels {
 				ImageB = SelectedItemB?.Thumbnail;
 			}
 
-			if (SelectedCompareMode != CompareMode.Single && (ImageA is null || ImageB is null))
+			if (ShouldForceSingleView(SelectedCompareMode, SelectedItemA is not null, SelectedItemB is not null))
 				ForceSingleViewWithoutPersist();
 
 			this.RaisePropertyChanged(nameof(ImageSingle));
@@ -600,6 +619,13 @@ namespace VDF.GUI.ViewModels {
 		}
 
 		void UpdateFrameImages() {
+			// Invalidate work started for the previous selection, base frame or offsets.
+			// A stale extraction may still complete and populate its cache, but must
+			// not touch the UI anymore.
+			_frameExtractCts?.Cancel();
+			_frameExtractCts = null;
+			IsExtractingFrame = false;
+
 			var baseIdx = BaseThumbnailIndex;
 			var itemA = SelectedItemA;
 			var itemB = SelectedItemB;
@@ -622,10 +648,21 @@ namespace VDF.GUI.ViewModels {
 				return;
 			}
 
-			_frameExtractCts?.Cancel();
 			var cts = new CancellationTokenSource();
 			_frameExtractCts = cts;
 			IsExtractingFrame = true;
+
+			// Cancellation alone is not enough: a completed extraction that was
+			// superseded (new selection, base frame or step) races the UI-thread
+			// schedule against the next request, so re-check every input too.
+			bool IsStillCurrentRequest() =>
+				!cts.IsCancellationRequested &&
+				ReferenceEquals(_frameExtractCts, cts) &&
+				ReferenceEquals(SelectedItemA, itemA) &&
+				ReferenceEquals(SelectedItemB, itemB) &&
+				BaseThumbnailIndex == baseIdx &&
+				StepA == stepA &&
+				StepB == stepB;
 
 			_ = Task.Run(() => {
 				try {
@@ -635,18 +672,23 @@ namespace VDF.GUI.ViewModels {
 					if (cts.IsCancellationRequested) return;
 
 					RxSchedulers.MainThreadScheduler.Schedule(() => {
-						if (cts.IsCancellationRequested) return;
+						if (!IsStillCurrentRequest()) return;
 						if (needExtractA && bmpA != null)
 							ImageA = bmpA;
 						if (needExtractB && bmpB != null)
 							ImageB = bmpB;
 						this.RaisePropertyChanged(nameof(ImageSingle));
+						_frameExtractCts = null;
 						IsExtractingFrame = false;
 						UpdateFrameLabels();
 					});
 				}
 				catch {
-					RxSchedulers.MainThreadScheduler.Schedule(() => IsExtractingFrame = false);
+					RxSchedulers.MainThreadScheduler.Schedule(() => {
+						if (!ReferenceEquals(_frameExtractCts, cts)) return;
+						_frameExtractCts = null;
+						IsExtractingFrame = false;
+					});
 				}
 			});
 
@@ -762,6 +804,11 @@ namespace VDF.GUI.ViewModels {
 			}
 			catch (OperationCanceledException) {
 				IsLoadingThumbnails = false;
+				// Panes whose load never ran must not spin forever after a cancel.
+				foreach (var item in Items)
+					if (item.Thumbnail == null)
+						item.IsLoadingThumbnail = false;
+				AssignDefaultSelections();
 			}
 		}
 
@@ -775,25 +822,36 @@ namespace VDF.GUI.ViewModels {
 
 				var sem = new SemaphoreSlim(maxParallel, maxParallel);
 				int done = 0;
-				int total = itemsToLoad.Count;
+				// Frame-level progress: one unit per extracted frame, so multi-frame
+				// videos move the bar long before a whole item completes (a two-item
+				// group used to sit at 0% until the first file finished entirely).
+				int total = Math.Max(1, itemsToLoad.Sum(i =>
+					i.Item.ItemInfo.IsImage ? 1 : Math.Max(1, i.Item.ItemInfo.ThumbnailTimestamps.Count)));
+				void ReportFrame() {
+					var finished = Interlocked.Increment(ref done);
+					var p = Math.Clamp((double)finished / total, 0, 1);
+					if (ct.IsCancellationRequested) return; // stale load must not stomp a newer bar
+					RxSchedulers.MainThreadScheduler.Schedule(() => {
+						LoadProgress = p;
+						this.RaisePropertyChanged(nameof(LoadProgressText));
+					});
+				}
 
 				var tasks = itemsToLoad.Select(async item => {
 					await sem.WaitAsync(ct).ConfigureAwait(false);
 					try {
-						await Task.Run(() => item.LoadThumbnail(), ct).ConfigureAwait(false);
+						await Task.Run(() => item.LoadThumbnail(ct, ReportFrame), ct).ConfigureAwait(false);
 					}
 					finally {
 						sem.Release();
-						var finished = Interlocked.Increment(ref done);
-						var p = Math.Clamp((double)finished / total, 0, 1);
-						RxSchedulers.MainThreadScheduler.Schedule(() => {
-							LoadProgress = p;
-							this.RaisePropertyChanged(nameof(LoadProgressText));
-						});
 					}
-				});
+				}).ToList();
 
-				await Task.WhenAll(tasks);
+				// WaitAsync surfaces a cancel IMMEDIATELY. Awaiting WhenAll alone sat
+				// behind whatever FFmpeg grab was in flight - with a hung or very slow
+				// decode the Cancel button and window close appeared completely dead.
+				// The detached tasks stop at the next frame boundary via the token.
+				await Task.WhenAll(tasks).WaitAsync(ct);
 			}
 		}
 	}
@@ -810,7 +868,8 @@ namespace VDF.GUI.ViewModels {
 		public bool IsCurrent { get => _isCurrent; set => this.RaiseAndSetIfChanged(ref _isCurrent, value); }
 	}
 
-	public sealed class LargeThumbnailDuplicateItem : ReactiveObject {
+	// Unsealed so tests can stub LoadThumbnail (stuck-grab cancellation regression).
+	public class LargeThumbnailDuplicateItem : ReactiveObject {
 		public DuplicateItemVM Item { get; }
 		/// <summary>Set by MainWindowVM: this item is the group's quality keeper (BEST badge + pane tint).</summary>
 		public bool IsGroupBest { get; set; }
@@ -838,7 +897,15 @@ namespace VDF.GUI.ViewModels {
 			Item = duplicateItem;
 		}
 
-		public void LoadThumbnail() {
+		/// <summary>
+		/// Extracts the full-size frames and joins them into the pane strip. The token
+		/// is checked between frame grabs — a single FFmpeg call can't be aborted, but
+		/// a cancel stops the item at the next frame boundary instead of grinding
+		/// through the rest; whatever was already grabbed still gets shown.
+		/// <paramref name="frameLoaded"/> fires once per attempted frame for the
+		/// overlay's frame-level progress. Virtual for tests.
+		/// </summary>
+		public virtual void LoadThumbnail(CancellationToken ct = default, Action? frameLoaded = null) {
 			try {
 				List<Bitmap> l = new(Item.ItemInfo.IsImage ? 1 : Item.ItemInfo.ThumbnailTimestamps.Count);
 				_frames.Clear();
@@ -847,9 +914,11 @@ namespace VDF.GUI.ViewModels {
 					var bmp = new Bitmap(Item.ItemInfo.Path);
 					l.Add(bmp);
 					_frames.Add(bmp);
+					frameLoaded?.Invoke();
 				}
 				else {
 					for (int i = 0; i < Item.ItemInfo.ThumbnailTimestamps.Count; i++) {
+						if (ct.IsCancellationRequested) break;
 						var b = FfmpegEngine.GetThumbnail(new FfmpegSettings {
 							File = Item.ItemInfo.Path,
 							Position = Item.ItemInfo.ThumbnailTimestamps[i],
@@ -862,6 +931,7 @@ namespace VDF.GUI.ViewModels {
 							l.Add(bmp);
 							_frames.Add(bmp);
 						}
+						frameLoaded?.Invoke();
 					}
 				}
 

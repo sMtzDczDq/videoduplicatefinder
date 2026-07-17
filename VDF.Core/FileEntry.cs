@@ -88,20 +88,32 @@ namespace VDF.Core {
 		/// </summary>
 		[MemoryPackOrder(10)]
 		public string? OsHash;
+		// Neural embeddings deliberately do NOT live on FileEntry: at library scale they
+		// would permanently bloat the main database and resident memory even for users who
+		// never enable AI matching. They are cached in the UnionEmbeddingStore sidecar
+		// (VDF.Core.AI), keyed by path and validated by size + mtime.
 
 		[MemoryPackIgnore]
 		internal bool invalid = true;
 
 		// Transient compare-phase snapshot, built by ScanEngine.ScanForDuplicates and
 		// cleared when the phase ends. compareGray holds the gray-byte arrays aligned
-		// with the scan's thumbnail position order, comparePHash the first-position
-		// pHash, and compareIndex the entry's position in the scan list. The per-pair
-		// hot path reads these instead of probing Dictionary<double,...> with computed
-		// keys and hashing the full path string for every candidate pair.
+		// with the scan's thumbnail position order, comparePHashes the pHash of every
+		// sampled position (same order), and compareIndex the entry's position in the
+		// scan list. The per-pair hot path reads these instead of probing
+		// Dictionary<double,...> with computed keys and hashing the full path string
+		// for every candidate pair.
 		[MemoryPackIgnore]
 		internal byte[]?[]? compareGray;
 		[MemoryPackIgnore]
-		internal ulong? comparePHash;
+		internal ulong[]? comparePHashes;
+		// AI-pass snapshot, aligned like compareGray: the entry's quantized embeddings and,
+		// as black-frame guard, whether each position's gray frame has enough non-dark
+		// pixels to make its embedding trustworthy (two dark frames embed near-identically).
+		[MemoryPackIgnore]
+		internal byte[]?[]? compareEmbeddings;
+		[MemoryPackIgnore]
+		internal bool[]? compareEmbeddingValid;
 		[MemoryPackIgnore]
 		internal int compareIndex;
 
@@ -142,7 +154,9 @@ namespace VDF.Core {
 		/// re-extracts it: media info, gray frames, pHashes, audio fingerprint and every
 		/// error/audio flag. Identity data stays (path, dates, size, OsHash, manual
 		/// exclusion, reparse-point state) — this is the database editor's "clear cached
-		/// hashes" repair action, the lighter alternative to deleting the entry.
+		/// hashes" repair action, the lighter alternative to deleting the entry. AI
+		/// embeddings live in sidecar caches that self-validate by size + mtime, so they
+		/// need no explicit clearing here.
 		/// </summary>
 		public void ClearCachedMediaData() {
 			mediaInfo = null;

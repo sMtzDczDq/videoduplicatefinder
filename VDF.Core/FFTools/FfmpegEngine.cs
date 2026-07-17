@@ -174,6 +174,36 @@ namespace VDF.Core.FFTools {
 			return outBuf;
 		}
 
+		/// <summary>
+		/// Copies a 224x224 RGB24 frame produced by <see cref="VideoFrameConverter"/> into a
+		/// freshly-allocated packed buffer, dropping swscale's per-row alignment padding.
+		/// </summary>
+		static unsafe byte[] ExtractRgb224FromFrame(AVFrame convertedFrame) {
+			int width = convertedFrame.width;
+			int height = convertedFrame.height;
+			if (width != AI.OnnxEmbedder.InputSide || height != AI.OnnxEmbedder.InputSide)
+				throw new Exception($"Unexpected size {width}x{height}, expected {AI.OnnxEmbedder.InputSide}x{AI.OnnxEmbedder.InputSide}.");
+			if (convertedFrame.data[0] == null)
+				throw new Exception("Converted frame has no data[0] (null).");
+			int rowBytes = width * 3;
+			int srcStride = convertedFrame.linesize[0];
+			if (srcStride < rowBytes)
+				throw new Exception($"Invalid linesize ({srcStride}) for width {width}.");
+
+			byte[] outBuf = new byte[rowBytes * height];
+			fixed (byte* destPtr = outBuf) {
+				byte* sourcePtr = convertedFrame.data[0];
+				if (srcStride == rowBytes) {
+					Buffer.MemoryCopy(sourcePtr, destPtr, outBuf.Length, outBuf.Length);
+				}
+				else {
+					for (int y = 0; y < height; y++)
+						Buffer.MemoryCopy(sourcePtr + (y * srcStride), destPtr + (y * rowBytes), rowBytes, rowBytes);
+				}
+			}
+			return outBuf;
+		}
+
 		static int CountMissingGrayBytePositions(FileEntry videoFile, List<float> positions, double maxSamplingDurationSeconds) {
 			int missing = 0;
 			for (int i = 0; i < positions.Count; i++) {
@@ -197,18 +227,22 @@ namespace VDF.Core.FFTools {
 			List<float> positions,
 			double maxSamplingDurationSeconds,
 			ref int tooDarkCounter,
-			Action<int>? onSampleComplete) {
+			Action<int>? onSampleComplete,
+			AI.IEmbeddingFrameSink? embeddingSink = null) {
 			const int N = 32;
 			try {
 				FfmpegLogCapture.Reset();
 				using var vsd = new VideoStreamDecoder(videoFile.Path, GetConfiguredHardwareDeviceType());
 				VideoFrameConverter? converter = null;
+				VideoFrameConverter? aiConverter = null;
 				Size converterSourceSize = default;
 				AVPixelFormat converterSrcFmt = AVPixelFormat.AV_PIX_FMT_NONE;
 				try {
 					for (int i = 0; i < positions.Count; i++) {
 						double position = videoFile.GetGrayBytesIndex(positions[i], maxSamplingDurationSeconds);
-						if (videoFile.grayBytes.ContainsKey(position)) {
+						bool needGray = !videoFile.grayBytes.ContainsKey(position);
+						bool needEmbedding = embeddingSink?.WantsEmbedding(videoFile, position) == true;
+						if (!needGray && !needEmbedding) {
 							onSampleComplete?.Invoke(i + 1);
 							continue;
 						}
@@ -239,20 +273,35 @@ namespace VDF.Core.FFTools {
 								VideoFrameConverter.ScaleQuality.Bicubic, bitExact: false);
 							converterSourceSize = sourceSize;
 							converterSrcFmt = srcPixFmt;
+							// The AI converter shares the source-layout cache; rebuild in lockstep.
+							aiConverter?.Dispose();
+							aiConverter = null;
 						}
 
-						AVFrame convertedFrame = converter.Convert(srcFrame);
-						byte[] data = ExtractGray32FromFrame(convertedFrame);
+						if (needGray) {
+							AVFrame convertedFrame = converter.Convert(srcFrame);
+							byte[] data = ExtractGray32FromFrame(convertedFrame);
 
-						if (!GrayBytesUtils.VerifyGrayScaleValues(data))
-							tooDarkCounter++;
-						videoFile.grayBytes.Add(position, data);
-						videoFile.PHashes.Add(position, pHash.PerceptualHash.ComputePHashFromGray32x32(data));
+							if (!GrayBytesUtils.VerifyGrayScaleValues(data))
+								tooDarkCounter++;
+							videoFile.grayBytes.Add(position, data);
+							videoFile.PHashes.Add(position, pHash.PerceptualHash.ComputePHashFromGray32x32(data));
+						}
+
+						if (needEmbedding) {
+							aiConverter ??= new VideoFrameConverter(
+								converterSourceSize, converterSrcFmt,
+								new Size(AI.OnnxEmbedder.InputSide, AI.OnnxEmbedder.InputSide), AVPixelFormat.AV_PIX_FMT_RGB24,
+								VideoFrameConverter.ScaleQuality.Bicubic, bitExact: false);
+							embeddingSink!.SubmitFrame(videoFile, position, ExtractRgb224FromFrame(aiConverter.Convert(srcFrame)));
+						}
+
 						onSampleComplete?.Invoke(i + 1);
 					}
 				}
 				finally {
 					converter?.Dispose();
+					aiConverter?.Dispose();
 				}
 				RecordNativeSuccess();
 				return true;
@@ -335,8 +384,12 @@ namespace VDF.Core.FFTools {
 		public static unsafe byte[]? GetThumbnail(FfmpegSettings settings, bool extendedLogging) {
 
 			const int N = 32;
-			const int ExpectedBytes = N * N;
-			bool isGrayByte = settings.GrayScale == 1;
+			bool isRgbFrame = settings.Rgb224;
+			bool isGrayByte = settings.GrayScale == 1 && !isRgbFrame;
+			bool isRawOutput = isGrayByte || isRgbFrame;
+			int expectedBytes = isRgbFrame
+				? AI.OnnxEmbedder.InputSide * AI.OnnxEmbedder.InputSide * 3
+				: N * N;
 
 			try {
 				if (ShouldUseNativeBinding) {
@@ -366,14 +419,28 @@ namespace VDF.Core.FFTools {
 					if (sourceSize.Width <= 0 || sourceSize.Height <= 0)
 						throw new Exception($"Invalid source frame dimensions {sourceSize.Width}x{sourceSize.Height}.");
 
-					Size destinationSize = isGrayByte ? new Size(N, N) :
-						settings.Fullsize == 1 ?
-							sourceSize :
-							ScaleToMaxWidth(sourceSize, settings.MaxWidth > 0 ? settings.MaxWidth : 100);
+					// Anamorphic streams store non-square pixels: widen the coded raster by
+					// the sample aspect ratio for display thumbnails, or DVD-style content
+					// (e.g. 720x576 16:9) is shown squished. Gray bytes are unaffected —
+					// they are force-scaled to a fixed square, which erases aspect ratio.
+					AVRational sar = vsd.StreamSampleAspectRatio;
+					if (sar.num <= 0 || sar.den <= 0)
+						sar = srcFrame.sample_aspect_ratio;
+					// Raw comparison frames (gray bytes, AI frames) are force-scaled to a fixed
+					// square that erases aspect ratio, so SAR correction only applies to thumbnails.
+					Size displaySize = isRawOutput ? sourceSize : ApplySampleAspectRatio(sourceSize, sar.num, sar.den);
 
-					AVPixelFormat destinationPixelFrmt = isGrayByte ?
-						AVPixelFormat.AV_PIX_FMT_GRAY8 :
-						AVPixelFormat.AV_PIX_FMT_YUVJ420P;
+					Size destinationSize = isRgbFrame ? new Size(AI.OnnxEmbedder.InputSide, AI.OnnxEmbedder.InputSide) :
+						isGrayByte ? new Size(N, N) :
+						settings.Fullsize == 1 ?
+							displaySize :
+							ScaleToMaxWidth(displaySize, settings.MaxWidth > 0 ? settings.MaxWidth : 100);
+
+					AVPixelFormat destinationPixelFrmt = isRgbFrame ?
+						AVPixelFormat.AV_PIX_FMT_RGB24 :
+						isGrayByte ?
+							AVPixelFormat.AV_PIX_FMT_GRAY8 :
+							AVPixelFormat.AV_PIX_FMT_YUVJ420P;
 
 					using var vfc = new VideoFrameConverter(
 										sourceSize: sourceSize,
@@ -389,7 +456,10 @@ namespace VDF.Core.FFTools {
 						throw new Exception("Converted frame has no data[0] (null).");
 
 
-					if (isGrayByte) {
+					if (isRgbFrame) {
+						return ExtractRgb224FromFrame(convertedFrame);
+					}
+					else if (isGrayByte) {
 						int width = convertedFrame.width; // should be 32
 						if (convertedFrame.linesize[0] < width)
 							throw new Exception($"Invalid linesize ({convertedFrame.linesize[0]}) for width {width}.");
@@ -471,7 +541,18 @@ namespace VDF.Core.FFTools {
 			}
 
 			// Filter chain: scale + gray
-			if (isGrayByte) {
+			if (isRgbFrame) {
+				// Deliberately NO user -vf here: the native decode path cannot apply
+				// CustomFFArguments, so embedding inputs must be uniformly unfiltered on
+				// every path — mixing filtered CLI frames with unfiltered native frames
+				// would silently sink AI similarity for exactly the files that fell back
+				// to the CLI (the dense AI sweep is equally unfiltered).
+				psi.ArgumentList.Add("-vf");
+				psi.ArgumentList.Add($"scale={AI.OnnxEmbedder.InputSide}:{AI.OnnxEmbedder.InputSide}:flags=bicubic,format=rgb24");
+				psi.ArgumentList.Add("-f"); psi.ArgumentList.Add("rawvideo");
+				psi.ArgumentList.Add("-pix_fmt"); psi.ArgumentList.Add("rgb24");
+			}
+			else if (isGrayByte) {
 				string vfChain = $"scale={N}:{N}:flags=bicubic,format=gray";
 				if (userVfFilter != null) vfChain = $"{userVfFilter},{vfChain}";
 				psi.ArgumentList.Add("-vf"); psi.ArgumentList.Add(vfChain);
@@ -479,16 +560,26 @@ namespace VDF.Core.FFTools {
 				psi.ArgumentList.Add("-pix_fmt"); psi.ArgumentList.Add("gray");
 			}
 			else {
+				// SAR normalization first, so anamorphic videos render at display width
+				// and the bounding box below sees display dimensions (matching the native
+				// path). sar==0 (unknown) counts as square pixels. Videos only — image
+				// demuxer pipelines are fragile (#806) and images have square pixels.
+				string? sarChain = BuildSarNormalizationFilter(settings.File);
 				if (settings.Fullsize != 1) {
 					int maxW = settings.MaxWidth > 0 ? settings.MaxWidth : 100;
 					// Downscale-only fit into a maxW x maxW bounding box (matching the native
 					// path and the old resize semantics) — small sources keep their size.
 					string vfChain = $"scale=min({maxW}\\,iw):min({maxW}\\,ih):force_original_aspect_ratio=decrease";
+					if (sarChain != null) vfChain = $"{sarChain},{vfChain}";
 					if (userVfFilter != null) vfChain = $"{vfChain},{userVfFilter}";
 					psi.ArgumentList.Add("-vf"); psi.ArgumentList.Add(vfChain);
 				}
-				else if (userVfFilter != null) {
-					psi.ArgumentList.Add("-vf"); psi.ArgumentList.Add(userVfFilter);
+				else {
+					string? vfChain = sarChain;
+					if (userVfFilter != null) vfChain = vfChain != null ? $"{vfChain},{userVfFilter}" : userVfFilter;
+					if (vfChain != null) {
+						psi.ArgumentList.Add("-vf"); psi.ArgumentList.Add(vfChain);
+					}
 				}
 				psi.ArgumentList.Add("-f"); psi.ArgumentList.Add("mjpeg");
 				// Map 1-100 quality onto MJPEG's 2-31 qscale (lower = better), same curve
@@ -555,8 +646,8 @@ namespace VDF.Core.FFTools {
 				bytes = ms.ToArray();
 				if (bytes.Length == 0)
 					bytes = null;   // Makes subsequent checks easier
-				else if (isGrayByte && bytes.Length != ExpectedBytes) {
-					errOut += $"{Environment.NewLine}graybytes length != {ExpectedBytes} (got {bytes.Length})";
+				else if (isRawOutput && bytes.Length != expectedBytes) {
+					errOut += $"{Environment.NewLine}{(isGrayByte ? "graybytes" : "AI frame")} length != {expectedBytes} (got {bytes.Length})";
 					bytes = null;
 				}
 			}
@@ -581,7 +672,7 @@ namespace VDF.Core.FFTools {
 			// Failures always log (including FFmpeg's stderr); success-with-warnings only
 			// when extended logging is enabled, to avoid noise from benign decoder chatter.
 			if (bytes == null || (extendedLogging && errOut.Length > 0)) {
-				string message = $"{((bytes == null) ? "ERROR: Failed to retrieve" : "WARNING: Problems while retrieving")} {(isGrayByte ? "graybytes" : "thumbnail")} from: {settings.File}";
+				string message = $"{((bytes == null) ? "ERROR: Failed to retrieve" : "WARNING: Problems while retrieving")} {(isGrayByte ? "graybytes" : isRgbFrame ? "AI frame" : "thumbnail")} from: {settings.File}";
 				if (extendedLogging) {
 					var args = string.Join(" ", psi.ArgumentList);
 					message += $":{Environment.NewLine}{FFmpegPath} {args}";
@@ -595,12 +686,158 @@ namespace VDF.Core.FFTools {
 			}
 			return bytes;
 		}
-		internal static bool GetGrayBytesFromVideo(FileEntry videoFile, List<float> positions, double maxSamplingDurationSeconds, bool extendedLogging, Action<int>? onSampleComplete = null) {
+
+		/// <summary>
+		/// CLI fallback fetching BOTH the 32x32 gray frame and the 224x224 RGB embedding
+		/// frame from one FFmpeg invocation — one seek+decode instead of two full runs
+		/// per sampled position. The filter graph splits the decoded frame into the exact
+		/// chains the two single-output calls use, so the results are byte-identical.
+		/// Gray arrives on stdout; RGB lands in a unique temp file, because two rawvideo
+		/// outputs on one pipe have no deterministic framing (the write order of ffmpeg's
+		/// muxers is not a contract across versions, and raw gray bytes cannot be told
+		/// apart from RGB header bytes after the fact).
+		/// Callers must ensure CustomFFArguments is empty: a user -vf belongs on the gray
+		/// chain but embedding inputs must stay unfiltered on every path, and remaining
+		/// custom args are ambiguous with two outputs — those scans keep the two-call path.
+		/// </summary>
+		internal static (byte[]? GrayBytes, byte[]? Rgb224) GetGrayAndRgb224Cli(string file, TimeSpan position, bool softwareDecodeOnly, bool extendedLogging) {
+			const int N = 32;
+			const int grayExpectedBytes = N * N;
+			int rgbExpectedBytes = AI.OnnxEmbedder.InputSide * AI.OnnxEmbedder.InputSide * 3;
+			string rgbTempPath = Path.Combine(Path.GetTempPath(), $"VDF.AiFrame.{Guid.NewGuid():N}.rgb");
+
+			var psi = new ProcessStartInfo {
+				FileName = FFmpegPath,
+				CreateNoWindow = true,
+				RedirectStandardInput = false,
+				RedirectStandardOutput = true,
+				RedirectStandardError = true,
+				WorkingDirectory = Path.GetDirectoryName(FFmpegPath)!,
+				WindowStyle = ProcessWindowStyle.Hidden
+			};
+			psi.ArgumentList.Add("-hide_banner");
+			psi.ArgumentList.Add("-loglevel"); psi.ArgumentList.Add("error");
+			psi.ArgumentList.Add("-nostdin");
+			if (HardwareAccelerationMode != FFHardwareAccelerationMode.none && !softwareDecodeOnly) {
+				psi.ArgumentList.Add("-hwaccel");
+				psi.ArgumentList.Add(HardwareAccelerationMode.ToString());
+			}
+			bool isImage = FileUtils.IsImageFile(file);
+			// No input -ss for still images — see the matching comment in GetThumbnail (#801).
+			if (!isImage) {
+				psi.ArgumentList.Add("-ss"); psi.ArgumentList.Add(position.ToString(null, CultureInfo.InvariantCulture));
+			}
+			psi.ArgumentList.Add("-i"); psi.ArgumentList.Add(FFToolsUtils.LongPathFix(file));
+			psi.ArgumentList.Add("-filter_complex");
+			psi.ArgumentList.Add(
+				$"[0:v]split=2[g][r];" +
+				$"[g]scale={N}:{N}:flags=bicubic,format=gray[gout];" +
+				$"[r]scale={AI.OnnxEmbedder.InputSide}:{AI.OnnxEmbedder.InputSide}:flags=bicubic,format=rgb24[rout]");
+			psi.ArgumentList.Add("-map"); psi.ArgumentList.Add("[gout]");
+			psi.ArgumentList.Add("-frames:v"); psi.ArgumentList.Add("1");
+			psi.ArgumentList.Add("-f"); psi.ArgumentList.Add("rawvideo");
+			psi.ArgumentList.Add("-pix_fmt"); psi.ArgumentList.Add("gray");
+			psi.ArgumentList.Add("pipe:1");
+			psi.ArgumentList.Add("-map"); psi.ArgumentList.Add("[rout]");
+			psi.ArgumentList.Add("-frames:v"); psi.ArgumentList.Add("1");
+			psi.ArgumentList.Add("-f"); psi.ArgumentList.Add("rawvideo");
+			psi.ArgumentList.Add("-pix_fmt"); psi.ArgumentList.Add("rgb24");
+			psi.ArgumentList.Add("-y");
+			psi.ArgumentList.Add(rgbTempPath);
+
+			using var process = new Process { StartInfo = psi };
+			string errOut = string.Empty;
+			string lastErrLine = string.Empty;
+			int repeatCount = 0;
+			byte[]? gray = null;
+			byte[]? rgb = null;
+			try {
+				process.EnableRaisingEvents = true;
+				process.Start();
+				FFToolsUtils.LowerChildPriority(process);
+				process.ErrorDataReceived += new DataReceivedEventHandler((sender, e) => {
+					if (e.Data?.Length > 0) {
+						if (e.Data == lastErrLine) {
+							repeatCount++;
+						}
+						else {
+							if (repeatCount > 0) {
+								errOut += $" (repeated {repeatCount} more time{(repeatCount == 1 ? string.Empty : "s")})";
+								repeatCount = 0;
+							}
+							errOut += Environment.NewLine + e.Data;
+							lastErrLine = e.Data;
+						}
+					}
+				});
+				process.BeginErrorReadLine();
+				using var ms = new MemoryStream();
+				process.StandardOutput.BaseStream.CopyTo(ms);
+
+				if (!process.WaitForExit(TimeoutDuration))
+					throw new TimeoutException($"FFmpeg timed out on file: {file}");
+				else
+					process.WaitForExit(); // Because of asynchronous event handlers, see: https://github.com/dotnet/runtime/issues/18789
+
+				if (process.ExitCode != 0)
+					throw new FFInvalidExitCodeException($"FFmpeg exited with: {process.ExitCode}");
+
+				gray = ms.ToArray();
+				if (gray.Length != grayExpectedBytes) {
+					errOut += $"{Environment.NewLine}graybytes length != {grayExpectedBytes} (got {gray.Length})";
+					gray = null;
+				}
+				if (File.Exists(rgbTempPath)) {
+					rgb = File.ReadAllBytes(rgbTempPath);
+					if (rgb.Length != rgbExpectedBytes) {
+						errOut += $"{Environment.NewLine}AI frame length != {rgbExpectedBytes} (got {rgb.Length})";
+						rgb = null;
+					}
+				}
+			}
+			catch (Exception e) {
+				errOut += $"{Environment.NewLine}{e.Message}";
+				try {
+					if (process.HasExited == false)
+						process.Kill();
+				}
+				catch { }
+				gray = null;
+				rgb = null;
+			}
+			finally {
+				try { if (File.Exists(rgbTempPath)) File.Delete(rgbTempPath); } catch { }
+			}
+			if (repeatCount > 0)
+				errOut += $" (repeated {repeatCount} more time{(repeatCount == 1 ? string.Empty : "s")})";
+			// Same benign-demuxer-noise handling as GetThumbnail (#805/#809/#815).
+			if (gray != null && errOut.Length > 0 && isImage)
+				errOut = FilterBenignImageDemuxerNoise(errOut);
+			if (gray == null || rgb == null || (extendedLogging && errOut.Length > 0)) {
+				string what = gray == null ? "graybytes+AI frame" : "AI frame";
+				string message = $"{(gray == null || rgb == null ? "ERROR: Failed to retrieve" : "WARNING: Problems while retrieving")} {what} from: {file}";
+				if (extendedLogging) {
+					var args = string.Join(" ", psi.ArgumentList);
+					message += $":{Environment.NewLine}{FFmpegPath} {args}";
+				}
+				string? hint = gray == null ? FfmpegErrorClassifier.Classify(errOut) : null;
+				string hintSuffix = hint != null ? $"{Environment.NewLine}Hint: {hint}" : string.Empty;
+				Logger.Instance.Warn($"{message}{errOut}{hintSuffix}");
+			}
+			return (gray, rgb);
+		}
+
+		internal static bool GetGrayBytesFromVideo(FileEntry videoFile, List<float> positions, double maxSamplingDurationSeconds, bool extendedLogging, Action<int>? onSampleComplete = null, AI.IEmbeddingFrameSink? embeddingSink = null) {
 			// Count missing up front so the TooDark check below compares against samples
 			// we actually extracted this run, not the total positions (which may already
 			// be partially cached from a prior scan).
 			int missingPositions = CountMissingGrayBytePositions(videoFile, positions, maxSamplingDurationSeconds);
-			if (missingPositions == 0) {
+			bool missingEmbeddings = false;
+			if (embeddingSink != null) {
+				for (int i = 0; i < positions.Count && !missingEmbeddings; i++)
+					missingEmbeddings = embeddingSink.WantsEmbedding(videoFile, videoFile.GetGrayBytesIndex(positions[i], maxSamplingDurationSeconds));
+			}
+			if (missingPositions == 0 && !missingEmbeddings) {
 				for (int i = 0; i < positions.Count; i++)
 					onSampleComplete?.Invoke(i + 1);
 				return true;
@@ -611,8 +848,8 @@ namespace VDF.Core.FFTools {
 			// Native batch path: open file + decoder + sws context once, walk all positions.
 			// The for-loop fallback below recreates them per position, so on a 4-position scan
 			// this avoids ~3x of the per-file FFmpeg setup cost.
-			if (ShouldUseNativeBinding && TryGetGrayBytesFromVideoNativeBatch(videoFile, positions, maxSamplingDurationSeconds, ref tooDarkCounter, onSampleComplete)) {
-				if (tooDarkCounter == missingPositions) {
+			if (ShouldUseNativeBinding && TryGetGrayBytesFromVideoNativeBatch(videoFile, positions, maxSamplingDurationSeconds, ref tooDarkCounter, onSampleComplete, embeddingSink)) {
+				if (missingPositions > 0 && tooDarkCounter == missingPositions) {
 					videoFile.Flags.Set(EntryFlags.TooDark);
 					Logger.Instance.Warn($"Graybytes too dark of: {videoFile.Path}");
 					return false;
@@ -622,33 +859,63 @@ namespace VDF.Core.FFTools {
 
 			// Re-count: the batch path may have populated some positions before throwing.
 			missingPositions = CountMissingGrayBytePositions(videoFile, positions, maxSamplingDurationSeconds);
-			if (missingPositions == 0)
-				return true;
 
 			tooDarkCounter = 0;
 			for (int i = 0; i < positions.Count; i++) {
 				double position = videoFile.GetGrayBytesIndex(positions[i], maxSamplingDurationSeconds);
-				if (videoFile.grayBytes.ContainsKey(position)) {
+				bool needGray = !videoFile.grayBytes.ContainsKey(position);
+				bool needRgb = embeddingSink?.WantsEmbedding(videoFile, position) == true;
+
+				// Both frames wanted: one seek+decode via the split filter instead of two
+				// full FFmpeg runs. Not with CustomFFArguments — see GetGrayAndRgb224Cli.
+				if (needGray && needRgb && string.IsNullOrWhiteSpace(CustomFFArguments)) {
+					(byte[]? data, byte[]? rgb) = GetGrayAndRgb224Cli(videoFile.Path, TimeSpan.FromSeconds(position), softwareDecodeOnly: false, extendedLogging);
+					if (data == null) {
+						videoFile.Flags.Set(EntryFlags.ThumbnailError);
+						return false;
+					}
+					if (!GrayBytesUtils.VerifyGrayScaleValues(data))
+						tooDarkCounter++;
+					videoFile.grayBytes.Add(position, data);
+					videoFile.PHashes.Add(position, pHash.PerceptualHash.ComputePHashFromGray32x32(data));
+					// RGB failure is not fatal — the entry simply stays without this
+					// embedding and the AI pass abstains for it.
+					if (rgb != null)
+						embeddingSink!.SubmitFrame(videoFile, position, rgb);
 					onSampleComplete?.Invoke(i + 1);
 					continue;
 				}
 
-				var data = GetThumbnail(new FfmpegSettings {
-					File = videoFile.Path,
-					Position = TimeSpan.FromSeconds(position),
-					GrayScale = 1,
-				}, extendedLogging);
-				if (data == null) {
-					videoFile.Flags.Set(EntryFlags.ThumbnailError);
-					return false;
+				if (needGray) {
+					var data = GetThumbnail(new FfmpegSettings {
+						File = videoFile.Path,
+						Position = TimeSpan.FromSeconds(position),
+						GrayScale = 1,
+					}, extendedLogging);
+					if (data == null) {
+						videoFile.Flags.Set(EntryFlags.ThumbnailError);
+						return false;
+					}
+					if (!GrayBytesUtils.VerifyGrayScaleValues(data))
+						tooDarkCounter++;
+					videoFile.grayBytes.Add(position, data);
+					videoFile.PHashes.Add(position, pHash.PerceptualHash.ComputePHashFromGray32x32(data));
 				}
-				if (!GrayBytesUtils.VerifyGrayScaleValues(data))
-					tooDarkCounter++;
-				videoFile.grayBytes.Add(position, data);
-				videoFile.PHashes.Add(position, pHash.PerceptualHash.ComputePHashFromGray32x32(data));
+
+				// AI frame for the same position: its failure is not fatal — the entry
+				// simply stays without this embedding and the AI pass abstains for it.
+				if (needRgb) {
+					byte[]? rgb = GetThumbnail(new FfmpegSettings {
+						File = videoFile.Path,
+						Position = TimeSpan.FromSeconds(position),
+						Rgb224 = true,
+					}, extendedLogging);
+					if (rgb != null)
+						embeddingSink!.SubmitFrame(videoFile, position, rgb);
+				}
 				onSampleComplete?.Invoke(i + 1);
 			}
-			if (tooDarkCounter == missingPositions) {
+			if (missingPositions > 0 && tooDarkCounter == missingPositions) {
 				videoFile.Flags.Set(EntryFlags.TooDark);
 				Logger.Instance.Warn($"Graybytes too dark of: {videoFile.Path}");
 				return false;
@@ -716,6 +983,111 @@ namespace VDF.Core.FFTools {
 		}
 
 		/// <summary>
+		/// Dense AI sampling for the visual partial-duplicate pass: decodes ONLY keyframes
+		/// (<c>-skip_frame nokey</c>) and emits one 224x224 RGB24 frame per
+		/// <paramref name="intervalSeconds"/> across the whole file in a single FFmpeg pass.
+		/// Deliberately always the CLI, even when the native binding is enabled: a
+		/// sequential keyframe sweep maps naturally onto one process run, and this pass is
+		/// throughput-bound, not seek-bound — the same trade-off ChromaprintEngine makes
+		/// for audio (which also means partial detection already requires the ffmpeg
+		/// executable). Returns null on failure; frame k represents ≈ k·interval seconds.
+		/// </summary>
+		internal static byte[][]? GetDenseAiFrames(string filePath, double intervalSeconds, int maxFrames, bool extendedLogging, CancellationToken cancelToken = default) {
+			const int frameBytes = AI.OnnxEmbedder.InputSide * AI.OnnxEmbedder.InputSide * 3;
+			var psi = new ProcessStartInfo {
+				FileName = FFmpegPath,
+				CreateNoWindow = true,
+				RedirectStandardInput = false,
+				RedirectStandardOutput = true,
+				RedirectStandardError = true,
+				WorkingDirectory = Path.GetDirectoryName(FFmpegPath)!,
+				WindowStyle = ProcessWindowStyle.Hidden
+			};
+			psi.ArgumentList.Add("-hide_banner");
+			psi.ArgumentList.Add("-loglevel"); psi.ArgumentList.Add("error");
+			psi.ArgumentList.Add("-nostdin");
+			psi.ArgumentList.Add("-skip_frame"); psi.ArgumentList.Add("nokey");
+			psi.ArgumentList.Add("-an"); psi.ArgumentList.Add("-sn"); psi.ArgumentList.Add("-dn");
+			psi.ArgumentList.Add("-i"); psi.ArgumentList.Add(FFToolsUtils.LongPathFix(filePath));
+			psi.ArgumentList.Add("-vf");
+			// round=up: with the keyframe-only stream, fps' default nearest-rounding emits
+			// ZERO frames for videos whose only keyframe sits at t=0 (short clips) — the
+			// single frame lands between output ticks and is dropped at EOF.
+			psi.ArgumentList.Add(FormattableString.Invariant(
+				$"fps=1/{intervalSeconds:0.###}:round=up,scale={AI.OnnxEmbedder.InputSide}:{AI.OnnxEmbedder.InputSide}:flags=bicubic,format=rgb24"));
+			psi.ArgumentList.Add("-frames:v"); psi.ArgumentList.Add(maxFrames.ToString(CultureInfo.InvariantCulture));
+			psi.ArgumentList.Add("-f"); psi.ArgumentList.Add("rawvideo");
+			psi.ArgumentList.Add("-pix_fmt"); psi.ArgumentList.Add("rgb24");
+			psi.ArgumentList.Add("pipe:1");
+
+			using var process = new Process { StartInfo = psi };
+			string errOut = string.Empty;
+			Task? readTask = null;
+			var ms = new MemoryStream();
+			try {
+				process.Start();
+				FFToolsUtils.LowerChildPriority(process);
+				process.ErrorDataReceived += (_, e) => {
+					if (e.Data?.Length > 0)
+						errOut += Environment.NewLine + e.Data;
+				};
+				process.BeginErrorReadLine();
+				// Async read so the wait below stays authoritative: a synchronous CopyTo
+				// only returns once ffmpeg closes stdout, which never happens when the
+				// process stalls mid-decode (dead network share, wedged demuxer) — the
+				// timeout and the user's Stop were unreachable in exactly those cases.
+				readTask = process.StandardOutput.BaseStream.CopyToAsync(ms, cancelToken);
+
+				// A keyframe-only sweep of a multi-hour file legitimately takes minutes —
+				// far beyond the seek-thumbnail timeout.
+				if (!readTask.Wait((int)TimeSpan.FromMinutes(15).TotalMilliseconds, cancelToken))
+					throw new TimeoutException($"FFmpeg timed out on file: {filePath}");
+				if (!process.WaitForExit(30_000))
+					throw new TimeoutException($"FFmpeg did not exit after closing its output: {filePath}");
+				process.WaitForExit(); // flush async stderr handlers
+
+				if (process.ExitCode != 0)
+					throw new FFInvalidExitCodeException($"FFmpeg exited with: {process.ExitCode}");
+
+				int frameCount = (int)(ms.Length / frameBytes);
+				if (frameCount == 0)
+					throw new Exception("FFmpeg produced no frames");
+				var frames = new byte[frameCount][];
+				byte[] blob = ms.GetBuffer();
+				for (int i = 0; i < frameCount; i++)
+					frames[i] = blob.AsSpan(i * frameBytes, frameBytes).ToArray();
+				if (extendedLogging && errOut.Length > 0)
+					Logger.Instance.Warn($"WARNING: Problems while dense-sampling AI frames from: {filePath}{errOut}");
+				return frames;
+			}
+			catch (OperationCanceledException) {
+				KillAndDrain(process, readTask);
+				throw;
+			}
+			catch (Exception e) {
+				KillAndDrain(process, readTask);
+				string? hint = FfmpegErrorClassifier.Classify(errOut);
+				Logger.Instance.Warn($"ERROR: Failed dense-sampling AI frames from: {filePath}{errOut}{Environment.NewLine}{e.Message}" +
+					(hint != null ? $"{Environment.NewLine}Hint: {hint}" : string.Empty));
+				return null;
+			}
+			finally {
+				ms.Dispose();
+			}
+
+			// Killing ffmpeg breaks the pipe, so the pending read completes promptly; the
+			// bounded wait observes its exception before the MemoryStream is disposed.
+			static void KillAndDrain(Process process, Task? readTask) {
+				try {
+					if (!process.HasExited)
+						process.Kill();
+				}
+				catch { }
+				try { readTask?.Wait(2000); } catch { }
+			}
+		}
+
+		/// <summary>
 		/// Extracts a single JPEG thumbnail from a video or image file at the given
 		/// position (ignored for images). FFmpeg does the scaling and encoding directly.
 		/// Returns null if extraction fails.
@@ -729,6 +1101,37 @@ namespace VDF.Core.FFTools {
 				MaxWidth = maxWidth,
 				JpegQuality = jpegQuality,
 			}, extendedLogging);
+		}
+
+		/// <summary>
+		/// Widens a coded frame size to its display size using the stream's sample
+		/// (pixel) aspect ratio. Unknown (0), degenerate or implausible SARs leave the
+		/// size unchanged — bad container metadata must not distort the thumbnail.
+		/// </summary>
+		internal static Size ApplySampleAspectRatio(Size codedSize, int sarNum, int sarDen) {
+			if (sarNum <= 0 || sarDen <= 0 || sarNum == sarDen)
+				return codedSize;
+			long displayWidth = (long)Math.Round(codedSize.Width * (double)sarNum / sarDen);
+			if (displayWidth <= 0 || displayWidth > 65536)
+				return codedSize;
+			return new Size((int)displayWidth, codedSize.Height);
+		}
+
+		/// <summary>
+		/// The CLI <c>-vf</c> fragment that widens anamorphic video to its display width
+		/// (<c>setsar=1</c>), or null for images (square pixels; the image2 demuxer pipeline
+		/// is fragile — #806). Mirrors <see cref="ApplySampleAspectRatio"/>: an unknown SAR
+		/// (0) is treated as square, and an implausible SAR that would push the display width
+		/// past 65536 falls back to the coded width — bad container metadata must not ask
+		/// ffmpeg for a multi-hundred-megapixel frame (which just OOMs / fails the thumbnail).
+		/// </summary>
+		internal static string? BuildSarNormalizationFilter(string file) {
+			if (FileUtils.IsImageFile(file))
+				return null;
+			// SAR multiplier, unknown (0) treated as 1. Commas inside the expression are
+			// escaped so the filtergraph parser doesn't read them as filter separators.
+			const string sarMul = "if(eq(sar\\,0)\\,1\\,sar)";
+			return $"scale=if(gt(iw*{sarMul}\\,65536)\\,iw\\,trunc(iw*{sarMul})):ih,setsar=1";
 		}
 
 		/// <summary>Downscale-only fit into a maxDim x maxDim bounding box, preserving aspect ratio.</summary>
@@ -888,5 +1291,11 @@ namespace VDF.Core.FFTools {
 		public int JpegQuality;
 		/// <summary>Skip hardware acceleration (used for still images).</summary>
 		public bool SoftwareDecodeOnly;
+		/// <summary>
+		/// Produce a raw 224×224 RGB24 frame (the AI embedding input) instead of gray
+		/// bytes or a JPEG thumbnail. Like gray bytes it is force-scaled to a fixed
+		/// square, so aspect ratio is erased identically on both sides of a comparison.
+		/// </summary>
+		public bool Rgb224;
 	}
 }

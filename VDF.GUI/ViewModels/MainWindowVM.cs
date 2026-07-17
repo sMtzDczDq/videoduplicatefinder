@@ -25,6 +25,7 @@ using System.Reactive.Linq;
 using System.Runtime.InteropServices;
 using System.Text;
 using System.Text.Json;
+using System.Threading;
 using Avalonia;
 using Avalonia.Collections;
 using Avalonia.Controls;
@@ -49,6 +50,10 @@ namespace VDF.GUI.ViewModels {
 			set => this.RaiseAndSetIfChanged(ref _SelectedLogItem, value);
 		}
 		List<HashSet<string>> GroupBlacklist = new();
+		// Serializes scan-result exports: automatic backups (after deletes, marks,
+		// thumbnail retrieval) can overlap a user-triggered export, and both write the
+		// same .tmp file next to the target.
+		readonly SemaphoreSlim scanResultsExportGate = new(1, 1);
 		public string BackupScanResultsFile =>
 			Path.Combine(CoreUtils.ResolveDatabaseFolder(SettingsFile.Instance.CustomDatabaseFolder), "backup.scanresults");
 		public string BlacklistedGroupsFile =>
@@ -193,6 +198,33 @@ namespace VDF.GUI.ViewModels {
 			get => _IsBusy;
 			set => this.RaiseAndSetIfChanged(ref _IsBusy, value);
 		}
+		bool _IsBusyCancelable;
+		/// <summary>Shows the busy overlay's Cancel button while a cancelable operation runs.</summary>
+		public bool IsBusyCancelable {
+			get => _IsBusyCancelable;
+			set => this.RaiseAndSetIfChanged(ref _IsBusyCancelable, value);
+		}
+		CancellationTokenSource? busyCancellation;
+		/// <summary>
+		/// Registers a cancel source for the current busy-overlay operation and shows the
+		/// overlay's Cancel button. Pair with <see cref="EndCancelableBusyOperation"/> in a
+		/// finally block. Everything runs on the UI thread (ReactiveCommand + await
+		/// continuations), so begin/cancel/end cannot race.
+		/// </summary>
+		internal CancellationToken BeginCancelableBusyOperation() {
+			busyCancellation = new CancellationTokenSource();
+			IsBusyCancelable = true;
+			return busyCancellation.Token;
+		}
+		internal void EndCancelableBusyOperation() {
+			IsBusyCancelable = false;
+			CancellationTokenSource? cts = busyCancellation;
+			busyCancellation = null;
+			cts?.Dispose();
+		}
+		public ReactiveCommand<Unit, Unit> CancelBusyCommand => ReactiveCommand.Create(() => {
+			busyCancellation?.Cancel();
+		});
 		int _ScanProgressMaxValue = 100;
 		public int ScanProgressMaxValue {
 			get => _ScanProgressMaxValue;
@@ -237,8 +269,18 @@ namespace VDF.GUI.ViewModels {
 		int _DuplicatesCheckedCounter;
 		public int DuplicatesCheckedCounter {
 			get => _DuplicatesCheckedCounter;
-			set => this.RaiseAndSetIfChanged(ref _DuplicatesCheckedCounter, value);
+			set {
+				this.RaiseAndSetIfChanged(ref _DuplicatesCheckedCounter, value);
+				this.RaisePropertyChanged(nameof(CheckedSummaryText));
+			}
 		}
+
+		/// <summary>Action-bar label "N checked from M groups" (group count asked for in the #849 thread).</summary>
+		public string CheckedSummaryText => FormatCheckedSummary(DuplicatesCheckedCounter, checkedCountByGroup.Count,
+			App.Lang["Results.Action.CheckedSummary"], App.Lang["Results.Action.CheckedSummarySingleGroup"]);
+
+		internal static string FormatCheckedSummary(int checkedCount, int groupCount, string pluralFormat, string singleGroupFormat) =>
+			string.Format(groupCount == 1 ? singleGroupFormat : pluralFormat, checkedCount, groupCount);
 		long _DuplicatesCheckedSizeInternal;
 		long DuplicatesCheckedSizeInternal {
 			get => _DuplicatesCheckedSizeInternal;
@@ -321,6 +363,7 @@ namespace VDF.GUI.ViewModels {
 				checkedCountByGroup.Remove(groupId);
 			else
 				checkedCountByGroup[groupId] = count;
+			this.RaisePropertyChanged(nameof(CheckedSummaryText));
 		}
 		public bool IsMultiOpenSupported => !string.IsNullOrEmpty(SettingsFile.Instance.CustomCommands.OpenMultiple);
 		public bool IsMultiOpenInFolderSupported => !string.IsNullOrEmpty(SettingsFile.Instance.CustomCommands.OpenMultipleInFolder);
@@ -393,7 +436,9 @@ namespace VDF.GUI.ViewModels {
 					or nameof(SettingsFile.CompareHorizontallyFlipped)
 					or nameof(SettingsFile.IgnoreBlackPixels)
 					or nameof(SettingsFile.IgnoreWhitePixels)
-					or nameof(SettingsFile.EnablePartialClipDetection))
+					or nameof(SettingsFile.EnablePartialClipDetection)
+					or nameof(SettingsFile.UseAiMatching)
+					or nameof(SettingsFile.EnableAiPartialDetection))
 					RefreshScanProfileSelection();
 			};
 
@@ -451,11 +496,27 @@ namespace VDF.GUI.ViewModels {
 		}
 
 		public async void Thumbnails_ValueChanged(object? sender, NumericUpDownValueChangedEventArgs e) {
-			bool isReadyToCompare = IsGathered;
-			isReadyToCompare &= Scanner.Settings.ThumbnailCount == e.NewValue;
-			if (!isReadyToCompare && ApplicationHelpers.MainWindowDataContext.IsReadyToCompare)
-				await MessageBoxService.Show($"Number of thumbnails can't be changed between quick rescans. Full scan will be required.");
+			var (isReadyToCompare, showWarning) = EvaluateThumbnailCountChange(
+				IsGathered, Scanner.Settings.ThumbnailCount, e.NewValue, ApplicationHelpers.MainWindowDataContext.IsReadyToCompare);
+			// The flag must flip BEFORE the dialog await: it used to be reset only after
+			// the box was dismissed, so every further arrow click made in the meantime
+			// still saw wasReady == true and stacked another box on top (2026-07-17
+			// report - clicking the stepper kept spawning boxes until one OK was hit).
 			ApplicationHelpers.MainWindowDataContext.IsReadyToCompare = isReadyToCompare;
+			if (showWarning)
+				await MessageBoxService.Show(App.Lang["Message.ThumbnailCountFullScan"]);
+		}
+
+		/// <summary>
+		/// Thumbnail-count change vs. quick-rescan readiness: changing the count away
+		/// from what the last scan used forces a full scan (warn once); changing it back
+		/// restores quick-rescan readiness silently. Callers must apply the flag before
+		/// showing the warning dialog.
+		/// </summary>
+		internal static (bool IsReadyToCompare, bool ShowWarning) EvaluateThumbnailCountChange(
+				bool isGathered, int engineThumbnailCount, decimal? newValue, bool wasReadyToCompare) {
+			bool ready = isGathered && engineThumbnailCount == newValue;
+			return (ready, !ready && wasReadyToCompare);
 		}
 
 		private void Scanner_ThumbnailProgress(int arg1, int arg2) => Dispatcher.UIThread.Post(() => {
@@ -507,6 +568,20 @@ namespace VDF.GUI.ViewModels {
 		public void RestoreBackupScanResults() {
 			if (File.Exists(BackupScanResultsFile))
 				ImportScanResultsIncludingThumbnails(BackupScanResultsFile);
+		}
+
+		/// <summary>
+		/// Tells the user when startup had to fall back to default settings because the
+		/// settings file was unreadable (#830). Logged again here because the constructor
+		/// deletes log.txt after the settings were loaded.
+		/// </summary>
+		public async void NotifyStartupSettingsError() {
+			if (SettingsFile.StartupLoadError is not { } error) return;
+			Logger.Instance.Error(error);
+			// Startup fires before the window is shown; a dialog with a non-visible owner throws.
+			while (ApplicationHelpers.MainWindow?.IsVisible != true)
+				await Task.Delay(200);
+			await MessageBoxService.Show(string.Format(App.Lang["Message.SettingsLoadFailed"], error));
 		}
 
 		public async void LoadDatabase() {
@@ -586,7 +661,9 @@ namespace VDF.GUI.ViewModels {
 				string stageSuffix = string.IsNullOrEmpty(e.CurrentStage)
 					? string.Empty
 					: e.StageMax > 0 ? $"  [{e.CurrentStage} {e.StageCurrent}/{e.StageMax}]" : $"  [{e.CurrentStage}]";
-				ScanProgressText = e.CurrentFile + stageSuffix;
+				// A phase's opening event carries no file yet (see ScanEngine.InitProgress) — don't
+				// leave the separator's leading spaces dangling in front of the stage label.
+				ScanProgressText = string.IsNullOrEmpty(e.CurrentFile) ? stageSuffix.TrimStart() : e.CurrentFile + stageSuffix;
 				// Separate stage/file properties for the Scanning state's center panel.
 				ScanStageText = string.IsNullOrEmpty(e.CurrentStage)
 					? string.Empty
@@ -630,6 +707,11 @@ namespace VDF.GUI.ViewModels {
 
 				foreach (var item in Scanner.Duplicates)
 					Duplicates.Add(new DuplicateItemVM(item));
+
+				// A completed scan that matched nothing drops back to the Setup screen; flag
+				// it so the screen shows a "no duplicates found" notice instead of looking
+				// identical to the never-scanned state.
+				ShowNoDuplicatesNotice = SetupNotice.ShowAfterScanDone(Duplicates.Count);
 
 				if (SettingsFile.Instance.GeneratePreviewThumbnails) {
 					ShowThumbnailRetrievalProgressBar = true;
@@ -894,6 +976,7 @@ namespace VDF.GUI.ViewModels {
 
 			if (string.IsNullOrEmpty(path)) return;
 
+			await scanResultsExportGate.WaitAsync();
 			IsBusy = true;
 			IsBusyOverlayText = App.Lang["Busy.SavingScanResults"];
 			var dir = Path.GetDirectoryName(path)!;
@@ -902,46 +985,42 @@ namespace VDF.GUI.ViewModels {
 			try {
 				var snapshot = Duplicates.ToList();
 				var envelope = new ScanResultsEnvelope { Version = ScanResultsEnvelope.CurrentVersion, Items = snapshot };
+				var typeInfo = envelopeTypeInfo ?? GuiJsonFieldsContext.Default.ScanResultsEnvelope;
+				var pack = Utils.ThumbCacheHelpers.Provider;
 
-				if (!includeThumbnails) {
-					await using var fs = new FileStream(tmp, FileMode.Create, FileAccess.Write, FileShare.None, 128 * 1024, useAsync: true);
-					await JsonSerializer.SerializeAsync(fs, envelope, envelopeTypeInfo ?? GuiJsonFieldsContext.Default.ScanResultsEnvelope);
-				}
-				else {
-					await using var fs = new FileStream(tmp, FileMode.Create, FileAccess.Write, FileShare.None, 128 * 1024, useAsync: true);
-					using var zip = new ZipArchive(fs, ZipArchiveMode.Create, leaveOpen: false);
-					var jsonEntry = zip.CreateEntry("scan.json", CompressionLevel.NoCompression);
-
-					await using (var es = jsonEntry.Open()) {
-						await JsonSerializer.SerializeAsync(es, envelope, envelopeTypeInfo ?? GuiJsonFieldsContext.Default.ScanResultsEnvelope);
-						await es.FlushAsync();
-					}
-
-					Utils.ThumbCacheHelpers.Provider?.FlushIndex();
-
-					if (TempDirectory != null) {
-						var packPath = Path.Combine(TempDirectory.Path, "thumbs.pack");
-						var idxPath = Path.Combine(TempDirectory.Path, "thumbs.idx");
-
-						if (File.Exists(packPath) && Utils.ThumbCacheHelpers.Provider != null) {
-							var packEntry = zip.CreateEntry("thumbs.pack", CompressionLevel.NoCompression);
-							using var es = packEntry.Open();
-							Utils.ThumbCacheHelpers.Provider.CopyTo(es);
+				// Serialization and the pack copy are heavy file/CPU work; on a large scan
+				// the automatic backup used to freeze the GUI for its entire duration
+				// (it runs on the UI thread right after "Thumbnail loading complete" and
+				// after every deletion batch).
+				await Task.Run(() => {
+					using (var fs = new FileStream(tmp, FileMode.Create, FileAccess.Write, FileShare.None, 128 * 1024)) {
+						if (!includeThumbnails) {
+							JsonSerializer.Serialize(fs, envelope, typeInfo);
 						}
+						else {
+							using var zip = new ZipArchive(fs, ZipArchiveMode.Create, leaveOpen: false);
+							var jsonEntry = zip.CreateEntry("scan.json", CompressionLevel.NoCompression);
+							using (var es = jsonEntry.Open())
+								JsonSerializer.Serialize(es, envelope, typeInfo);
 
-						if (File.Exists(idxPath)) {
-							var idxEntry = zip.CreateEntry("thumbs.idx", CompressionLevel.NoCompression);
-							using var es = idxEntry.Open();
-							using var fs2 = File.OpenRead(idxPath);
-							fs2.CopyTo(es);
+							if (pack != null) {
+								// Snapshot under the pack lock is cheap (length + index); the
+								// multi-GB copy itself runs lock-free so thumbnail loads in
+								// the UI stay responsive during a backup.
+								var (packLength, indexJson) = pack.SnapshotForExport();
+								var packEntry = zip.CreateEntry("thumbs.pack", CompressionLevel.NoCompression);
+								using (var es = packEntry.Open())
+									pack.CopyPackTo(es, packLength);
+								var idxEntry = zip.CreateEntry("thumbs.idx", CompressionLevel.NoCompression);
+								using (var es = idxEntry.Open())
+									es.Write(indexJson, 0, indexJson.Length);
+							}
 						}
 					}
-				}
-
-				File.Move(tmp, path, overwrite: true);
+					File.Move(tmp, path, overwrite: true);
+				});
 			}
 			catch (Exception ex) {
-				IsBusy = false;
 				string error = string.Format(App.Lang["Message.ExportScanResultsFailed"], ex);
 				Logger.Instance.Error(error);
 				await MessageBoxService.Show(error);
@@ -949,6 +1028,7 @@ namespace VDF.GUI.ViewModels {
 			finally {
 				try { if (File.Exists(tmp)) File.Delete(tmp); } catch { /* ignore */ }
 				IsBusy = false;
+				scanResultsExportGate.Release();
 			}
 		}
 
@@ -1099,6 +1179,17 @@ namespace VDF.GUI.ViewModels {
 			new(App.Lang["MainWindow.Settings.ThumbnailDoubleClick.OpenFile"], Data.ThumbnailDoubleClickAction.OpenFile),
 			new(App.Lang["MainWindow.Settings.ThumbnailDoubleClick.OpenThumbnailComparer"], Data.ThumbnailDoubleClickAction.OpenThumbnailComparer),
 		};
+
+		// Bound via SelectedItem (not SelectedValue) so the choice actually persists — see
+		// SettingsCombo / issue #829.
+		public Data.ThumbnailDoubleClickOption? SelectedThumbnailDoubleClickOption {
+			get => Data.SettingsCombo.OptionFor(ThumbnailDoubleClickOptions, SettingsFile.Instance.ThumbnailDoubleClickAction);
+			set {
+				if (value == null || value.Value == SettingsFile.Instance.ThumbnailDoubleClickAction) return;
+				SettingsFile.Instance.ThumbnailDoubleClickAction = value.Value;
+				this.RaisePropertyChanged();
+			}
+		}
 
 		public ReactiveCommand<Unit, Unit> OpenItemInFolderCommand => ReactiveCommand.Create(OpenItemsInFolder);
 
@@ -1344,21 +1435,8 @@ namespace VDF.GUI.ViewModels {
 			}
 		});
 
-		static int MapToFfmpegMajor(int avcodecMajor, int avformatMajor, int avutilMajor) {
-			int[] majors = { avcodecMajor, avformatMajor, avutilMajor };
-			int want = 0;
-			foreach (var m in majors) {
-				int v = m switch {
-					62 => 8,
-					61 => 7,
-					60 => 6,
-					59 => 5,
-					_ => 0
-				};
-				if (v > want) want = v;
-			}
-			return want;
-		}
+		static int MapToFfmpegMajor(int avcodecMajor, int avformatMajor, int avutilMajor) =>
+			Core.FFTools.FfmpegDownloader.MapToFfmpegMajor(avcodecMajor, avformatMajor, avutilMajor);
 
 		static string ArchString(Architecture a) => a switch {
 			Architecture.X64 => "x64 (64-bit)",
@@ -1495,6 +1573,14 @@ Non-Windows setup:
 				await MessageBoxService.Show(App.Lang["Message.NativeFfmpegAutoNotSupported"]);
 				return;
 			}
+			if (SettingsFile.Instance.NeedsAiComponents &&
+				!VDF.Core.AI.AiComponents.IsReady) {
+				if (await MessageBoxService.Show(App.Lang["Message.AiComponentsMissingPrompt"], MessageBoxButtons.Yes | MessageBoxButtons.No) != MessageBoxButtons.Yes)
+					return;
+				await DownloadAiComponentsAsync();
+				if (!VDF.Core.AI.AiComponents.IsReady)
+					return;
+			}
 			if (SettingsFile.Instance.Includes.Count == 0) {
 				await MessageBoxService.Show(App.Lang["Message.NoScanFolders"]);
 				return;
@@ -1523,6 +1609,7 @@ Non-Windows setup:
 			}
 
 			Duplicates.Clear();
+			ShowNoDuplicatesNotice = false;
 
 			// Folder counting is informational only — never let it compete with the scan for IO.
 			folderCounting.CancelAll();
@@ -1577,6 +1664,7 @@ Non-Windows setup:
 			Scanner.Settings.DurationDifferenceMaxSeconds = SettingsFile.Instance.DurationDifferenceMaxSeconds;
 			Scanner.Settings.MaxSamplingDurationSeconds = SettingsFile.Instance.MaxSamplingDurationSeconds;
 			Scanner.Settings.MaxDegreeOfParallelism = SettingsFile.Instance.MaxDegreeOfParallelism;
+			Scanner.Settings.MatchingMaxDegreeOfParallelism = SettingsFile.Instance.MatchingMaxDegreeOfParallelism;
 			Scanner.Settings.HddMaxDegreeOfParallelism = SettingsFile.Instance.HddMaxDegreeOfParallelism;
 			Scanner.Settings.DriveTypeOverrides = SettingsFile.Instance.DriveTypeOverrides;
 			Scanner.Settings.ThumbnailCount = SettingsFile.Instance.Thumbnails;
@@ -1602,6 +1690,11 @@ Non-Windows setup:
 			Scanner.Settings.FolderMatchMode = SettingsFile.Instance.FolderMatchMode;
 			Scanner.Settings.SameFolderDepth = SettingsFile.Instance.SameFolderDepth;
 			Scanner.Settings.UsePHashing = SettingsFile.Instance.UsePHash;
+			Scanner.Settings.PHashRequiredMatchingSampleRatio = SettingsFile.Instance.PHashSampleRatioPercent / 100f;
+			Scanner.Settings.UseAiMatching = SettingsFile.Instance.UseAiMatching;
+			Scanner.Settings.AiPercent = SettingsFile.Instance.AiPercent;
+			Scanner.Settings.EnableAiPartialDetection = SettingsFile.Instance.EnableAiPartialDetection;
+			Scanner.Settings.AiPartialHitPercent = SettingsFile.Instance.AiPartialHitPercent;
 			Scanner.Settings.UseExifCreationDate = SettingsFile.Instance.UseExifCreationDate;
 			Scanner.Settings.FilePathNotContainsTexts = SettingsFile.Instance.FilePathNotContainsTexts.ToList();
 			Scanner.Settings.FilterByFileSize = SettingsFile.Instance.FilterByFileSize;
@@ -1826,6 +1919,7 @@ Non-Windows setup:
 			// caught. This set records the groups that already kept theirs.
 			var tombstonedGroups = new HashSet<Guid>();
 			long freedBytes = 0;
+			int missingOnDisk = 0;
 			int total = toDelete.Count;
 			IsBusy = true;
 			IsBusyOverlayText = string.Format(App.Lang["Busy.Deleting"], 0, total);
@@ -1844,18 +1938,21 @@ Non-Windows setup:
 							IsBusyOverlayText = string.Format(App.Lang["Busy.Deleting"], current, total));
 					}
 
-					// Windows recycle-bin deletes go through a single batched shell
-					// operation — one SHFileOperation per file pays the full shell
-					// round-trip each time and is dramatically slower for big batches.
-					// Per-file success is determined afterwards by re-checking existence.
+					// Windows recycle-bin deletes go through batched shell operations —
+					// one SHFileOperation per file pays the full shell round-trip each
+					// time and is dramatically slower for big batches. Batches run per
+					// CHUNK, interleaved with the per-file accounting below: recycling
+					// the whole selection in one call kept the "Deleting files... 0/N"
+					// overlay frozen for the entire operation (#849 report), because the
+					// shell call IS the deletion and the counting only ran afterwards.
+					// Per-file success is determined by re-checking existence.
 					bool batchedRecycle = fromDisk && !permanently && !createLinks && CoreUtils.IsWindows;
-					var batchRecycled = new HashSet<DuplicateItemVM>(ReferenceEqualityComparer<DuplicateItemVM>.Instance);
-					if (batchedRecycle) {
-						var existing = toDelete.Where(d => File.Exists(d.ItemInfo.Path)).ToList();
-						if (existing.Count > 0) {
+					DiskDeletion.RunChunked(toDelete, DiskDeletion.RecycleChunkSize, batchedRecycle,
+						d => d.ItemInfo.Path, File.Exists,
+						paths => {
 							var fs = new FileUtils.SHFILEOPSTRUCT {
 								wFunc = FileUtils.FileOperationType.FO_DELETE,
-								pFrom = string.Join('\0', existing.Select(d => d.ItemInfo.Path)) + "\0\0",
+								pFrom = string.Join('\0', paths) + "\0\0",
 								fFlags = FileUtils.FileOperationFlags.FOF_ALLOWUNDO |
 										 FileUtils.FileOperationFlags.FOF_NOCONFIRMATION |
 										 FileUtils.FileOperationFlags.FOF_NOERRORUI |
@@ -1863,21 +1960,17 @@ Non-Windows setup:
 							};
 							int result = FileUtils.SHFileOperation(ref fs);
 							if (result != 0)
-								Logger.Instance.Warn($"SHFileOperation returned {result:X} for a batch of {existing.Count} file(s); checking which files were actually recycled.");
-							foreach (var d in existing)
-								batchRecycled.Add(d);
-						}
-					}
-
-					foreach (var dub in toDelete) {
+								Logger.Instance.Warn($"SHFileOperation returned {result:X} for a batch of {paths.Count} file(s); checking which files were actually recycled.");
+						},
+						(dub, wasBatchRecycled) => {
 						try {
 							// Path-only entry for the database lookup; FileEntry(string)
 							// stats the file and throws once it's gone.
 							var fe = new FileEntry { Path = dub.ItemInfo.Path };
-							bool exists = File.Exists(dub.ItemInfo.Path);
 
 							if (createLinks) {
-								if (!exists) {
+								if (!File.Exists(dub.ItemInfo.Path)) {
+									missingOnDisk++;
 									Logger.Instance.Warn($"'{dub.ItemInfo.Path}' no longer exists on disk; removing entry only.");
 								}
 								else {
@@ -1896,29 +1989,18 @@ Non-Windows setup:
 								}
 							}
 							else if (fromDisk) {
-								if (!exists) {
-									if (batchRecycled.Contains(dub)) {
+								switch (DiskDeletion.DeleteOne(dub.ItemInfo.Path, permanently, batchedRecycle,
+										wasBatchRecycled, File.Exists, File.Delete, FileUtils.MoveToTrash)) {
+									case DiskDeletion.Outcome.Deleted:
+									case DiskDeletion.Outcome.AlreadyRecycled:
 										freedBytes += CheckedSizeOf(dub);
-									}
-									else {
-										// File was already gone — treat as successfully deleted
-										// so the entry is still removed from the list and database.
+										break;
+									case DiskDeletion.Outcome.MissingEntryOnly:
+										// File was already gone; the entry is still removed from the
+										// list and database, but the user gets told afterwards.
+										missingOnDisk++;
 										Logger.Instance.Warn($"'{dub.ItemInfo.Path}' no longer exists on disk; removing entry only.");
-									}
-								}
-								else if (batchedRecycle) {
-									// Batch ran but this file is still there.
-									throw new Exception("the shell did not move the file to the recycle bin");
-								}
-								else if (!permanently) {
-									// Linux/macOS: attempt to move to system trash, fall back to permanent delete
-									if (!FileUtils.MoveToTrash(dub.ItemInfo.Path))
-										File.Delete(dub.ItemInfo.Path);
-									freedBytes += CheckedSizeOf(dub);
-								}
-								else {
-									File.Delete(dub.ItemInfo.Path);
-									freedBytes += CheckedSizeOf(dub);
+										break;
 								}
 							}
 
@@ -1944,7 +2026,17 @@ Non-Windows setup:
 							done++;
 							ReportProgress();
 						}
-					}
+					});
+
+					if (missingOnDisk > 0)
+						Logger.Instance.Warn($"{missingOnDisk} of {total} selected files were not found on disk; their entries were removed from the results, but no data was deleted for them.");
+
+					// Persist the database changes while still off the UI thread. This used
+					// to run last, after the results refresh, on the UI thread - where an
+					// exception in the refresh (dispatcher exceptions are swallowed to keep
+					// the app alive) could silently skip the save.
+					if (actuallyDeleted.Count > 0)
+						ScanEngine.SaveDatabase();
 				});
 			}
 			finally {
@@ -1959,27 +2051,39 @@ Non-Windows setup:
 				await MessageBoxService.Show(string.Format(App.Lang["Message.DeleteCompletedWithFailures"],
 					actuallyDeleted.Count, toDelete.Count, failedCount));
 
+			// "File not found" is treated as success above so stale entries clean up,
+			// but a batch full of them means an unavailable drive, not a deletion -
+			// without this notice 2000 entries once vanished while every file
+			// silently stayed on disk.
+			if (missingOnDisk > 0)
+				await MessageBoxService.Show(string.Format(App.Lang["Message.DeleteMissingFilesNotice"], missingOnDisk));
+
 			if (actuallyDeleted.Count == 0)
 				return;
 
-			// Remove deleted items from flat list
-			foreach (var item in actuallyDeleted) {
+			try {
+				// Remove deleted items from flat list (single pass; searching the list
+				// per deleted item was O(deleted x list) and stalled on big batches)
 				for (int i = Duplicates.Count - 1; i >= 0; i--)
-					if (ReferenceEquals(Duplicates[i], item)) { Duplicates.RemoveAt(i); break; }
+					if (actuallyDeleted.Contains(Duplicates[i]))
+						Duplicates.RemoveAt(i);
+
+				// When ExcludeHardLinks is enabled, remove items within each group
+				// that are hardlinks of another remaining item in the same group.
+				if (SettingsFile.Instance.ExcludeHardLinks)
+					DropHardLinkDuplicates();
+
+				// Drop groups that have only one item left (no longer duplicates)
+				DropSingletonGroups();
+
+				RefreshGroupStats();
+				RefreshResultsView();
 			}
-
-			// When ExcludeHardLinks is enabled, remove items within each group
-			// that are hardlinks of another remaining item in the same group.
-			if (SettingsFile.Instance.ExcludeHardLinks)
-				DropHardLinkDuplicates();
-
-			// Drop groups that have only one item left (no longer duplicates)
-			DropSingletonGroups();
-
-			RefreshGroupStats();
-			RefreshResultsView();
-
-			ScanEngine.SaveDatabase();
+			catch (Exception ex) {
+				// Files and database are already handled; a view-refresh failure must
+				// not abort the rest of this method (the backup below).
+				Logger.Instance.Error($"Updating the results view after deletion failed: {ex}");
+			}
 
 			if (SettingsFile.Instance.BackupAfterListChanged)
 				await ExportScanResults(BackupScanResultsFile);

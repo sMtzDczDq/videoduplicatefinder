@@ -56,6 +56,8 @@ namespace VDF.Web.Services {
 		public int FilesHashed { get; private set; }
 		public IReadOnlyCollection<DuplicateItem> Duplicates => _engine.Duplicates;
 		public Settings Settings => _engine.Settings;
+		/// <summary>Test seam: lets tests seed results without driving a real scan.</summary>
+		internal ScanEngine Engine => _engine;
 
 		/// <summary>Caches for the thumbnail endpoints — cleared whenever the results change wholesale.</summary>
 		public System.Collections.Concurrent.ConcurrentDictionary<string, byte[]> HqThumbCache { get; } = new();
@@ -106,7 +108,7 @@ namespace VDF.Web.Services {
 			};
 		}
 
-		public void StartScanAndCompare() {
+		public async Task StartScanAndCompare() {
 			if (State == ScanState.Scanning || State == ScanState.Comparing) return;
 			_cts = new CancellationTokenSource();
 			State = ScanState.Scanning;
@@ -115,7 +117,18 @@ namespace VDF.Web.Services {
 			FilesHashed = 0;
 			_engine.Duplicates.Clear();
 			ClearThumbnailCaches();
+			Notify();
 			try {
+				// Headless first-use AI component download, like the CLI — PrepareSearch
+				// fails fast on missing components otherwise. Must be awaited, never
+				// blocked on: this runs on the Blazor circuit's synchronization context,
+				// and a sync-over-async wait deadlocks the whole circuit (the download's
+				// continuations queue behind the blocked handler forever).
+				if (_engine.Settings.NeedsAiComponents &&
+					!VDF.Core.AI.AiComponents.IsReady) {
+					VDF.Core.Utils.Logger.Instance.Info("Downloading AI components (ONNX Runtime + model, ~100 MB)...");
+					await VDF.Core.AI.AiComponents.DownloadAsync(null, _cts.Token);
+				}
 				_engine.StartSearch();
 			}
 			catch (Exception ex) {

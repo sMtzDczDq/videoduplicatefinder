@@ -118,6 +118,16 @@ public static class TestVideoGenerator {
 			$"-y -i \"{cleanInputPath}\" -c copy -bsf:v \"noise=amount=20:dropamount=8\" \"{outputPath}\"");
 
 	/// <summary>
+	/// H.264 with EVERY packet byte corrupted (noise=amount=1), so no frame can ever be
+	/// recovered at any position — unlike <see cref="GenerateH264_Corrupted"/>, whose light
+	/// noise lets the decoder recover frames at some positions. The container (and thus
+	/// ffprobe metadata) stays intact. Drives the corrupt-file fast-fail (#867) deterministically.
+	/// </summary>
+	public static bool GenerateH264_FullyCorrupted(string ffmpegPath, string cleanInputPath, string outputPath) =>
+		RunFfmpeg(ffmpegPath,
+			$"-y -i \"{cleanInputPath}\" -c copy -bsf:v \"noise=amount=1\" \"{outputPath}\"");
+
+	/// <summary>
 	/// Tiny 1s 64x48 H.264 clip stamped with an explicit container <c>creation_time</c> tag.
 	/// Used to exercise <c>FFProbeEngine.GetCreationTime</c>, the HEIC EXIF-date fallback.
 	/// </summary>
@@ -163,6 +173,18 @@ public static class TestVideoGenerator {
 			string.Format(CultureInfo.InvariantCulture,
 				"-y -f lavfi -i testsrc2=size={0}x{1}:rate=1 -frames:v 1 \"{2}\"",
 				width, height, outputPath));
+
+	/// <summary>
+	/// Raw AAC in an ADTS stream (no container), 44.1 kHz sine tone. ADTS is
+	/// self-syncing, so two such files can be byte-concatenated into a stream whose
+	/// channel config changes mid-stream — the corrupt-audio shape behind #861.
+	/// </summary>
+	public static bool GenerateAacAdts(string ffmpegPath, string outputPath, int channels, int durationSeconds = 2) =>
+		RunFfmpeg(ffmpegPath,
+			string.Format(CultureInfo.InvariantCulture,
+				"-y -f lavfi -i sine=frequency=440:duration={0} " +
+				"-ac {1} -ar 44100 -c:a aac -b:a 128k -f adts \"{2}\"",
+				durationSeconds, channels, outputPath));
 
 	/// <summary>
 	/// Generic VP9 generator for benchmarks.

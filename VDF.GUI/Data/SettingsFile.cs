@@ -350,8 +350,24 @@ namespace VDF.GUI.Data {
 		[JsonPropertyName("UsePHash")]
 		public bool UsePHash {
 			get => _UsePHash;
-			set => this.RaiseAndSetIfChanged(ref _UsePHash, value);
+			set {
+				this.RaiseAndSetIfChanged(ref _UsePHash, value);
+				this.RaisePropertyChanged(nameof(PHashComparisonActive));
+			}
 		}
+		bool _CombineGrayPHash;
+		/// <summary>#842: run grayscale AND pHash in one comparison pass and badge which algorithm found each group. Takes precedence over UsePHash.</summary>
+		[JsonPropertyName("CombineGrayPHash")]
+		public bool CombineGrayPHash {
+			get => _CombineGrayPHash;
+			set {
+				this.RaiseAndSetIfChanged(ref _CombineGrayPHash, value);
+				this.RaisePropertyChanged(nameof(PHashComparisonActive));
+			}
+		}
+		/// <summary>The pHash comparison (and its sample-quorum setting) is in play - alone or combined.</summary>
+		[JsonIgnore]
+		public bool PHashComparisonActive => UsePHash || CombineGrayPHash;
 		float _PHashSampleRatioPercent = 60f;
 		/// <summary>Percentage of sampled frame positions that must individually pass the pHash threshold — see Core's PHashRequiredMatchingSampleRatio (0..1).</summary>
 		[JsonPropertyName("PHashSampleRatioPercent")]
@@ -500,6 +516,18 @@ namespace VDF.GUI.Data {
 			get => _ThumbnailComparerMode;
 			set => this.RaiseAndSetIfChanged(ref _ThumbnailComparerMode, value);
 		}
+		double _ThumbnailComparerDiffSensitivity = 0.5;
+		[JsonPropertyName("ThumbnailComparerDiffSensitivity")]
+		public double ThumbnailComparerDiffSensitivity {
+			get => _ThumbnailComparerDiffSensitivity;
+			set => this.RaiseAndSetIfChanged(ref _ThumbnailComparerDiffSensitivity, value);
+		}
+		bool _ThumbnailComparerHighlightDifferences = false;
+		[JsonPropertyName("ThumbnailComparerHighlightDifferences")]
+		public bool ThumbnailComparerHighlightDifferences {
+			get => _ThumbnailComparerHighlightDifferences;
+			set => this.RaiseAndSetIfChanged(ref _ThumbnailComparerHighlightDifferences, value);
+		}
 		bool _ShowThumbnailColumn = true;
 		[JsonPropertyName("ShowThumbnailColumn")]
 		public bool ShowThumbnailColumn {
@@ -554,6 +582,13 @@ namespace VDF.GUI.Data {
 		public bool ResultsSortDescending {
 			get => _ResultsSortDescending;
 			set => this.RaiseAndSetIfChanged(ref _ResultsSortDescending, value);
+		}
+		bool _ResultsBestFirst;
+		/// <summary>Show the BEST-badged file at the top of each group, ahead of the sort order (#846).</summary>
+		[JsonPropertyName("ResultsBestFirst")]
+		public bool ResultsBestFirst {
+			get => _ResultsBestFirst;
+			set => this.RaiseAndSetIfChanged(ref _ResultsBestFirst, value);
 		}
 		double _ResultsPreviewWidth = 160;
 		/// <summary>Width of the Preview column in the results list; scales the preview frames.
@@ -652,7 +687,7 @@ namespace VDF.GUI.Data {
 		// Video bitrate ranks above FPS: among equal-resolution re-encodes bitrate is the
 		// stronger quality signal, and a marginally higher framerate must not outrank a
 		// much better encode (#839). Saved user orders are untouched.
-		List<string> _QualityCriteriaOrder = ["Duration", "Resolution", "Bitrate", "FPS", "Audio Bitrate", "Size"];
+		List<string> _QualityCriteriaOrder = ["Duration", "Resolution", "Bitrate", "FPS", "Bits per pixel", "Audio Bitrate", "Size"];
 		[JsonPropertyName("QualityCriteriaOrder")]
 		public List<string> QualityCriteriaOrder {
 			get => _QualityCriteriaOrder;

@@ -13,6 +13,7 @@
   "Log.ExcludedFilesSuppressed": " (로그 {0:N0}개 표시 생략)",
   "Log.ExcludedFilesSummaryItem": "- {0}: {1:N0}{2}",
   "Log.DatabaseCheckpoint": "데이터베이스 체크포인트 ({0:N0}개 파일을 디스크에 저장).",
+  "Log.CrashQuarantine": "이전 세션이 '{0}' 파일을 처리하는 중 비정상 종료되었습니다. 이 파일은 표시되어 앞으로 건너뜁니다. 다시 시도하려면 설정에서 '실패한 샘플링 항상 다시 시도'를 활성화하세요.",
   "Log.SessionScan": "스캔",
   "Log.SessionCompare": "비교",
   "Scan.Stage.Probing": "메타데이터 분석",
@@ -22,6 +23,8 @@
   "Scan.Stage.PartialCompare": "부분 클립 비교",
   "Scan.Stage.PartialVisualVerify": "부분 클립 확인",
   "Scan.Stage.AiEmbedding": "AI 임베딩 계산 중",
+  "Scan.Stage.AiPrepare": "AI 부분 감지: 준비 중",
   "Scan.Stage.AiDenseSampling": "AI 부분 감지: 키프레임 샘플링",
-  "Scan.Stage.AiPartialCompare": "AI 부분 감지: 클립 비교"
+  "Scan.Stage.AiPartialCompare": "AI 부분 감지: 클립 비교",
+  "Scan.Stage.AiPersist": "AI 부분 감지: 키프레임 캐시 저장"
 }

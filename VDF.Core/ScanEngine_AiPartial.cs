@@ -45,6 +45,12 @@ namespace VDF.Core {
 		/// already grouped there (or by the visual duplicate scan) are skipped.
 		/// </summary>
 		internal void ScanForPartialDuplicatesVisual() {
+			// Claim the phase BEFORE the prep work below. Scanning the database for eligible
+			// videos and loading the keyframe sidecar are silent minutes on a large library,
+			// and leaving the previous phase's label ("verifying partial clips") plus its
+			// finished counters on screen made that read as a hang (#865, same lesson as #831).
+			InitProgress(1, T("Scan.Stage.AiPrepare"));
+
 			var alreadyGrouped = BuildAlreadyGroupedPathSet();
 
 			var videos = DatabaseUtils.Database
@@ -61,12 +67,25 @@ namespace VDF.Core {
 
 			// ── Phase A: dense keyframe embeddings (sidecar-cached) ─────────────
 			var store = DenseEmbeddingStore.Load();
-			currentStageLabel = T("Scan.Stage.AiDenseSampling");
-			InitProgress(videos.Count);
+			if (store.Count > 0)
+				Logger.Instance.Info($"AI partial detection: keyframe cache loaded ({store.Count:N0} record(s)).");
+			InitProgress(videos.Count, T("Scan.Stage.AiDenseSampling"));
 			var dense = new DenseEmbeddingStore.DenseRecord?[videos.Count];
 			int extracted = 0, cached = 0, failed = 0;
 			using (var embedder = new OnnxEmbedder(AiComponents.ModelPath)) {
 				object embedLock = new();
+				// Sampling keyframes for a large library runs for hours, and the sidecar used
+				// to be written only after the very last file - so a crash, or the kill that
+				// ends a run the user believes is hung, threw ALL of it away and the next scan
+				// started from zero (#865). Checkpoint on the database's own interval instead.
+				var storeCheckpoint = new PeriodicCheckpoint(TimeSpan.FromMinutes(Settings.DatabaseCheckpointIntervalMinutes));
+				void TryCheckpointStore() =>
+					storeCheckpoint.TryRun(() => {
+						// No pruning mid-phase: records are still being added, and the keep-set
+						// is only meaningful for the final save.
+						store.Save(keepOnly: null);
+						Logger.Instance.Info($"AI partial detection: keyframe cache checkpointed ({store.Count:N0} record(s)).");
+					});
 				void ProcessVideo(int i) {
 					if (!pauseTokenSource.TryWaitWhilePaused(cancelationTokenSource.Token))
 						return;
@@ -82,42 +101,61 @@ namespace VDF.Core {
 						}
 						double duration = entry.mediaInfo!.Duration.TotalSeconds;
 						double interval = GetAiPartialIntervalSeconds(duration);
-						byte[][]? frames = FfmpegEngine.GetDenseAiFrames(entry.Path, interval, AiPartialMaxFramesPerFile,
-							Settings.ExtendedFFToolsLogging, cancelationTokenSource.Token);
-						if (frames == null) {
+						// Frames stream straight from ffmpeg into 16-frame embedding batches of
+						// pooled buffers — at most one batch per worker is alive, instead of the
+						// whole 400-frame sweep (up to 60 MB, twice) the old code held (#878).
+						// Invalid slots (dark or duplicated frames) stay on the timeline as
+						// empty arrays — never embedded, never matched.
+						var embedded = new List<byte[]>(96);
+						var filter = new DenseFrameFilter();
+						var batch = new List<byte[]>(OnnxEmbedder.MaxBatch);
+						var batchSlots = new List<int>(OnnxEmbedder.MaxBatch);
+						void FlushBatch() {
+							if (batch.Count == 0)
+								return;
+							byte[][] vectors;
+							// Inference is serial (one session, CPU-bound) while other files
+							// decode; ffmpeg simply blocks on its full stdout pipe meanwhile.
+							lock (embedLock)
+								vectors = embedder.EmbedBatchQuantized(batch);
+							for (int k = 0; k < vectors.Length; k++)
+								embedded[batchSlots[k]] = vectors[k];
+							foreach (byte[] frame in batch)
+								FramePool.Shared.Return(frame);
+							batch.Clear();
+							batchSlots.Clear();
+						}
+						int frameCount;
+						try {
+							frameCount = FfmpegEngine.StreamDenseAiFrames(entry.Path, interval, AiPartialMaxFramesPerFile,
+								Settings.ExtendedFFToolsLogging, frame => {
+									int slot = embedded.Count;
+									embedded.Add(Array.Empty<byte>());
+									if (filter.IsUsable(frame)) {
+										batch.Add(frame);
+										batchSlots.Add(slot);
+										if (batch.Count == OnnxEmbedder.MaxBatch)
+											FlushBatch();
+									}
+									else
+										FramePool.Shared.Return(frame);
+								}, cancelationTokenSource.Token);
+							if (frameCount >= 0)
+								FlushBatch();
+						}
+						finally {
+							// A failure mid-stream leaves unflushed frames behind — recycle them.
+							foreach (byte[] frame in batch)
+								FramePool.Shared.Return(frame);
+							batch.Clear();
+						}
+						if (frameCount < 0) {
+							// Already logged by the engine; partial embeddings are discarded so
+							// the record stays all-or-nothing like before.
 							Interlocked.Increment(ref failed);
 							return;
 						}
-						bool[] usable = SelectUsableDenseFrames(frames);
-						// Invalid slots (dark or duplicated frames) stay on the timeline as
-						// empty arrays — never embedded, never matched.
-						var embedded = new byte[frames.Length][];
-						var batch = new List<byte[]>(OnnxEmbedder.MaxBatch);
-						var batchSlots = new List<int>(OnnxEmbedder.MaxBatch);
-						// Inference is serial (one session, CPU-bound) while other files decode.
-						lock (embedLock) {
-							for (int f = 0; f < frames.Length; f++) {
-								embedded[f] = Array.Empty<byte>();
-								if (!usable[f])
-									continue;
-								batch.Add(frames[f]);
-								batchSlots.Add(f);
-								if (batch.Count == OnnxEmbedder.MaxBatch)
-									FlushBatch();
-							}
-							FlushBatch();
-
-							void FlushBatch() {
-								if (batch.Count == 0)
-									return;
-								byte[][] vectors = embedder.EmbedBatchQuantized(batch);
-								for (int k = 0; k < vectors.Length; k++)
-									embedded[batchSlots[k]] = vectors[k];
-								batch.Clear();
-								batchSlots.Clear();
-							}
-						}
-						var record = new DenseEmbeddingStore.DenseRecord(info.Length, info.LastWriteTimeUtc.Ticks, (float)interval, embedded);
+						var record = new DenseEmbeddingStore.DenseRecord(info.Length, info.LastWriteTimeUtc.Ticks, (float)interval, embedded.ToArray());
 						store.Put(entry.Path, record);
 						dense[i] = record;
 						Interlocked.Increment(ref extracted);
@@ -131,6 +169,7 @@ namespace VDF.Core {
 					}
 					finally {
 						IncrementProgress(Path.GetFileName(entry.Path));
+						TryCheckpointStore();
 					}
 				}
 
@@ -174,7 +213,11 @@ namespace VDF.Core {
 			// Keep-set = the whole database, NOT this scan's eligible videos: pruning to the
 			// eligible set wiped other libraries' records on every alternating scan, and even
 			// evicted videos the earlier passes had just grouped.
+			// Its own stage: writing a multi-gigabyte sidecar is minutes of silence that
+			// otherwise sat behind the sampling phase's completed counters (#865).
+			InitProgress(1, T("Scan.Stage.AiPersist"));
 			store.Save(AllDatabasePaths());
+			IncrementProgress(string.Empty);
 			if (cancelationTokenSource.IsCancellationRequested)
 				return;
 			Logger.Instance.Info($"AI partial detection: dense embeddings ready for {videos.Count - failed} video(s) ({cached} cached, {extracted} computed, {failed} failed).");
@@ -189,9 +232,8 @@ namespace VDF.Core {
 			for (int i = 0; i < videos.Count; i++)
 				if (dense[i] is { } record)
 					signatures[i] = ComputeDenseSignatures(record);
-			currentStageLabel = T("Scan.Stage.AiPartialCompare");
-			InitProgress(Math.Max(videos.Count - 1, 1));
-			(var matches, int pairsChecked) = CollectPartialMatchCandidates(videos,
+			InitProgress(Math.Max(videos.Count - 1, 1), T("Scan.Stage.AiPartialCompare"));
+			(var matches, long pairsChecked) = CollectPartialMatchCandidates(videos,
 				pairPrefilter: (i, j) => dense[i] != null && dense[j] != null,
 				tryMatchPair: (i, j) =>
 					TryMatchDenseFrames(dense[i]!, dense[j]!, signatures[i]!, signatures[j]!, hitThreshold, hammingBound, out float sim, out int offsetSec)
@@ -207,25 +249,9 @@ namespace VDF.Core {
 			Logger.Instance.Info($"AI partial detection: checked {pairsChecked} pair(s), found {matches.Count} candidate match(es), formed {assignments.Count} clip-source assignment(s).");
 		}
 
-		/// <summary>
-		/// Marks the frames of a dense sweep that may participate in matching. Excluded:
-		/// dark frames (they embed near-identically regardless of content — the union
-		/// pass's black-frame guard, applied here) and frames byte-identical to their
-		/// predecessor (the fps filter's round=up duplicates the previous keyframe across
-		/// gaps, and identical frames would multiply one coincidental hit into a full
-		/// evidence quorum). Excluded slots stay on the timeline so index↔time holds.
-		/// </summary>
-		internal static bool[] SelectUsableDenseFrames(byte[][] frames) {
-			var usable = new bool[frames.Length];
-			for (int f = 0; f < frames.Length; f++) {
-				if (!GrayBytesUtils.VerifyRgbFrameValues(frames[f]))
-					continue;
-				if (f > 0 && frames[f].AsSpan().SequenceEqual(frames[f - 1]))
-					continue;
-				usable[f] = true;
-			}
-			return usable;
-		}
+		// Frame usability (dark frames, duplicated keyframes) lives in DenseFrameFilter
+		// now — decided per frame as the sweep streams, see the excluded-frame rationale
+		// there. Excluded slots stay on the timeline so index↔time holds.
 
 		/// <summary>Sign signatures aligned with the record's frames; empty for invalid slots.</summary>
 		internal static ulong[][] ComputeDenseSignatures(DenseEmbeddingStore.DenseRecord record) {

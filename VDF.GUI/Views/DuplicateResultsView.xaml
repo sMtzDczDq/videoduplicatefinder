@@ -26,6 +26,8 @@
     <mvvm:ResultsRowSizingConverter x:Key="ResultsRowSizingConverter" />
     <mvvm:BoolToValueConverter x:Key="ChevronConverter" TrueValue="▸" FalseValue="▾" />
     <mvvm:BoolToValueConverter x:Key="SortDirectionGlyphConverter" TrueValue="↓" FalseValue="↑" />
+    <!-- #854: compact rows keep the single-line name; comfortable rows may wrap to two. -->
+    <mvvm:BoolToValueConverter x:Key="FileNameMaxLinesConverter" TrueValue="1" FalseValue="2" />
   </UserControl.Resources>
 
   <UserControl.Styles>
@@ -48,6 +50,9 @@
       <Setter Property="FontWeight" Value="SemiBold" />
       <Setter Property="Opacity" Value="0.65" />
       <Setter Property="VerticalAlignment" Value="Center" />
+      <!-- Column widths are fixed (#853) but header text is localized: a translation
+           that outgrows its column must degrade to an ellipsis, not clip glyphs. -->
+      <Setter Property="TextTrimming" Value="CharacterEllipsis" />
     </Style>
     <Style Selector="TextBlock.meta">
       <Setter Property="FontSize" Value="12" />
@@ -206,6 +211,13 @@
             IsChecked="{Binding ResultsSortDescending}"
             Content="{Binding ResultsSortDescending, Converter={StaticResource SortDirectionGlyphConverter}}"
             ToolTip.Tip="{Binding Source={x:Static local:App.Lang}, Path=[Results.Toolbar.DescendingTip]}" />
+        <ToggleButton
+            Classes="chip"
+            Margin="4,0,0,0"
+            FontSize="12"
+            IsChecked="{Binding ResultsBestFirst}"
+            Content="{Binding Source={x:Static local:App.Lang}, Path=[Results.Toolbar.BestFirst]}"
+            ToolTip.Tip="{Binding Source={x:Static local:App.Lang}, Path=[Results.Toolbar.BestFirstTip]}" />
         <Border Width="1" Height="20" Margin="10,0" Background="{actipro:ThemeResource Container3BorderBrush}" />
         <TextBlock Margin="0,0,4,0" VerticalAlignment="Center" FontSize="12"
                    Text="{Binding Source={x:Static local:App.Lang}, Path=[MainWindow.Filter.Type]}" />
@@ -240,7 +252,7 @@
         <Border Width="1" Height="20" Margin="10,0" Background="{actipro:ThemeResource Container3BorderBrush}" />
         <!-- Auto-select ▾ (stage 7): home of the old Selection menu — grouped by what
              the action ranges over (per group vs. across all results) -->
-        <Button FontSize="12" Padding="10,3" CornerRadius="12"
+        <Button x:Name="AutoSelectButton" FontSize="12" Padding="10,3" CornerRadius="12"
                 AutomationProperties.Name="{Binding Source={x:Static local:App.Lang}, Path=[Results.Toolbar.AutoSelect]}">
           <Button.Content>
             <StackPanel Orientation="Horizontal" Spacing="5">
@@ -276,6 +288,10 @@
               <MenuItem
                   Command="{Binding CheckCustomCommand}"
                   Header="{Binding Source={x:Static local:App.Lang}, Path=[MainWindow.Selection.ExpressionBuilder]}" />
+              <!-- Saved Expression Builder presets, applied without the dialog (#850).
+                   Populated in code-behind on flyout opening; hidden when none exist. -->
+              <MenuItem x:Name="SavedExpressionsMenu" IsVisible="False"
+                  Header="{Binding Source={x:Static local:App.Lang}, Path=[MainWindow.Selection.SavedExpressions]}" />
               <MenuItem
                   Command="{Binding OpenCustomSelectionCommand}"
                   Header="{Binding Source={x:Static local:App.Lang}, Path=[MainWindow.Selection.CustomSelection]}" />
@@ -377,16 +393,18 @@
         <TextBlock DockPanel.Dock="Right" Classes="colheader" Width="80"
                    IsVisible="{Binding ResultsShowClipOffsetColumn}"
                    Text="{Binding Source={x:Static local:App.Lang}, Path=[DuplicateList.Header.ClipOffset]}" />
-        <TextBlock DockPanel.Dock="Right" Classes="colheader" Width="150"
+        <!-- Fixed metadata widths trimmed to their real content (#853): the reclaimed
+             space goes to the File column. Header and row cells must stay paired. -->
+        <TextBlock DockPanel.Dock="Right" Classes="colheader" Width="124"
                    IsVisible="{Binding Source={x:Static Settings:SettingsFile.Instance}, Path=ShowFormatColumn}"
                    Text="{Binding Source={x:Static local:App.Lang}, Path=[Results.Header.FormatAudio]}" />
-        <TextBlock DockPanel.Dock="Right" Classes="colheader" Width="90"
+        <TextBlock DockPanel.Dock="Right" Classes="colheader" Width="78"
                    IsVisible="{Binding Source={x:Static Settings:SettingsFile.Instance}, Path=ShowBitrateColumn}"
                    Text="{Binding Source={x:Static local:App.Lang}, Path=[Results.Header.Bitrate]}" />
-        <TextBlock DockPanel.Dock="Right" Classes="colheader" Width="110"
+        <TextBlock DockPanel.Dock="Right" Classes="colheader" Width="100"
                    IsVisible="{Binding Source={x:Static Settings:SettingsFile.Instance}, Path=ShowSizeDateColumn}"
                    Text="{Binding Source={x:Static local:App.Lang}, Path=[Results.Header.SizeDate]}" />
-        <TextBlock DockPanel.Dock="Right" Classes="colheader" Width="110"
+        <TextBlock DockPanel.Dock="Right" Classes="colheader" Width="92"
                    IsVisible="{Binding Source={x:Static Settings:SettingsFile.Instance}, Path=ShowDurationColumn}"
                    Text="{Binding Source={x:Static local:App.Lang}, Path=[Results.Header.DurationRes]}" />
         <TextBlock Classes="colheader" Margin="6,0,0,0"
@@ -461,6 +479,20 @@
                 <TextBlock FontSize="13" FontWeight="SemiBold" Text="{Binding Title}" />
                 <TextBlock Classes="meta" VerticalAlignment="Center" Text="{Binding Summary}" />
                 <TextBlock FontSize="11" Opacity="0.6" VerticalAlignment="Center" Text="{Binding SimilarityRangeDisplay}" />
+                <!-- Combined-mode badges (#842): which classic algorithm(s) matched in
+                     this group. Only ever set by the combined grayscale+pHash scan. -->
+                <Border Classes="simchip" Padding="5,0" CornerRadius="3" VerticalAlignment="Center"
+                        IsVisible="{Binding HasGrayscaleMatches}"
+                        ToolTip.Tip="{Binding Source={x:Static local:App.Lang}, Path=[Results.Group.GrayscaleTip]}">
+                  <TextBlock FontSize="10" FontWeight="Bold"
+                             Text="{Binding Source={x:Static local:App.Lang}, Path=[Results.Group.Grayscale]}" />
+                </Border>
+                <Border Classes="simchip" Padding="5,0" CornerRadius="3" VerticalAlignment="Center"
+                        IsVisible="{Binding HasPHashMatches}"
+                        ToolTip.Tip="{Binding Source={x:Static local:App.Lang}, Path=[Results.Group.PHashTip]}">
+                  <TextBlock FontSize="10" FontWeight="Bold"
+                             Text="{Binding Source={x:Static local:App.Lang}, Path=[Results.Group.PHash]}" />
+                </Border>
               </StackPanel>
             </DockPanel>
           </Border>
@@ -477,7 +509,9 @@
             <!-- Row height follows the Preview column width and, once loaded, the
                  preview's real shape: single frames keep their aspect ratio (#834),
                  multi-frame previews re-wrap to the column width (WrappedFilmstrip,
-                 #847) and the row reserves exactly that wrap height. -->
+                 #847) and the row reserves exactly that wrap height. Before the
+                 composite loads, ThumbnailPrediction reserves the same final height
+                 so async thumbnail loads don't shift the scroll position (#862). -->
             <Border.Height>
               <MultiBinding Converter="{StaticResource ResultsRowSizingConverter}" ConverterParameter="row">
                 <Binding Source="{x:Static Settings:SettingsFile.Instance}" Path="ResultsPreviewWidth" />
@@ -486,6 +520,7 @@
                 <Binding Path="Item.Thumbnail" />
                 <Binding Path="Item.ThumbnailFrameCount" />
                 <Binding Path="Item.ThumbnailGridColumns" />
+                <Binding Path="Item.ThumbnailPrediction" />
               </MultiBinding>
             </Border.Height>
             <Border.ContextMenu>
@@ -553,9 +588,12 @@
                     Margin="0,4,8,4"
                     Background="#18808080">
                   <Border.Height>
+                    <!-- The shimmer placeholder reserves the same predicted final height
+                         as the row (#862), not the flat estimate. -->
                     <MultiBinding Converter="{StaticResource ResultsRowSizingConverter}" ConverterParameter="image">
                       <Binding Source="{x:Static Settings:SettingsFile.Instance}" Path="ResultsPreviewWidth" />
                       <Binding Source="{x:Static Settings:SettingsFile.Instance}" Path="ResultsCompactRows" />
+                      <Binding Path="Item.ThumbnailPrediction" />
                     </MultiBinding>
                   </Border.Height>
                   <Border.IsVisible>
@@ -611,7 +649,7 @@
               <!-- Format · Audio -->
               <StackPanel
                   DockPanel.Dock="Right"
-                  Width="150"
+                  Width="124"
                   VerticalAlignment="Center"
                   IsVisible="{Binding Source={x:Static Settings:SettingsFile.Instance}, Path=ShowFormatColumn}">
                 <StackPanel Orientation="Horizontal" Spacing="3" IsVisible="{Binding !Item.ItemInfo.IsImage}">
@@ -643,7 +681,7 @@
                    no hover-diff at all - the VM's bitrate cases were unreachable). -->
               <Border
                   DockPanel.Dock="Right"
-                  Width="90"
+                  Width="78"
                   VerticalAlignment="Center"
                   Background="Transparent"
                   Tag="bitrate,audiobitrate"
@@ -681,7 +719,7 @@
               <!-- Size · Date -->
               <StackPanel
                   DockPanel.Dock="Right"
-                  Width="110"
+                  Width="100"
                   VerticalAlignment="Center"
                   IsVisible="{Binding Source={x:Static Settings:SettingsFile.Instance}, Path=ShowSizeDateColumn}">
                 <Border Tag="size" Background="Transparent"
@@ -706,7 +744,7 @@
                    zones flipped the display on tiny vertical mouse moves (#849) -->
               <Border
                   DockPanel.Dock="Right"
-                  Width="110"
+                  Width="92"
                   VerticalAlignment="Center"
                   Background="Transparent"
                   Tag="duration,framesize"
@@ -802,10 +840,17 @@
                           Command="{Binding $parent[UserControl].((vm:MainWindowVM)DataContext).ToggleItemDetailsCommand}"
                           CommandParameter="{Binding Item}" />
                   </StackPanel>
+                  <!-- The name may wrap to a second line in comfortable mode before it
+                       trims: with a wide preview or a narrow window a single line cut
+                       long names down to a few characters (#854). Capped at two lines
+                       so pathological names can't blow up the row; full name stays in
+                       the tooltip. -->
                   <TextBlock
                       FontSize="13"
                       FontWeight="SemiBold"
                       HorizontalAlignment="Left"
+                      TextWrapping="Wrap"
+                      MaxLines="{Binding Source={x:Static Settings:SettingsFile.Instance}, Path=ResultsCompactRows, Converter={StaticResource FileNameMaxLinesConverter}}"
                       TextTrimming="CharacterEllipsis"
                       Text="{Binding Item.ItemInfo.Path, Converter={StaticResource FileNameConverter}}"
                       ToolTip.Tip="{Binding Item.ItemInfo.Path, Converter={StaticResource FileNameConverter}}" />

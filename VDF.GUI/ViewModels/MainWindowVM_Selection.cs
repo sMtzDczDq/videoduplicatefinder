@@ -146,6 +146,28 @@ namespace VDF.GUI.ViewModels {
 			});
 		});
 
+		public ReactiveCommand<Unit, Unit> CheckIdenticalKeepLongestFilenameCommand => ReactiveCommand.Create(() => {
+			using var undoBatch = BeginSelectionUndoBatch();
+			ForEachGroupCluster(ScopedDuplicates(), (d, first) => d.EqualsButSize(first), (first, cluster) => {
+				cluster.Insert(0, first);
+				var keep = PickKeeperWithLongestFilename(cluster);
+				keep.Checked = false;
+				for (int i = 0; i < cluster.Count; i++)
+					if (cluster[i].ItemInfo.Path != keep.ItemInfo.Path)
+						cluster[i].Checked = true;
+			});
+		});
+
+		/// <summary>
+		/// Keeps the copy whose basename is the longest within an identical-except-size cluster;
+		/// ties are broken deterministically by full path so the choice never depends
+		/// on list order.
+		/// </summary>
+		internal static DuplicateItemVM PickKeeperWithLongestFilename(IList<DuplicateItemVM> cluster) =>
+			cluster.OrderByDescending(i => Path.GetFileName(i.ItemInfo.Path).Length)
+				   .ThenBy(i => i.ItemInfo.Path)
+				   .First();
+
 		public ReactiveCommand<Unit, Unit> CheckWhenIdenticalButSizeCommand => ReactiveCommand.Create(() => {
 			using var undoBatch = BeginSelectionUndoBatch();
 			ForEachGroupCluster(ScopedDuplicates(), (d, first) => d.EqualsButQuality(first), (first, cluster) => {

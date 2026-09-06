@@ -285,6 +285,35 @@ namespace VDF.GUI.Tests {
 			Assert.Equal(new[] { visible }, cluster);
 		}
 
+		// ---- Check 100% identical: keep the longest filename ----
+
+		[Fact]
+		public void PickKeeperWithLongestFilename_KeepsLongestBasename() {
+			var g = Guid.NewGuid();
+			// Longest basename wins even though its full path is the shortest.
+			var shortName = Item(g, @"/media/very/long/dir/a.mp4");
+			var longName = Item(g, @"/media/b-fancy-name.mp4");
+			var keeper = Item(g, @"/media/other.mp4");
+
+			var result = MainWindowVM.PickKeeperWithLongestFilename(new[] { shortName, longName, keeper });
+
+			Assert.Same(longName, result);
+		}
+
+		[Fact]
+		public void PickKeeperWithLongestFilename_TiesBrokenDeterministicallyByPath() {
+			var g = Guid.NewGuid();
+			// Same basename length: the choice must not depend on list order.
+			var a = Item(g, @"/media/z.mp4");
+			var b = Item(g, @"/media/a.mp4");
+
+			var forward = MainWindowVM.PickKeeperWithLongestFilename(new[] { a, b });
+			var reversed = MainWindowVM.PickKeeperWithLongestFilename(new[] { b, a });
+
+			Assert.Same(b, forward);
+			Assert.Same(b, reversed);
+		}
+
 		// ---- the #864 scale guard: quadratic behavior would take hours here ----
 
 		[Fact]

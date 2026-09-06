@@ -246,6 +246,7 @@
 	"MainWindow.Selection.SavedExpressions": "저장된 표현식",
 	"MainWindow.Selection.CheckIdenticalExceptSizeKeepSmallest": "크기 빼고 100% 동일 체크 (가장 작은 것 유지)",
 	"MainWindow.Selection.CheckIdenticalKeepFirst": "100% 동일 체크 (첫 번째 유지)",
+	"MainWindow.Selection.CheckIdenticalKeepLongestFilename": "100% 동일 체크 (가장 긴 파일명 유지)",
 	"MainWindow.Selection.CheckLowestQuality": "최저 품질 체크",
 	"MainWindow.Selection.CheckMissingFiles": "사라진 파일 체크 (디스크에 없음)",
 	"MainWindow.Selection.CheckNewest": "가장 최신 체크",

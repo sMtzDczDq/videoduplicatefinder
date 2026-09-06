@@ -241,6 +241,7 @@
 	"MainWindow.Selection.SavedExpressions": "Expresiones guardadas",
 	"MainWindow.Selection.CheckIdenticalExceptSizeKeepSmallest": "Seleccionar 100% idéntico excepto tamaño (mantener el más pequeño)",
 	"MainWindow.Selection.CheckIdenticalKeepFirst": "Seleccionar 100% idéntico (mantener el primero)",
+	"MainWindow.Selection.CheckIdenticalKeepLongestFilename": "Seleccionar 100% idéntico (mantener el nombre de archivo más largo)",
 	"MainWindow.Selection.CheckLowestQuality": "Seleccionar la calidad más baja",
 	"MainWindow.Selection.CheckMissingFiles": "Seleccionar archivos faltantes (ya no están en el disco)",
 	"MainWindow.Selection.CheckNewest": "Seleccionar el más reciente",

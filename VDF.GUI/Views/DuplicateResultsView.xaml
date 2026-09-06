@@ -279,6 +279,9 @@
                   Command="{Binding CheckWhenIdenticalCommand}"
                   Header="{Binding Source={x:Static local:App.Lang}, Path=[MainWindow.Selection.CheckIdenticalKeepFirst]}" />
               <MenuItem
+                  Command="{Binding CheckIdenticalKeepLongestFilenameCommand}"
+                  Header="{Binding Source={x:Static local:App.Lang}, Path=[MainWindow.Selection.CheckIdenticalKeepLongestFilename]}" />
+              <MenuItem
                   Command="{Binding CheckWhenIdenticalButSizeCommand}"
                   Header="{Binding Source={x:Static local:App.Lang}, Path=[MainWindow.Selection.CheckIdenticalExceptSizeKeepSmallest]}" />
               <MenuItem

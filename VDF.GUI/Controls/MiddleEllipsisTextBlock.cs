@@ -45,6 +45,10 @@ namespace VDF.GUI.Controls {
 			get => GetValue(TextProperty);
 			set => SetValue(TextProperty, value);
 		}
+		// Foreground and FontFamily reach this control by property inheritance, so no C# caller
+		// sets them, but the CLR wrappers are the XAML contract: without a setter a literal
+		// Foreground="..." attribute on the control fails XAML compilation (AVLN3000). Keep all
+		// four wrappers get/set; do not let an unused-accessor cleanup strip them again.
 		public IBrush? Foreground {
 			get => GetValue(ForegroundProperty);
 			set => SetValue(ForegroundProperty, value);

@@ -54,6 +54,10 @@ namespace VDF.Core {
 		internal PauseTokenSource pauseTokenSource = new();
 		CancellationTokenSource cancelationTokenSource = new();
 		internal readonly List<float> positionList = new();
+		// The video compare switches from the linear pair loop to duration buckets at this
+		// many videos (avoids bucket overhead on small libraries). Internal so tests can
+		// drive the bucketed path deliberately.
+		internal const int BucketActivationThreshold = 5000;
 		// Live only while a scan's hashing phase runs (see StartSearch): receives decoded
 		// 224x224 RGB frames and writes int8 embeddings into the union embedding sidecar.
 		AI.EmbeddingPipeline? aiEmbeddingPipeline;
@@ -67,16 +71,15 @@ namespace VDF.Core {
 			progressHeartbeat = new Timer(_ => HeartbeatTick(), null,
 											Timeout.InfiniteTimeSpan, Timeout.InfiniteTimeSpan);
 
-		bool _isScanning;
 		// The main process yields CPU to foreground apps while a scan runs, restored the
 		// instant scanning ends — hooked on the setter so EVERY exit path (done/abort/stop
 		// via CancelAllTasks) restores. BelowNormal only cedes under contention, so an
 		// unattended scan still runs at full speed. Best-effort.
 		bool isScanning {
-			get => _isScanning;
+			get;
 			set {
-				if (_isScanning == value) return;
-				_isScanning = value;
+				if (field == value) return;
+				field = value;
 				progressHeartbeat.Change(
 					value ? progressHeartbeatIntervall : Timeout.InfiniteTimeSpan,
 					value ? progressHeartbeatIntervall : Timeout.InfiniteTimeSpan);
@@ -1702,8 +1705,6 @@ namespace VDF.Core {
 
 			// Duration buckets are keyed by whole seconds to keep percent-based tolerance intact.
 			const int bucketSizeSeconds = 1;
-			// Avoid bucket overhead for small datasets; fall back to the linear path.
-			const int bucketActivationThreshold = 5000;
 			var imageEntries = new List<FileEntry>();
 			var videoEntries = new List<FileEntry>();
 			var videoBuckets = new Dictionary<int, List<FileEntry>>();
@@ -1814,14 +1815,46 @@ namespace VDF.Core {
 			double GetDurationToleranceSeconds(double durationSeconds) =>
 				Settings.GetDurationToleranceSeconds(durationSeconds);
 
+			// Per-pair hot path. Roslyn emits this local function as a ~300-IL-byte method, above
+			// the JIT's inline budget, so without the hint every compare loop pays a call with
+			// spilled arguments per candidate pair (measurable in pHash-only mode).
+			[MethodImpl(MethodImplOptions.AggressiveInlining)]
+			void ComparePair(FileEntry entry, FileEntry compItem, byte[]?[]? flippedGrayBytes, ulong[]? flippedPHashes, double entryDurationSeconds, double entryToleranceSeconds) {
+				if (!entry.IsImage) {
+					double compDurationSeconds = compItem.mediaInfo!.Duration.TotalSeconds;
+					double compToleranceSeconds = GetDurationToleranceSeconds(compDurationSeconds);
+					double allowedSeconds = Math.Min(entryToleranceSeconds, compToleranceSeconds);
+					double diffSeconds = Math.Abs(entryDurationSeconds - compDurationSeconds);
+					if (diffSeconds > allowedSeconds)
+						return;
+				}
+
+				if (!PassesFolderMatchGate(entry, compItem))
+					return;
+
+				bool isDuplicate = TryCheckDuplicate(entry, compItem, flippedGrayBytes, flippedPHashes, out float difference, out DuplicateFlags flags);
+
+				// Hard links are the same data on disk, so a pair can only be one if the sizes match;
+				// for videos the equal-duration test is a second cheap prefilter before the
+				// AreSameFile syscalls. Images never carry a duration and are exempt from that
+				// test. The diagnostic's copy of this gate in ScanEngine_Diagnostic.cs must agree.
+				if (isDuplicate &&
+					entry.FileSize == compItem.FileSize &&
+					(entry.IsImage || entry.mediaInfo!.Duration == compItem.mediaInfo!.Duration) &&
+					Settings.ExcludeHardLinks &&
+					HardLinkUtils.AreSameFile(entry.Path, compItem.Path)) {
+					isDuplicate = false;
+				}
+
+				if (isDuplicate)
+					MergeDuplicate(entry, compItem, difference, flags);
+			}
+
 			// Compare one entry against candidate buckets (bucketed path).
 			void CompareEntry(FileEntry entry, int entryIndex, IEnumerable<int> candidateBucketKeys) {
 				if (!pauseTokenSource.TryWaitWhilePaused(cancelationTokenSource.Token))
 					return; // canceled while paused — the parallel loop's token ends the iteration
 
-				float difference = 0;
-				bool isDuplicate;
-				DuplicateFlags flags;
 				byte[]?[]? flippedGrayBytes = null;
 				ulong[]? flippedPHashes = null;
 				double entryDurationSeconds = entry.mediaInfo!.Duration.TotalSeconds;
@@ -1841,30 +1874,7 @@ namespace VDF.Core {
 						if (compIndex <= entryIndex)
 							continue;
 
-						if (!entry.IsImage) {
-							double compDurationSeconds = compItem.mediaInfo!.Duration.TotalSeconds;
-							double compToleranceSeconds = GetDurationToleranceSeconds(compDurationSeconds);
-							double allowedSeconds = Math.Min(entryToleranceSeconds, compToleranceSeconds);
-							double diffSeconds = Math.Abs(entryDurationSeconds - compDurationSeconds);
-							if (diffSeconds > allowedSeconds)
-								continue;
-						}
-
-						if (!PassesFolderMatchGate(entry, compItem))
-							continue;
-
-						isDuplicate = TryCheckDuplicate(entry, compItem, flippedGrayBytes, flippedPHashes, out difference, out flags);
-
-						if (isDuplicate &&
-							entry.FileSize == compItem.FileSize &&
-							entry.mediaInfo!.Duration == compItem.mediaInfo!.Duration &&
-							Settings.ExcludeHardLinks &&
-							HardLinkUtils.AreSameFile(entry.Path, compItem.Path)) {
-							isDuplicate = false;
-						}
-
-						if (isDuplicate)
-							MergeDuplicate(entry, compItem, difference, flags);
+						ComparePair(entry, compItem, flippedGrayBytes, flippedPHashes, entryDurationSeconds, entryToleranceSeconds);
 					}
 				}
 				IncrementProgress(entry.Path);
@@ -1879,22 +1889,9 @@ namespace VDF.Core {
 						flippedGrayBytes = CreateFlippedGrayBytes(entry);
 					for (int n = i + 1; n < imageEntries.Count; n++) {
 						var compItem = imageEntries[n];
-						float difference = 0;
-						DuplicateFlags flags;
-						if (!PassesFolderMatchGate(entry, compItem))
-							continue;
+
 						// Images never take the pHash branch, so no flipped pHash is needed.
-						bool isDuplicate = TryCheckDuplicate(entry, compItem, flippedGrayBytes, null, out difference, out flags);
-
-						if (isDuplicate &&
-							entry.FileSize == compItem.FileSize &&
-							Settings.ExcludeHardLinks &&
-							HardLinkUtils.AreSameFile(entry.Path, compItem.Path)) {
-							isDuplicate = false;
-						}
-
-						if (isDuplicate)
-							MergeDuplicate(entry, compItem, difference, flags);
+						ComparePair(entry, compItem, flippedGrayBytes, null, 0d, 0d);
 					}
 					IncrementProgress(entry.Path);
 				};
@@ -1918,8 +1915,6 @@ namespace VDF.Core {
 						return; // canceled while paused — the loop guards below end the iteration
 
 					var entry = videoEntries[i];
-					float difference = 0;
-					DuplicateFlags flags;
 					byte[]?[]? flippedGrayBytes = null;
 					ulong[]? flippedPHashes = null;
 					double entryDurationSeconds = entry.mediaInfo!.Duration.TotalSeconds;
@@ -1933,27 +1928,8 @@ namespace VDF.Core {
 
 					for (int n = i + 1; n < videoEntries.Count; n++) {
 						var compItem = videoEntries[n];
-						double compDurationSeconds = compItem.mediaInfo!.Duration.TotalSeconds;
-						double compToleranceSeconds = GetDurationToleranceSeconds(compDurationSeconds);
-						double allowedSeconds = Math.Min(entryToleranceSeconds, compToleranceSeconds);
-						double diffSeconds = Math.Abs(entryDurationSeconds - compDurationSeconds);
-						if (diffSeconds > allowedSeconds)
-							continue;
 
-						if (!PassesFolderMatchGate(entry, compItem))
-							continue;
-
-						bool isDuplicate = TryCheckDuplicate(entry, compItem, flippedGrayBytes, flippedPHashes, out difference, out flags);
-						if (isDuplicate &&
-							entry.FileSize == compItem.FileSize &&
-							entry.mediaInfo!.Duration == compItem.mediaInfo!.Duration &&
-							Settings.ExcludeHardLinks &&
-							HardLinkUtils.AreSameFile(entry.Path, compItem.Path)) {
-							isDuplicate = false;
-						}
-
-						if (isDuplicate)
-							MergeDuplicate(entry, compItem, difference, flags);
+						ComparePair(entry, compItem, flippedGrayBytes, flippedPHashes, entryDurationSeconds, entryToleranceSeconds);
 					}
 
 					IncrementProgress(entry.Path);
@@ -1976,7 +1952,7 @@ namespace VDF.Core {
 			try {
 				CompareImages();
 
-				if (videoEntries.Count < bucketActivationThreshold) {
+				if (videoEntries.Count < BucketActivationThreshold) {
 					// Small dataset: keep the simpler linear path.
 					CompareVideosLinear();
 				}

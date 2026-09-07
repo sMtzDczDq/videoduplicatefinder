@@ -14,6 +14,7 @@
     <InternalsVisibleTo Include="VDF.Web.Tests" />
     <InternalsVisibleTo Include="VDF.IntegrationTests" />
     <InternalsVisibleTo Include="VDF.Benchmarks" />
+    <InternalsVisibleTo Include="VDF.DbExport" />
   </ItemGroup>
   <ItemGroup>
     <PackageReference Include="FFmpeg.AutoGen" Version="8.1.0" />

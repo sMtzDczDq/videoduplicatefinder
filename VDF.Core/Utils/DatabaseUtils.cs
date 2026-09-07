@@ -56,6 +56,36 @@ namespace VDF.Core.Utils {
 		static string CurrentDatabasePath => FileUtils.SafePathCombine(DatabaseFolder, "ScannedFiles.db");
 		static string TempDatabasePath => FileUtils.SafePathCombine(DatabaseFolder, "ScannedFiles_new.db");
 
+		/// <summary>
+		/// Reads and deserializes a scan database from an explicit file path, auto-detecting
+		/// whichever of the three on-disk formats it is (VDFDB002 streaming, VDFDB001 whole
+		/// graph, or legacy protobuf-net). Returns null if the file is missing, empty, or
+		/// cannot be parsed. Used by the main loader and the standalone SQLite exporter; the
+		/// format knowledge lives in exactly one place.
+		/// </summary>
+		internal static DatabaseWrapper? ReadDatabaseFromFile(string path) {
+			FileInfo databaseFile = new(path);
+			if (!databaseFile.Exists || databaseFile.Length == 0)
+				return null;
+			using var file = new FileStream(databaseFile.FullName, FileMode.Open, FileAccess.Read);
+			Span<byte> header = stackalloc byte[8];
+			int headerRead = file.Read(header);
+			if (headerRead == FormatMagicStreaming.Length && header.SequenceEqual(FormatMagicStreaming))
+				return DeserializeDatabaseStreaming(file);
+			if (headerRead == FormatMagic.Length && header.SequenceEqual(FormatMagic)) {
+				// A non-empty file that deserializes to null is corrupt, not empty —
+				// throw so the caller quarantines it instead of silently treating it as none.
+				return MemoryPackSerializer.DeserializeAsync<DatabaseWrapper>(file)
+					.AsTask().GetAwaiter().GetResult()
+					?? throw new InvalidDataException("Database payload deserialized to null.");
+			}
+			// Legacy protobuf-net database (3.x / early 4.x).
+			file.Position = 0;
+			byte[] raw = new byte[file.Length];
+			file.ReadExactly(raw);
+			return LegacyDatabaseReader.Read(raw);
+		}
+
 		internal static bool LoadDatabase() {
 			FileInfo databaseFile = new(TempDatabasePath);
 			if (!databaseFile.Exists)
@@ -75,28 +105,7 @@ namespace VDF.Core.Utils {
 			Logger.Instance.Info("Found previously scanned files, importing...");
 			var st = Stopwatch.StartNew();
 			try {
-				using var file = new FileStream(databaseFile.FullName, FileMode.Open, FileAccess.Read);
-				Span<byte> header = stackalloc byte[8];
-				int headerRead = file.Read(header);
-				if (headerRead == FormatMagicStreaming.Length && header.SequenceEqual(FormatMagicStreaming)) {
-					DbWrapper = DeserializeDatabaseStreaming(file);
-				}
-				else if (headerRead == FormatMagic.Length && header.SequenceEqual(FormatMagic)) {
-					// A non-empty file that deserializes to null is corrupt, not empty —
-					// throw so the catch below quarantines it instead of silently
-					// replacing the user's database with an empty one (#814).
-					DbWrapper = MemoryPackSerializer.DeserializeAsync<DatabaseWrapper>(file)
-						.AsTask().GetAwaiter().GetResult()
-						?? throw new InvalidDataException("Database payload deserialized to null.");
-				}
-				else {
-					// Legacy protobuf-net database (3.x / early 4.x).
-					file.Position = 0;
-					byte[] raw = new byte[file.Length];
-					file.ReadExactly(raw);
-					DbWrapper = LegacyDatabaseReader.Read(raw);
-					Logger.Instance.Info("Legacy database format detected — it will be stored in the new format on the next save.");
-				}
+				DbWrapper = ReadDatabaseFromFile(databaseFile.FullName) ?? throw new InvalidDataException("Empty or unreadable database.");
 			}
 			catch (Exception ex) {
 				st.Stop();

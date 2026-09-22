@@ -93,12 +93,20 @@ namespace VDF.GUI.ViewModels {
 
 		public bool IsMessageVisible { get; set => this.RaiseAndSetIfChanged(ref field, value); }
 
+		/// <summary>
+		/// Every message shown, for the window to say to a screen reader: the toast never takes
+		/// focus and is gone after a moment, so "Checked: file" and "No more groups" were
+		/// for the eye only.
+		/// </summary>
+		public event Action<string>? MessageShown;
+
 		CancellationTokenSource? _messageCts;
 		public void ShowMessage(string msg, int millis = 3000) {
 			_messageCts?.Cancel();
 			_messageCts = new CancellationTokenSource();
 			UserMessage = msg;
 			IsMessageVisible = true;
+			MessageShown?.Invoke(msg);
 			var token = _messageCts.Token;
 			_ = Task.Run(async () => {
 				try {
@@ -904,6 +912,8 @@ namespace VDF.GUI.ViewModels {
 		}
 		public Bitmap Frame { get; }
 		public int Index { get; }
+		/// <summary>The strip button shows only the picture; this is what a screen reader announces for it.</summary>
+		public string AccessibleName => string.Format(App.Lang["A11y.Comparer.Frame"], Index + 1);
 		public bool IsCurrent { get; set => this.RaiseAndSetIfChanged(ref field, value); }
 	}
 
@@ -975,6 +985,12 @@ namespace VDF.GUI.ViewModels {
 				IsLoadingThumbnail = false;
 				this.RaisePropertyChanged(nameof(Thumbnail));
 			}
+		}
+
+		/// <summary>For <see cref="LoadThumbnail"/> overrides whose frames do not come from FFmpeg.</summary>
+		protected void SetFrames(IEnumerable<Bitmap> frames) {
+			_frames.Clear();
+			_frames.AddRange(frames);
 		}
 
 		public Bitmap? GetFrame(int index) {

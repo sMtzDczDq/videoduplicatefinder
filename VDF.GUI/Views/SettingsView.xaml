@@ -21,7 +21,7 @@
               <StackPanel Grid.Column="0" Margin="0,0,18,0" Spacing="2" VerticalAlignment="Center">
                 <TextBlock FontSize="14" FontWeight="SemiBold" TextWrapping="Wrap"
                            Text="{TemplateBinding Title}" />
-                <TextBlock FontSize="12.5" Opacity="0.7" TextWrapping="Wrap" MaxWidth="470"
+                <TextBlock FontSize="12.5" Opacity="{DynamicResource VdfTextDim70Opacity}" TextWrapping="Wrap" MaxWidth="470"
                            HorizontalAlignment="Left"
                            Text="{TemplateBinding Description}"
                            IsVisible="{TemplateBinding Description, Converter={x:Static StringConverters.IsNotNullOrEmpty}}" />
@@ -44,42 +44,77 @@
       <Setter Property="Opacity" Value="0.55" />
     </Style>
 
-    <!-- left nav items -->
-    <Style Selector="Border.navitem">
+    <!-- left nav items: a ListBox, so the sections can be reached and switched from the
+         keyboard (Tab into the list, arrow keys between sections) and a screen reader
+         announces "Matching, 2 of 11, selected". The item template is our own, so the look
+         is exactly the mockup's .navitem and nothing of the theme's list styling shows. -->
+    <Style Selector="ListBox.settingsnav">
+      <Setter Property="Background" Value="Transparent" />
+      <Setter Property="BorderThickness" Value="0" />
+      <Setter Property="Padding" Value="0" />
+    </Style>
+    <Style Selector="ListBox.settingsnav ListBoxItem">
       <Setter Property="Background" Value="Transparent" />
       <Setter Property="CornerRadius" Value="7" />
       <Setter Property="Padding" Value="14,8" />
       <Setter Property="Margin" Value="0,0,0,2" />
+      <Setter Property="MinHeight" Value="0" />
       <Setter Property="Cursor" Value="Hand" />
+      <Setter Property="FontSize" Value="13.5" />
+      <Setter Property="FontWeight" Value="Normal" />
+      <Setter Property="Template">
+        <ControlTemplate>
+          <Border Background="{TemplateBinding Background}"
+                  CornerRadius="{TemplateBinding CornerRadius}"
+                  Padding="{TemplateBinding Padding}">
+            <!-- Deliberately NOT named PART_ContentPresenter: the theme's selection and
+                 hover styles address that part by name (as style triggers, which outrank
+                 anything set in a template) and painted their own highlight and text
+                 color into the item. -->
+            <ContentPresenter x:Name="NavContent"
+                              Opacity="{DynamicResource VdfTextDim75Opacity}"
+                              Content="{TemplateBinding Content}"
+                              ContentTemplate="{TemplateBinding ContentTemplate}" />
+          </Border>
+        </ControlTemplate>
+      </Setter>
     </Style>
-    <Style Selector="Border.navitem:pointerover">
+    <Style Selector="ListBox.settingsnav ListBoxItem:pointerover">
       <Setter Property="Background" Value="{actipro:ThemeResource Container3BackgroundBrush}" />
     </Style>
-    <Style Selector="Border.navitem TextBlock">
-      <Setter Property="FontSize" Value="13.5" />
-      <Setter Property="Opacity" Value="0.75" />
-    </Style>
-    <Style Selector="Border.navitem.on">
+    <Style Selector="ListBox.settingsnav ListBoxItem:selected">
       <Setter Property="Background" Value="{actipro:ThemeResource ControlBackgroundBrushSoftAccent}" />
-    </Style>
-    <Style Selector="Border.navitem.on TextBlock">
       <Setter Property="FontWeight" Value="SemiBold" />
+      <Setter Property="Foreground" Value="{DynamicResource VdfAccentTextBrush}" />
+    </Style>
+    <Style Selector="ListBox.settingsnav ListBoxItem:selected /template/ ContentPresenter#NavContent">
       <Setter Property="Opacity" Value="1" />
-      <Setter Property="Foreground" Value="{actipro:ThemeResource ControlBackgroundBrushEmphasizedAccent}" />
     </Style>
 
     <!-- captions: section names in search mode, subsection groups in normal mode -->
     <Style Selector="TextBlock.sectioncaption">
       <Setter Property="FontSize" Value="12" />
       <Setter Property="FontWeight" Value="SemiBold" />
-      <Setter Property="Opacity" Value="0.6" />
+      <Setter Property="Opacity" Value="{DynamicResource VdfTextMutedOpacity}" />
       <Setter Property="Margin" Value="0,18,0,4" />
     </Style>
     <Style Selector="TextBlock.subcaption">
       <Setter Property="FontSize" Value="12" />
       <Setter Property="FontWeight" Value="SemiBold" />
-      <Setter Property="Opacity" Value="0.6" />
+      <Setter Property="Opacity" Value="{DynamicResource VdfTextMutedOpacity}" />
       <Setter Property="Margin" Value="0,22,0,2" />
+    </Style>
+
+    <!-- shortcut capture box: themed here, its colors used to be hard-coded for dark in code
+         (light gray text, white border: 1.7:1 on the light theme) -->
+    <Style Selector="views|HotKeyBox">
+      <Setter Property="BorderBrush" Value="{actipro:ThemeResource Container4BorderBrush}" />
+    </Style>
+    <Style Selector="views|HotKeyBox:focus">
+      <Setter Property="BorderBrush" Value="{actipro:ThemeResource ControlBackgroundBrushEmphasizedAccent}" />
+    </Style>
+    <Style Selector="views|HotKeyBox TextBlock.placeholder">
+      <Setter Property="Opacity" Value="{DynamicResource VdfTextFaintOpacity}" />
     </Style>
 
     <Style Selector="ToggleSwitch.plain">
@@ -102,43 +137,22 @@
               BorderBrush="{actipro:ThemeResource Container3BorderBrush}"
               BorderThickness="0,0,1,0"
               Padding="10,14">
-        <ScrollViewer HorizontalScrollBarVisibility="Disabled" VerticalScrollBarVisibility="Auto">
-          <StackPanel x:Name="NavPanel">
-            <Border Classes="navitem on" Tag="Scanning" PointerPressed="OnNavItemPressed">
-              <TextBlock Text="{Binding Source={x:Static local:App.Lang}, Path=[MainWindow.Settings.Scanning]}" />
-            </Border>
-            <Border Classes="navitem" Tag="Matching" PointerPressed="OnNavItemPressed">
-              <TextBlock Text="{Binding Source={x:Static local:App.Lang}, Path=[Settings.Nav.Matching]}" />
-            </Border>
-            <Border Classes="navitem" Tag="PartialClips" PointerPressed="OnNavItemPressed">
-              <TextBlock Text="{Binding Source={x:Static local:App.Lang}, Path=[Settings.Nav.PartialClips]}" />
-            </Border>
-            <Border Classes="navitem" Tag="Directories" PointerPressed="OnNavItemPressed">
-              <TextBlock Text="{Binding Source={x:Static local:App.Lang}, Path=[MainWindow.Settings.Directories]}" />
-            </Border>
-            <Border Classes="navitem" Tag="Files" PointerPressed="OnNavItemPressed">
-              <TextBlock Text="{Binding Source={x:Static local:App.Lang}, Path=[Settings.Nav.FilesFilters]}" />
-            </Border>
-            <Border Classes="navitem" Tag="Database" PointerPressed="OnNavItemPressed">
-              <TextBlock Text="{Binding Source={x:Static local:App.Lang}, Path=[Settings.Sub.Results]}" />
-            </Border>
-            <Border Classes="navitem" Tag="Processing" PointerPressed="OnNavItemPressed">
-              <TextBlock Text="{Binding Source={x:Static local:App.Lang}, Path=[MainWindow.Settings.Processing]}" />
-            </Border>
-            <Border Classes="navitem" Tag="Schedule" PointerPressed="OnNavItemPressed">
-              <TextBlock Text="{Binding Source={x:Static local:App.Lang}, Path=[MainWindow.Settings.ScanScheduler]}" />
-            </Border>
-            <Border Classes="navitem" Tag="Appearance" PointerPressed="OnNavItemPressed">
-              <TextBlock Text="{Binding Source={x:Static local:App.Lang}, Path=[MainWindow.Settings.Appearance]}" />
-            </Border>
-            <Border Classes="navitem" Tag="Shortcuts" PointerPressed="OnNavItemPressed">
-              <TextBlock Text="{Binding Source={x:Static local:App.Lang}, Path=[MainWindow.Settings.KeyboardShortcuts]}" />
-            </Border>
-            <Border Classes="navitem" Tag="Test" PointerPressed="OnNavItemPressed">
-              <TextBlock Text="{Binding Source={x:Static local:App.Lang}, Path=[MainWindow.Settings.Diagnostics]}" />
-            </Border>
-          </StackPanel>
-        </ScrollViewer>
+        <ListBox x:Name="NavList" Classes="settingsnav"
+                 AutomationProperties.Name="{Binding Source={x:Static local:App.Lang}, Path=[MainWindow.Tab.Settings]}"
+                 ScrollViewer.HorizontalScrollBarVisibility="Disabled"
+                 SelectionChanged="OnNavSelectionChanged">
+          <ListBoxItem Tag="Scanning" Content="{Binding Source={x:Static local:App.Lang}, Path=[MainWindow.Settings.Scanning]}" />
+          <ListBoxItem Tag="Matching" Content="{Binding Source={x:Static local:App.Lang}, Path=[Settings.Nav.Matching]}" />
+          <ListBoxItem Tag="PartialClips" Content="{Binding Source={x:Static local:App.Lang}, Path=[Settings.Nav.PartialClips]}" />
+          <ListBoxItem Tag="Directories" Content="{Binding Source={x:Static local:App.Lang}, Path=[MainWindow.Settings.Directories]}" />
+          <ListBoxItem Tag="Files" Content="{Binding Source={x:Static local:App.Lang}, Path=[Settings.Nav.FilesFilters]}" />
+          <ListBoxItem Tag="Database" Content="{Binding Source={x:Static local:App.Lang}, Path=[Settings.Sub.Results]}" />
+          <ListBoxItem Tag="Processing" Content="{Binding Source={x:Static local:App.Lang}, Path=[MainWindow.Settings.Processing]}" />
+          <ListBoxItem Tag="Schedule" Content="{Binding Source={x:Static local:App.Lang}, Path=[MainWindow.Settings.ScanScheduler]}" />
+          <ListBoxItem Tag="Appearance" Content="{Binding Source={x:Static local:App.Lang}, Path=[MainWindow.Settings.Appearance]}" />
+          <ListBoxItem Tag="Shortcuts" Content="{Binding Source={x:Static local:App.Lang}, Path=[MainWindow.Settings.KeyboardShortcuts]}" />
+          <ListBoxItem Tag="Test" Content="{Binding Source={x:Static local:App.Lang}, Path=[MainWindow.Settings.Diagnostics]}" />
+        </ListBox>
       </Border>
 
       <!-- ===== main column (mockup .set-main) ===== -->
@@ -158,7 +172,7 @@
         <ScrollViewer Grid.Row="1" HorizontalScrollBarVisibility="Disabled">
           <StackPanel x:Name="SectionsHost" Margin="0,0,12,30">
 
-            <TextBlock x:Name="NoResultsText" Margin="0,24,0,0" FontSize="13" Opacity="0.6" IsVisible="False"
+            <TextBlock x:Name="NoResultsText" Margin="0,24,0,0" FontSize="13" Opacity="{DynamicResource VdfTextMutedOpacity}" IsVisible="False"
                        Text="{Binding Source={x:Static local:App.Lang}, Path=[Settings.NoResults]}" />
 
             <!-- ═══════════════ SCANNING (scan behavior) ═══════════════ -->
@@ -306,7 +320,7 @@
                   Description="{Binding Source={x:Static local:App.Lang}, Path=[Settings.Row.AiComponents.Desc]}"
                   SearchTags="ai download onnx runtime model components">
                 <StackPanel Orientation="Horizontal" Spacing="10" VerticalAlignment="Center">
-                  <TextBlock VerticalAlignment="Center" FontSize="12.5" Opacity="0.8" MaxWidth="260" TextWrapping="Wrap"
+                  <TextBlock VerticalAlignment="Center" FontSize="12.5" Opacity="{DynamicResource VdfTextDim80Opacity}" MaxWidth="260" TextWrapping="Wrap"
                              Text="{Binding AiComponentsStatusText}" />
                   <Button FontSize="12.5" VerticalAlignment="Center" Command="{Binding DownloadAiComponentsCommand}"
                           Content="{Binding Source={x:Static local:App.Lang}, Path=[Settings.Row.AiComponents.Download]}" />
@@ -328,16 +342,18 @@
                 <StackPanel Orientation="Horizontal" Spacing="14">
                   <StackPanel Spacing="1" HorizontalAlignment="Center">
                     <ToggleSwitch Classes="plain" HorizontalAlignment="Center"
+                                  AutomationProperties.Name="{Binding Source={x:Static local:App.Lang}, Path=[MainWindow.Settings.IgnoreBlackPixels]}"
                                   ToolTip.Tip="{Binding Source={x:Static local:App.Lang}, Path=[MainWindow.Settings.IgnoreBlackPixels]}"
                                   IsChecked="{Binding Source={x:Static Settings:SettingsFile.Instance}, Path=IgnoreBlackPixels}" />
-                    <TextBlock FontSize="11" Opacity="0.6" HorizontalAlignment="Center"
+                    <TextBlock FontSize="11" Opacity="{DynamicResource VdfTextMutedOpacity}" HorizontalAlignment="Center"
                                Text="{Binding Source={x:Static local:App.Lang}, Path=[Settings.Row.IgnoreBW.Black]}" />
                   </StackPanel>
                   <StackPanel Spacing="1" HorizontalAlignment="Center">
                     <ToggleSwitch Classes="plain" HorizontalAlignment="Center"
+                                  AutomationProperties.Name="{Binding Source={x:Static local:App.Lang}, Path=[MainWindow.Settings.IgnoreWhitePixels]}"
                                   ToolTip.Tip="{Binding Source={x:Static local:App.Lang}, Path=[MainWindow.Settings.IgnoreWhitePixels]}"
                                   IsChecked="{Binding Source={x:Static Settings:SettingsFile.Instance}, Path=IgnoreWhitePixels}" />
-                    <TextBlock FontSize="11" Opacity="0.6" HorizontalAlignment="Center"
+                    <TextBlock FontSize="11" Opacity="{DynamicResource VdfTextMutedOpacity}" HorizontalAlignment="Center"
                                Text="{Binding Source={x:Static local:App.Lang}, Path=[Settings.Row.IgnoreBW.White]}" />
                   </StackPanel>
                 </StackPanel>
@@ -397,13 +413,14 @@
                             ItemsSource="{Binding FolderMatchModes}"
                             SelectedItem="{Binding Source={x:Static Settings:SettingsFile.Instance}, Path=FolderMatchMode}" />
                   <NumericUpDown Width="110" VerticalAlignment="Center" Increment="1" Maximum="20" Minimum="1"
+                                 AutomationProperties.Name="{Binding Source={x:Static local:App.Lang}, Path=[A11y.Settings.FolderDepth]}"
                                  IsEnabled="{Binding Source={x:Static Settings:SettingsFile.Instance}, Path=IsFolderMatchModeActive}"
                                  Value="{Binding Source={x:Static Settings:SettingsFile.Instance}, Path=SameFolderDepth}" />
                 </StackPanel>
               </views:SettingRow>
 
               <StackPanel Orientation="Horizontal" Spacing="4" Margin="0,16,0,0">
-                <TextBlock FontSize="12" Opacity="0.55" VerticalAlignment="Center"
+                <TextBlock FontSize="12" Opacity="{DynamicResource VdfTextFaintOpacity}" VerticalAlignment="Center"
                            Text="{Binding Source={x:Static local:App.Lang}, Path=[MainWindow.Settings.MiscWikiHint]}" />
                 <Button Classes="hyperlink" FontSize="12" VerticalAlignment="Center" Command="{Binding OpenWikiLinkCommand}"
                         Content="{Binding Source={x:Static local:App.Lang}, Path=[MainWindow.Settings.MiscWikiHyperlink]}" />
@@ -485,7 +502,7 @@
                 <StackPanel Grid.Column="0" Spacing="6">
                   <TextBlock FontSize="14" FontWeight="SemiBold"
                              Text="{Binding Source={x:Static local:App.Lang}, Path=[MainWindow.Settings.SearchDirectories]}" />
-                  <TextBlock FontSize="12.5" Opacity="0.7" TextWrapping="Wrap"
+                  <TextBlock FontSize="12.5" Opacity="{DynamicResource VdfTextDim70Opacity}" TextWrapping="Wrap"
                              Text="{Binding Source={x:Static local:App.Lang}, Path=[MainWindow.Settings.SearchDirectoriesHint]}" />
                   <StackPanel Orientation="Horizontal" Spacing="6">
                     <Button FontSize="12.5" Command="{Binding AddIncludesToListCommand}"
@@ -497,13 +514,14 @@
                             Content="{Binding Source={x:Static local:App.Lang}, Path=[Dialog.ClearAll]}" />
                   </StackPanel>
                   <ListBox x:Name="ListboxIncludelist" Height="220" BorderThickness="1"
+                           AutomationProperties.Name="{Binding Source={x:Static local:App.Lang}, Path=[MainWindow.Settings.SearchDirectories]}"
                            DragDrop.AllowDrop="True"
                            ItemsSource="{Binding Source={x:Static Settings:SettingsFile.Instance}, Path=Includes}" />
                 </StackPanel>
                 <StackPanel Grid.Column="1" Spacing="6">
                   <TextBlock FontSize="14" FontWeight="SemiBold"
                              Text="{Binding Source={x:Static local:App.Lang}, Path=[MainWindow.Settings.ExcludeDirectories]}" />
-                  <TextBlock FontSize="12.5" Opacity="0.7" TextWrapping="Wrap"
+                  <TextBlock FontSize="12.5" Opacity="{DynamicResource VdfTextDim70Opacity}" TextWrapping="Wrap"
                              Text="{Binding Source={x:Static local:App.Lang}, Path=[MainWindow.Settings.ExcludeDirectoriesHint]}" />
                   <StackPanel Orientation="Horizontal" Spacing="6">
                     <Button FontSize="12.5" Command="{Binding AddBlacklistToListCommand}"
@@ -517,13 +535,14 @@
                             Content="{Binding Source={x:Static local:App.Lang}, Path=[Dialog.ClearAll]}" />
                   </StackPanel>
                   <ListBox x:Name="ListboxBlacklist" Height="220" BorderThickness="1"
+                           AutomationProperties.Name="{Binding Source={x:Static local:App.Lang}, Path=[MainWindow.Settings.ExcludeDirectories]}"
                            DragDrop.AllowDrop="True"
                            ItemsSource="{Binding Source={x:Static Settings:SettingsFile.Instance}, Path=Blacklists}" />
                 </StackPanel>
               </Grid>
-              <TextBlock Margin="0,10,0,0" FontSize="12" Opacity="0.55" TextWrapping="Wrap"
+              <TextBlock Margin="0,10,0,0" FontSize="12" Opacity="{DynamicResource VdfTextFaintOpacity}" TextWrapping="Wrap"
                          Text="{Binding Source={x:Static local:App.Lang}, Path=[MainWindow.Settings.DragDropHint]}" />
-              <TextBlock Margin="0,4,0,0" FontSize="12" Opacity="0.55" TextWrapping="Wrap"
+              <TextBlock Margin="0,4,0,0" FontSize="12" Opacity="{DynamicResource VdfTextFaintOpacity}" TextWrapping="Wrap"
                          Text="{Binding Source={x:Static local:App.Lang}, Path=[MainWindow.Settings.WildcardNote]}" />
             </StackPanel>
 
@@ -531,7 +550,7 @@
             <StackPanel Tag="Files" IsVisible="False">
               <TextBlock Classes="sectioncaption" IsVisible="False"
                          Text="{Binding Source={x:Static local:App.Lang}, Path=[Settings.Nav.FilesFilters]}" />
-              <TextBlock Margin="0,12,0,0" FontSize="12.5" TextWrapping="Wrap" Opacity="0.8"
+              <TextBlock Margin="0,12,0,0" FontSize="12.5" TextWrapping="Wrap" Opacity="{DynamicResource VdfTextDim80Opacity}"
                          Text="{Binding Source={x:Static local:App.Lang}, Path=[MainWindow.Settings.FilesNote]}" />
 
               <views:SettingRow
@@ -542,11 +561,13 @@
                   <ToggleSwitch x:Name="ToggleFilterByFileSize" Classes="plain" VerticalAlignment="Center"
                                 IsChecked="{Binding Source={x:Static Settings:SettingsFile.Instance}, Path=FilterByFileSize}" />
                   <NumericUpDown Width="130" VerticalAlignment="Center" Minimum="0"
+                                 AutomationProperties.Name="{Binding Source={x:Static local:App.Lang}, Path=[A11y.Settings.MinFileSize]}"
                                  IsEnabled="{Binding #ToggleFilterByFileSize.IsChecked}"
                                  Value="{Binding Source={x:Static Settings:SettingsFile.Instance}, Path=MinimumFileSize}" />
-                  <TextBlock VerticalAlignment="Center" Opacity="0.7"
+                  <TextBlock VerticalAlignment="Center" Opacity="{DynamicResource VdfTextDim70Opacity}"
                              Text="{Binding Source={x:Static local:App.Lang}, Path=[MainWindow.Filter.To]}" />
                   <NumericUpDown Width="130" VerticalAlignment="Center" Minimum="0"
+                                 AutomationProperties.Name="{Binding Source={x:Static local:App.Lang}, Path=[A11y.Settings.MaxFileSize]}"
                                  IsEnabled="{Binding #ToggleFilterByFileSize.IsChecked}"
                                  Value="{Binding Source={x:Static Settings:SettingsFile.Instance}, Path=MaximumFileSize}" />
                 </StackPanel>
@@ -556,11 +577,12 @@
                           views:SettingsSearchMeta.Text="wildcard">
                 <StackPanel Orientation="Horizontal" Spacing="10">
                   <ToggleSwitch x:Name="ToggleFilterByPathContains" Classes="plain" VerticalAlignment="Center"
+                                AutomationProperties.Name="{Binding Source={x:Static local:App.Lang}, Path=[MainWindow.Settings.FilePathContains]}"
                                 IsChecked="{Binding Source={x:Static Settings:SettingsFile.Instance}, Path=FilterByFilePathContains}" />
                   <StackPanel VerticalAlignment="Center">
                     <TextBlock FontSize="14" FontWeight="SemiBold"
                                Text="{Binding Source={x:Static local:App.Lang}, Path=[MainWindow.Settings.FilePathContains]}" />
-                    <TextBlock FontSize="12.5" Opacity="0.7" TextWrapping="Wrap" MaxWidth="560" HorizontalAlignment="Left"
+                    <TextBlock FontSize="12.5" Opacity="{DynamicResource VdfTextDim70Opacity}" TextWrapping="Wrap" MaxWidth="560" HorizontalAlignment="Left"
                                Text="{Binding Source={x:Static local:App.Lang}, Path=[Settings.Row.PathContains.Desc]}" />
                   </StackPanel>
                 </StackPanel>
@@ -572,6 +594,7 @@
                           Content="{Binding Source={x:Static local:App.Lang}, Path=[Dialog.Remove]}" />
                 </StackPanel>
                 <ListBox x:Name="ListboxFilePathContainsText" MinHeight="70" MaxHeight="140" BorderThickness="1"
+                         AutomationProperties.Name="{Binding Source={x:Static local:App.Lang}, Path=[MainWindow.Settings.FilePathContains]}"
                          IsEnabled="{Binding #ToggleFilterByPathContains.IsChecked}"
                          ItemsSource="{Binding Source={x:Static Settings:SettingsFile.Instance}, Path=FilePathContainsTexts}" />
               </StackPanel>
@@ -580,11 +603,12 @@
                           views:SettingsSearchMeta.Text="wildcard">
                 <StackPanel Orientation="Horizontal" Spacing="10">
                   <ToggleSwitch x:Name="ToggleFilterByPathNotContains" Classes="plain" VerticalAlignment="Center"
+                                AutomationProperties.Name="{Binding Source={x:Static local:App.Lang}, Path=[MainWindow.Settings.FilePathNotContains]}"
                                 IsChecked="{Binding Source={x:Static Settings:SettingsFile.Instance}, Path=FilterByFilePathNotContains}" />
                   <StackPanel VerticalAlignment="Center">
                     <TextBlock FontSize="14" FontWeight="SemiBold"
                                Text="{Binding Source={x:Static local:App.Lang}, Path=[MainWindow.Settings.FilePathNotContains]}" />
-                    <TextBlock FontSize="12.5" Opacity="0.7" TextWrapping="Wrap" MaxWidth="560" HorizontalAlignment="Left"
+                    <TextBlock FontSize="12.5" Opacity="{DynamicResource VdfTextDim70Opacity}" TextWrapping="Wrap" MaxWidth="560" HorizontalAlignment="Left"
                                Text="{Binding Source={x:Static local:App.Lang}, Path=[Settings.Row.PathNotContains.Desc]}" />
                   </StackPanel>
                 </StackPanel>
@@ -596,9 +620,10 @@
                           Content="{Binding Source={x:Static local:App.Lang}, Path=[Dialog.Remove]}" />
                 </StackPanel>
                 <ListBox x:Name="ListboxFilePathNotContainsText" MinHeight="70" MaxHeight="140" BorderThickness="1"
+                         AutomationProperties.Name="{Binding Source={x:Static local:App.Lang}, Path=[MainWindow.Settings.FilePathNotContains]}"
                          IsEnabled="{Binding #ToggleFilterByPathNotContains.IsChecked}"
                          ItemsSource="{Binding Source={x:Static Settings:SettingsFile.Instance}, Path=FilePathNotContainsTexts}" />
-                <TextBlock FontSize="12" Opacity="0.55" TextWrapping="Wrap"
+                <TextBlock FontSize="12" Opacity="{DynamicResource VdfTextFaintOpacity}" TextWrapping="Wrap"
                            Text="{Binding Source={x:Static local:App.Lang}, Path=[MainWindow.Settings.WildcardNote]}" />
               </StackPanel>
             </StackPanel>
@@ -625,6 +650,35 @@
                                Value="{Binding Source={x:Static Settings:SettingsFile.Instance}, Path=ThumbnailMaxWidth}" />
               </views:SettingRow>
 
+              <!-- The same switches as the column header's right-click menu, which has no
+                   keyboard access: a header strip cannot take focus. Each box carries its own
+                   name, or the row would hand its title to the first one. -->
+              <views:SettingRow
+                  Title="{Binding Source={x:Static local:App.Lang}, Path=[Settings.Row.Columns.Title]}"
+                  Description="{Binding Source={x:Static local:App.Lang}, Path=[Settings.Row.Columns.Desc]}"
+                  SearchTags="columns preview duration resolution size date bitrate format audio match similarity">
+                <UniformGrid Columns="2" ColumnSpacing="14" RowSpacing="2">
+                  <CheckBox Content="{Binding Source={x:Static local:App.Lang}, Path=[Results.Header.Preview]}"
+                            AutomationProperties.Name="{Binding Source={x:Static local:App.Lang}, Path=[Results.Header.Preview]}"
+                            IsChecked="{Binding Source={x:Static Settings:SettingsFile.Instance}, Path=ShowThumbnailColumn}" />
+                  <CheckBox Content="{Binding Source={x:Static local:App.Lang}, Path=[Results.Header.DurationRes]}"
+                            AutomationProperties.Name="{Binding Source={x:Static local:App.Lang}, Path=[Results.Header.DurationRes]}"
+                            IsChecked="{Binding Source={x:Static Settings:SettingsFile.Instance}, Path=ShowDurationColumn}" />
+                  <CheckBox Content="{Binding Source={x:Static local:App.Lang}, Path=[Results.Header.SizeDate]}"
+                            AutomationProperties.Name="{Binding Source={x:Static local:App.Lang}, Path=[Results.Header.SizeDate]}"
+                            IsChecked="{Binding Source={x:Static Settings:SettingsFile.Instance}, Path=ShowSizeDateColumn}" />
+                  <CheckBox Content="{Binding Source={x:Static local:App.Lang}, Path=[Results.Header.Bitrate]}"
+                            AutomationProperties.Name="{Binding Source={x:Static local:App.Lang}, Path=[Results.Header.Bitrate]}"
+                            IsChecked="{Binding Source={x:Static Settings:SettingsFile.Instance}, Path=ShowBitrateColumn}" />
+                  <CheckBox Content="{Binding Source={x:Static local:App.Lang}, Path=[Results.Header.FormatAudio]}"
+                            AutomationProperties.Name="{Binding Source={x:Static local:App.Lang}, Path=[Results.Header.FormatAudio]}"
+                            IsChecked="{Binding Source={x:Static Settings:SettingsFile.Instance}, Path=ShowFormatColumn}" />
+                  <CheckBox Content="{Binding Source={x:Static local:App.Lang}, Path=[Results.Header.Match]}"
+                            AutomationProperties.Name="{Binding Source={x:Static local:App.Lang}, Path=[Results.Header.Match]}"
+                            IsChecked="{Binding Source={x:Static Settings:SettingsFile.Instance}, Path=ShowSimilarityColumn}" />
+                </UniformGrid>
+              </views:SettingRow>
+
               <views:SettingRow
                   Title="{Binding Source={x:Static local:App.Lang}, Path=[MainWindow.Settings.AutoApplySelectionPreset]}"
                   Description="{Binding Source={x:Static local:App.Lang}, Path=[MainWindow.Settings.AutoApplySelectionPresetTooltip]}"
@@ -633,6 +687,7 @@
                   <ToggleSwitch Classes="plain" VerticalAlignment="Center"
                                 IsChecked="{Binding Source={x:Static Settings:SettingsFile.Instance}, Path=AutoApplySelectionPresetEnabled}" />
                   <ComboBox MinWidth="180" MaxWidth="260" VerticalAlignment="Center"
+                            AutomationProperties.Name="{Binding Source={x:Static local:App.Lang}, Path=[MainWindow.Settings.AutoApplySelectionPresetPlaceholder]}"
                             PlaceholderText="{Binding Source={x:Static local:App.Lang}, Path=[MainWindow.Settings.AutoApplySelectionPresetPlaceholder]}"
                             IsEnabled="{Binding Source={x:Static Settings:SettingsFile.Instance}, Path=AutoApplySelectionPresetEnabled}"
                             ItemsSource="{Binding Source={x:Static Settings:SettingsFile.Instance}, Path=CustomSelectionPresets}"
@@ -769,6 +824,7 @@
                             ItemsSource="{Binding CustomCommandList}"
                             SelectedItem="{Binding SelectedCustomCommand}" />
                   <TextBox Width="220"
+                           AutomationProperties.Name="{Binding Source={x:Static local:App.Lang}, Path=[A11y.Settings.CustomCommandLine]}"
                            ToolTip.Tip="{Binding Source={x:Static local:App.Lang}, Path=[MainWindow.Settings.CustomCommandsPlaceholderTooltip]}"
                            Text="{Binding SelectedCustomCommandValue}" />
                 </StackPanel>
@@ -834,11 +890,49 @@
               </views:SettingRow>
 
               <views:SettingRow
-                  Title="{Binding Source={x:Static local:App.Lang}, Path=[Settings.Row.DarkMode.Title]}"
-                  Description="{Binding Source={x:Static local:App.Lang}, Path=[Settings.Row.DarkMode.Desc]}"
-                  SearchTags="dark light theme">
+                  Title="{Binding Source={x:Static local:App.Lang}, Path=[Settings.Row.Theme.Title]}"
+                  Description="{Binding Source={x:Static local:App.Lang}, Path=[Settings.Row.Theme.Desc]}"
+                  SearchTags="dark light theme system appearance color mode">
+                <ComboBox MinWidth="180"
+                          ItemsSource="{Binding ThemeModeOptions}"
+                          SelectedItem="{Binding SelectedThemeModeOption, Mode=TwoWay}">
+                  <ComboBox.ItemTemplate>
+                    <DataTemplate x:DataType="Settings:ThemeModeOption">
+                      <TextBlock Text="{Binding Name}" />
+                    </DataTemplate>
+                  </ComboBox.ItemTemplate>
+                </ComboBox>
+              </views:SettingRow>
+
+              <views:SettingRow
+                  Title="{Binding Source={x:Static local:App.Lang}, Path=[Settings.Row.UiScale.Title]}"
+                  Description="{Binding Source={x:Static local:App.Lang}, Path=[Settings.Row.UiScale.Desc]}"
+                  SearchTags="size scale zoom font text large small dpi magnify accessibility">
+                <ComboBox MinWidth="180"
+                          ItemsSource="{Binding UiScaleOptions}"
+                          SelectedItem="{Binding SelectedUiScaleOption, Mode=TwoWay}">
+                  <ComboBox.ItemTemplate>
+                    <DataTemplate x:DataType="Settings:UiScaleOption">
+                      <TextBlock Text="{Binding Name}" />
+                    </DataTemplate>
+                  </ComboBox.ItemTemplate>
+                </ComboBox>
+              </views:SettingRow>
+
+              <views:SettingRow
+                  Title="{Binding Source={x:Static local:App.Lang}, Path=[Settings.Row.HighContrast.Title]}"
+                  Description="{Binding Source={x:Static local:App.Lang}, Path=[Settings.Row.HighContrast.Desc]}"
+                  SearchTags="contrast visibility low vision accessibility bold borders">
                 <ToggleSwitch Classes="plain"
-                              IsChecked="{Binding Source={x:Static Settings:SettingsFile.Instance}, Path=DarkMode}" />
+                              IsChecked="{Binding Source={x:Static Settings:SettingsFile.Instance}, Path=AlwaysHighContrast}" />
+              </views:SettingRow>
+
+              <views:SettingRow
+                  Title="{Binding Source={x:Static local:App.Lang}, Path=[Settings.Row.ReduceMotion.Title]}"
+                  Description="{Binding Source={x:Static local:App.Lang}, Path=[Settings.Row.ReduceMotion.Desc]}"
+                  SearchTags="animation motion movement shimmer pulse accessibility vestibular">
+                <ToggleSwitch Classes="plain"
+                              IsChecked="{Binding Source={x:Static Settings:SettingsFile.Instance}, Path=AlwaysReduceMotion}" />
               </views:SettingRow>
 
               <views:SettingRow
@@ -876,22 +970,40 @@
                         Command="{Binding ResetAllShortcutsCommand}"
                         Content="{Binding Source={x:Static local:App.Lang}, Path=[MainWindow.Settings.KeyboardShortcuts.ResetAll]}" />
                 <Grid ColumnDefinitions="250,200,*">
-                  <TextBlock Grid.Column="0" FontWeight="SemiBold" FontSize="12.5" Opacity="0.7"
+                  <TextBlock Grid.Column="0" FontWeight="SemiBold" FontSize="12.5" Opacity="{DynamicResource VdfTextDim70Opacity}"
                              Text="{Binding Source={x:Static local:App.Lang}, Path=[MainWindow.Settings.KeyboardShortcuts.Action]}" />
-                  <TextBlock Grid.Column="1" FontWeight="SemiBold" FontSize="12.5" Opacity="0.7"
+                  <TextBlock Grid.Column="1" FontWeight="SemiBold" FontSize="12.5" Opacity="{DynamicResource VdfTextDim70Opacity}"
                              Text="{Binding Source={x:Static local:App.Lang}, Path=[MainWindow.Settings.KeyboardShortcuts.Shortcut]}" />
                 </Grid>
-                <ItemsControl ItemsSource="{Binding ShortcutBindings}">
+                <ItemsControl ItemsSource="{Binding ShortcutBindings}"
+                              AutomationProperties.Name="{Binding Source={x:Static local:App.Lang}, Path=[MainWindow.Settings.KeyboardShortcuts]}">
                   <ItemsControl.ItemTemplate>
                     <DataTemplate>
                       <Grid ColumnDefinitions="250,200,*" Margin="0,2">
                         <TextBlock Grid.Column="0" VerticalAlignment="Center" Text="{Binding DisplayName}" />
                         <views:HotKeyBox Grid.Column="1" Margin="0,0,8,0"
+                                         AutomationProperties.Name="{Binding DisplayName}"
                                          GestureText="{Binding CurrentGesture, Mode=TwoWay}" />
                         <StackPanel Grid.Column="2" Orientation="Horizontal" VerticalAlignment="Center" Spacing="4">
-                          <Button Command="{Binding ResetCommand}" Content="&#x21BA;" ToolTip.Tip="Reset to Default"
-                                  Padding="6,2" IsVisible="{Binding IsModified}" />
-                          <Button Command="{Binding ClearCommand}" Content="&#x2715;" ToolTip.Tip="Clear" Padding="6,2" />
+                          <!-- Icon buttons: the accessible name says what they do, and to which action -->
+                          <Button Command="{Binding ResetCommand}" Content="&#x21BA;" Padding="6,2" IsVisible="{Binding IsModified}"
+                                  ToolTip.Tip="{Binding Source={x:Static local:App.Lang}, Path=[A11y.Shortcuts.ResetToDefault]}">
+                            <AutomationProperties.Name>
+                              <MultiBinding StringFormat="{}{0}: {1}">
+                                <Binding Source="{x:Static local:App.Lang}" Path="[A11y.Shortcuts.ResetToDefault]" />
+                                <Binding Path="DisplayName" />
+                              </MultiBinding>
+                            </AutomationProperties.Name>
+                          </Button>
+                          <Button Command="{Binding ClearCommand}" Content="&#x2715;" Padding="6,2"
+                                  ToolTip.Tip="{Binding Source={x:Static local:App.Lang}, Path=[A11y.Shortcuts.Clear]}">
+                            <AutomationProperties.Name>
+                              <MultiBinding StringFormat="{}{0}: {1}">
+                                <Binding Source="{x:Static local:App.Lang}" Path="[A11y.Shortcuts.Clear]" />
+                                <Binding Path="DisplayName" />
+                              </MultiBinding>
+                            </AutomationProperties.Name>
+                          </Button>
                           <TextBlock VerticalAlignment="Center" Foreground="Orange"
                                      Text="{Binding ConflictText}"
                                      IsVisible="{Binding ConflictText, Converter={x:Static StringConverters.IsNotNullOrEmpty}}" />
@@ -909,37 +1021,42 @@
                          Text="{Binding Source={x:Static local:App.Lang}, Path=[MainWindow.Settings.Diagnostics]}" />
               <StackPanel Margin="0,12,0,0" Spacing="10"
                           views:SettingsSearchMeta.Text="{Binding Source={x:Static local:App.Lang}, Path=[Settings.Tags.Test]}">
-                <TextBlock TextWrapping="Wrap" FontSize="12.5" Opacity="0.8"
+                <TextBlock TextWrapping="Wrap" FontSize="12.5" Opacity="{DynamicResource VdfTextDim80Opacity}"
                            Text="{Binding Source={x:Static local:App.Lang}, Path=[MainWindow.Settings.Test.Description]}" />
                 <Grid ColumnDefinitions="60,*,Auto">
-                  <TextBlock Grid.Column="0" VerticalAlignment="Center"
+                  <TextBlock x:Name="TestFileALabel" Grid.Column="0" VerticalAlignment="Center"
                              Text="{Binding Source={x:Static local:App.Lang}, Path=[MainWindow.Settings.Test.FileA]}" />
-                  <TextBox Grid.Column="1" Margin="0,0,8,0" Text="{Binding TestFileA}" />
+                  <TextBox Grid.Column="1" Margin="0,0,8,0" Text="{Binding TestFileA}"
+                           AutomationProperties.LabeledBy="{Binding #TestFileALabel}" />
                   <Button Grid.Column="2" Command="{Binding SelectTestFileACommand}"
                           Content="{Binding Source={x:Static local:App.Lang}, Path=[MainWindow.Settings.Test.Browse]}" />
                 </Grid>
                 <Grid ColumnDefinitions="60,*,Auto">
-                  <TextBlock Grid.Column="0" VerticalAlignment="Center"
+                  <TextBlock x:Name="TestFileBLabel" Grid.Column="0" VerticalAlignment="Center"
                              Text="{Binding Source={x:Static local:App.Lang}, Path=[MainWindow.Settings.Test.FileB]}" />
-                  <TextBox Grid.Column="1" Margin="0,0,8,0" Text="{Binding TestFileB}" />
+                  <TextBox Grid.Column="1" Margin="0,0,8,0" Text="{Binding TestFileB}"
+                           AutomationProperties.LabeledBy="{Binding #TestFileBLabel}" />
                   <Button Grid.Column="2" Command="{Binding SelectTestFileBCommand}"
                           Content="{Binding Source={x:Static local:App.Lang}, Path=[MainWindow.Settings.Test.Browse]}" />
                 </Grid>
                 <StackPanel Orientation="Horizontal" Spacing="8">
                   <Button Classes="accent" Command="{Binding RunFilePairTestCommand}"
+                          Foreground="{DynamicResource VdfAccentTextBrush}"
                           Content="{Binding Source={x:Static local:App.Lang}, Path=[MainWindow.Settings.Test.Run]}" />
                   <Button Command="{Binding CopyFilePairTestResultCommand}"
                           Content="{Binding Source={x:Static local:App.Lang}, Path=[MainWindow.Settings.Test.CopyResult]}" />
                   <ProgressBar Width="120" VerticalAlignment="Center" IsIndeterminate="True"
+                               AutomationProperties.Name="{Binding Source={x:Static local:App.Lang}, Path=[MainWindow.Settings.Test.Run]}"
                                IsVisible="{Binding IsFilePairTestRunning}" />
                 </StackPanel>
                 <TextBox MinHeight="160" AcceptsReturn="True" IsReadOnly="True" TextWrapping="NoWrap"
+                         AutomationProperties.Name="{Binding Source={x:Static local:App.Lang}, Path=[A11y.Settings.TestResult]}"
                          FontFamily="Cascadia Mono,Consolas,Menlo,monospace" FontSize="12"
                          Text="{Binding FilePairTestResult}" />
                 <Border Height="1" Background="{actipro:ThemeResource Container3BorderBrush}" Margin="0,6" />
                 <TextBlock FontSize="14" FontWeight="SemiBold"
                            Text="{Binding Source={x:Static local:App.Lang}, Path=[MainWindow.Settings.Diagnostics]}" />
-                <TextBlock TextWrapping="Wrap" FontSize="12.5" Opacity="0.7"
+                <TextBlock TextWrapping="Wrap" FontSize="12.5" Opacity="{DynamicResource VdfTextDim70Opacity}"
                            Text="{Binding Source={x:Static local:App.Lang}, Path=[MainWindow.Settings.Diagnostics.Description]}" />
                 <StackPanel Orientation="Horizontal" Spacing="8">
                   <Button Command="{Binding CopyDiagnosticsCommand}"
@@ -961,7 +1078,7 @@
             BorderBrush="{actipro:ThemeResource Container3BorderBrush}"
             BorderThickness="0,1,0,0">
       <DockPanel LastChildFill="False">
-        <TextBlock DockPanel.Dock="Left" FontSize="12" Opacity="0.55" VerticalAlignment="Center"
+        <TextBlock DockPanel.Dock="Left" FontSize="12" Opacity="{DynamicResource VdfTextFaintOpacity}" VerticalAlignment="Center"
                    Text="{Binding Source={x:Static local:App.Lang}, Path=[Settings.StatusSaved]}" />
         <StackPanel DockPanel.Dock="Right" Orientation="Horizontal" Spacing="14">
           <Button Classes="hyperlink" FontSize="12"

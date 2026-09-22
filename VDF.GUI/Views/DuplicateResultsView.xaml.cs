@@ -35,6 +35,75 @@ namespace VDF.GUI.Views {
 			WireViewModel();
 			if (this.FindControl<Button>("AutoSelectButton")?.Flyout is MenuFlyout autoSelectFlyout)
 				autoSelectFlyout.Opening += (_, _) => RebuildSavedExpressionItems();
+			AddHandler(ContextRequestedEvent, OnRowContextRequestedByKeyboard);
+		}
+
+		// A list item is announced by ONE name; by default that is its content's ToString(),
+		// here the view model's type name. Set in code, not by a binding in a style: the three
+		// row types share no base, and the checked state changes while the row is on screen.
+		// Containers are recycled, so the subscription lives exactly as long as the pairing.
+		readonly Dictionary<Control, (DuplicateItemVM Item, System.ComponentModel.PropertyChangedEventHandler Handler)> rowNameSubscriptions = new();
+
+		void OnResultsContainerPrepared(object? sender, ContainerPreparedEventArgs e) {
+			ReleaseRowName(e.Container);
+			switch (e.Container.DataContext ?? ResultsListControl.Items[e.Index]) {
+				case ResultsItemRow row:
+					var container = e.Container;
+					void Update() => Avalonia.Automation.AutomationProperties.SetName(container,
+						ResultsAccessibleText.WithCheckedState(row.AccessibleName, row.Item.Checked, App.Lang["Comparer.CheckedTag"]));
+					void OnItemChanged(object? s, System.ComponentModel.PropertyChangedEventArgs a) {
+						if (a.PropertyName != nameof(DuplicateItemVM.Checked)) return;
+						Update();
+						// Space toggles the row that has focus, and focus stays on it. A name that
+						// changes under the focus raises no event a screen reader would speak, so
+						// the new state is said. Only for the row itself: its checkbox reports its
+						// own toggle, and "select all" must not talk once per row on screen.
+						if (container.IsFocused)
+							ViewModel?.Announce(App.Lang[row.Item.Checked ? "Comparer.CheckedTag" : "A11y.Row.Unchecked"]);
+					}
+					row.Item.PropertyChanged += OnItemChanged;
+					rowNameSubscriptions[container] = (row.Item, OnItemChanged);
+					Update();
+					break;
+				case ResultsGroupHeader header:
+					Avalonia.Automation.AutomationProperties.SetName(e.Container, header.AccessibleName);
+					break;
+				case ResultsDetailsRow details:
+					Avalonia.Automation.AutomationProperties.SetName(e.Container, details.AccessibleName);
+					break;
+			}
+		}
+
+		void OnResultsContainerClearing(object? sender, ContainerClearingEventArgs e) => ReleaseRowName(e.Container);
+
+		void ReleaseRowName(Control container) {
+			if (!rowNameSubscriptions.Remove(container, out var subscription)) return;
+			subscription.Item.PropertyChanged -= subscription.Handler;
+		}
+
+		/// <summary>
+		/// Shift+F10 / the Menu key: Avalonia raises ContextRequested on the FOCUSED element,
+		/// which in the list is the row container, and the event bubbles up from there. The
+		/// row and group menus are declared on a Border inside the row template, below the
+		/// focus, so they never saw it and the keyboard could not open them. Pointer requests
+		/// start at the element under the cursor and keep reaching that Border by themselves.
+		/// </summary>
+		void OnRowContextRequestedByKeyboard(object? sender, ContextRequestedEventArgs e) {
+			if (e.Handled || e.Source is not ListBoxItem container) return;
+			if (e.TryGetPosition(container, out _)) return;
+			var host = container.GetVisualDescendants().OfType<Border>().FirstOrDefault(b => b.ContextMenu != null);
+			if (host?.ContextMenu is not { } menu) return;
+
+			// Opened from code the menu would appear wherever the mouse happens to be.
+			var placement = menu.Placement;
+			void RestorePlacement(object? s, RoutedEventArgs a) {
+				menu.Closed -= RestorePlacement;
+				menu.Placement = placement;
+			}
+			menu.Closed += RestorePlacement;
+			menu.Placement = PlacementMode.Bottom;
+			menu.Open(host);
+			e.Handled = true;
 		}
 
 		/// <summary>
@@ -58,6 +127,10 @@ namespace VDF.GUI.Views {
 
 		/// <summary>The control keyboard shortcuts are attached to (see ApplyKeyboardShortcuts).</summary>
 		internal ListBox ShortcutTarget => ResultsListControl;
+
+		/// <summary>Where keyboard focus belongs when the view comes up: the selected row, else the first one.</summary>
+		internal Control FocusTarget =>
+			ResultsListControl.ContainerFromIndex(Math.Max(ResultsListControl.SelectedIndex, 0)) ?? ResultsListControl;
 
 		MainWindowVM? ViewModel => DataContext as MainWindowVM;
 
@@ -149,6 +222,7 @@ namespace VDF.GUI.Views {
 				return;
 			if (TopLevel.GetTopLevel(this)?.Clipboard is { } clipboard) {
 				await clipboard.SetTextAsync(row.Item.ItemInfo.Path);
+				ViewModel?.Announce(App.Lang["Results.Row.PathCopied"]);
 				await row.Item.FlashPathCopiedAsync();
 			}
 		}

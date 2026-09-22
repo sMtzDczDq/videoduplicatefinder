@@ -413,6 +413,7 @@ namespace VDF.GUI.ViewModels {
 			Logger.Instance.LogEntryAdded += Instance_LogEntryAdded;
 
 			Duplicates.CollectionChanged += Duplicates_CollectionChanged;
+			InitAnnouncements();
 
 			scheduledScanTimer.Interval = TimeSpan.FromMinutes(1);
 			scheduledScanTimer.Tick += (_, __) => CheckScheduledScan();
@@ -697,6 +698,7 @@ namespace VDF.GUI.ViewModels {
 				TimeElapsed = e.Elapsed.Format();
 				ScanProgressMaxValue = e.MaxPosition;
 				ScanDrives.Update(e.Drives, DateTime.UtcNow);
+				AnnounceScanProgress(e, DateTime.UtcNow);
 			});
 
 		void Scanner_ScanAborted(object? sender, EventArgs e) =>
@@ -758,6 +760,8 @@ namespace VDF.GUI.ViewModels {
 
 				if (SettingsFile.Instance.RememberDeletedContent && SettingsFile.Instance.AutoCheckDeletedContentMatches)
 					AutoCheckTombstoneMatches();
+
+				AnnounceScanDone();
 
 				if (completedScheduledScan && SettingsFile.Instance.NotifyOnScheduledScanComplete) {
 					_ = MessageBoxService.Show(App.Lang["Message.ScheduledScanCompleted"]);
@@ -1193,6 +1197,35 @@ namespace VDF.GUI.ViewModels {
 			else
 				OpenItems();
 		});
+
+		public Data.ThemeModeOption[] ThemeModeOptions { get; } = {
+			new(App.Lang["Settings.Theme.System"], Data.ThemeMode.System),
+			new(App.Lang["Settings.Theme.Light"], Data.ThemeMode.Light),
+			new(App.Lang["Settings.Theme.Dark"], Data.ThemeMode.Dark),
+		};
+
+		// SelectedItem plus a property, like the other settings combos (#829).
+		public Data.ThemeModeOption? SelectedThemeModeOption {
+			get => ThemeModeOptions.FirstOrDefault(o => o.Value == SettingsFile.Instance.ThemeMode);
+			set {
+				if (value == null || value.Value == SettingsFile.Instance.ThemeMode) return;
+				SettingsFile.Instance.ThemeMode = value.Value;
+				this.RaisePropertyChanged();
+			}
+		}
+
+		public Data.UiScaleOption[] UiScaleOptions { get; } = new[] { 0, 100, 110, 125, 150, 175, 200 }
+			.Select(percent => new Data.UiScaleOption(percent == 0 ? App.Lang["Settings.UiScale.System"] : $"{percent} %", percent))
+			.ToArray();
+
+		public Data.UiScaleOption? SelectedUiScaleOption {
+			get => UiScaleOptions.FirstOrDefault(o => o.Percent == SettingsFile.Instance.UiScalePercent);
+			set {
+				if (value == null || value.Percent == SettingsFile.Instance.UiScalePercent) return;
+				SettingsFile.Instance.UiScalePercent = value.Percent;
+				this.RaisePropertyChanged();
+			}
+		}
 
 		public Data.ThumbnailDoubleClickOption[] ThumbnailDoubleClickOptions { get; } = {
 			new(App.Lang["MainWindow.Settings.ThumbnailDoubleClick.OpenFile"], Data.ThumbnailDoubleClickAction.OpenFile),
@@ -2206,8 +2239,10 @@ Non-Windows setup:
 				if (item is not DuplicateItemVM currentItem) return;
 				sb.AppendLine($"\"{currentItem.ItemInfo.Path}\"");
 			}
-			if (ApplicationHelpers.MainWindow.Clipboard is { } clipboard)
+			if (ApplicationHelpers.MainWindow.Clipboard is { } clipboard) {
 				await clipboard.SetTextAsync(sb.ToString().TrimEnd(new char[2] { '\r', '\n' }));
+				Announce(App.Lang["Results.Row.PathCopied"]); // a menu command with nothing to see afterwards
+			}
 		});
 
 		public ReactiveCommand<Unit, Unit> CopyFilenamesToClipboardCommand => ReactiveCommand.CreateFromTask(async () => {
@@ -2216,8 +2251,10 @@ Non-Windows setup:
 				if (item is not DuplicateItemVM currentItem) return;
 				sb.AppendLine(Path.GetFileName(currentItem.ItemInfo.Path));
 			}
-			if (ApplicationHelpers.MainWindow.Clipboard is { } clipboard)
+			if (ApplicationHelpers.MainWindow.Clipboard is { } clipboard) {
 				await clipboard.SetTextAsync(sb.ToString().TrimEnd(new char[2] { '\r', '\n' }));
+				Announce(App.Lang["Results.Row.PathCopied"]);
+			}
 		});
 
 		public ReactiveCommand<Unit, Unit> RelocateDatabaseFilesCommand => ReactiveCommand.Create(() => {

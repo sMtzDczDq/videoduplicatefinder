@@ -15,7 +15,7 @@
         WindowStartupLocation="CenterOwner"
         Title="{Binding Source={x:Static app:App.Lang}, Path=[QualityOrderDialog.Title]}">
     <StackPanel Margin="16" Spacing="12">
-        <TextBlock Opacity="0.8"
+        <TextBlock Opacity="{DynamicResource VdfTextDim80Opacity}"
                    Text="{Binding Source={x:Static app:App.Lang}, Path=[QualityOrderDialog.Description]}"
                    TextWrapping="Wrap" />
         <Border Padding="6"
@@ -23,7 +23,7 @@
                 BorderBrush="{actipro:ThemeResource Container3BorderBrush}"
                 BorderThickness="1"
                 CornerRadius="8">
-            <ListBox x:Name="CriteriaListBox"
+            <ListBox AutomationProperties.Name="{Binding Source={x:Static app:App.Lang}, Path=[QualityOrderDialog.Title]}" x:Name="CriteriaListBox"
                      Height="200"
                      Background="Transparent"
                      ItemsSource="{Binding CriteriaOrder}"

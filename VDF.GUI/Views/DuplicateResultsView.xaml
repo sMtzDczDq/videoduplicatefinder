@@ -37,6 +37,13 @@
       <Setter Property="FontSize" Value="12" />
       <Setter Property="VerticalAlignment" Value="Center" />
     </Style>
+    <!-- The chevron shows a glyph only; its accessible name says what pressing it does. -->
+    <Style Selector="Button.chevron">
+      <Setter Property="AutomationProperties.Name" Value="{Binding Source={x:Static local:App.Lang}, Path=[A11y.Results.CollapseGroup]}" />
+    </Style>
+    <Style Selector="Button.chevron.collapsed">
+      <Setter Property="AutomationProperties.Name" Value="{Binding Source={x:Static local:App.Lang}, Path=[A11y.Results.ExpandGroup]}" />
+    </Style>
     <Style Selector="Button.group-action:pointerover /template/ ContentPresenter">
       <Setter Property="Background" Value="{actipro:ThemeResource Container3BackgroundBrush}" />
     </Style>
@@ -48,7 +55,7 @@
     <Style Selector="TextBlock.colheader">
       <Setter Property="FontSize" Value="11" />
       <Setter Property="FontWeight" Value="SemiBold" />
-      <Setter Property="Opacity" Value="0.65" />
+      <Setter Property="Opacity" Value="{DynamicResource VdfTextSoftOpacity}" />
       <Setter Property="VerticalAlignment" Value="Center" />
       <!-- Column widths are fixed (#853) but header text is localized: a translation
            that outgrows its column must degrade to an ellipsis, not clip glyphs. -->
@@ -56,7 +63,7 @@
     </Style>
     <Style Selector="TextBlock.meta">
       <Setter Property="FontSize" Value="12" />
-      <Setter Property="Opacity" Value="0.85" />
+      <Setter Property="Opacity" Value="{DynamicResource VdfTextDim85Opacity}" />
     </Style>
     <Style Selector="ToggleButton.chip">
       <Setter Property="Padding" Value="10,3" />
@@ -82,6 +89,35 @@
          the selected row stand out inside a block of checked rows. -->
     <Style Selector="ListBox.results ListBoxItem:selected Border.resultrow.checked">
       <Setter Property="Background" Value="{DynamicResource VdfSelActiveBrush}" />
+    </Style>
+    <!-- The list-selected row. The theme fills it with a saturated accent and switches its
+         text to an accent tone; on that, the red and green metric values came out at
+         2.2:1 in dark and the dimmed secondary text at 3.4:1 in light, on the very row a
+         keyboard user is working on. A tint strong enough to be seen cannot stay under
+         4.5:1 for all of that text, so the tint is quiet, the text keeps its colors, and
+         selection is shown by a frame: a shape, which also works without telling teal
+         from red. The frame is a border of its own laid over the row, so that no row
+         changes size (a box shadow is not drawn on a Border with uneven thickness, which
+         the rows have for their edge bar). -->
+    <Style Selector="ListBox.results ListBoxItem:selected /template/ ContentPresenter#PART_ContentPresenter">
+      <Setter Property="Background" Value="{DynamicResource VdfRowSelectedBrush}" />
+      <Setter Property="Foreground" Value="{Binding $parent[ListBoxItem].Foreground}" />
+    </Style>
+    <!-- While the mouse button is down the theme paints a grey of its own (metric values
+         at 4.2:1): the row takes the tint it is about to get anyway. -->
+    <Style Selector="ListBox.results ListBoxItem:pressed /template/ ContentPresenter#PART_ContentPresenter">
+      <Setter Property="Background" Value="{DynamicResource VdfRowSelectedBrush}" />
+    </Style>
+    <Style Selector="Border.selframe">
+      <Setter Property="BorderThickness" Value="1.5" />
+      <Setter Property="BorderBrush" Value="Transparent" />
+      <Setter Property="IsHitTestVisible" Value="False" />
+    </Style>
+    <Style Selector="ListBox.results ListBoxItem:selected Border.selframe">
+      <Setter Property="BorderBrush" Value="{DynamicResource VdfRowSelectedFrameBrush}" />
+    </Style>
+    <Style Selector="ListBox.results ListBoxItem:selected Border.detailsrow">
+      <Setter Property="BorderBrush" Value="{DynamicResource VdfRowSelectedFrameBrush}" />
     </Style>
     <!-- similarity chip: mockup .simchip — soft surface, colored text, 45%-alpha
          border; tier classes (mid/low) are bound from the similarity value -->
@@ -115,9 +151,11 @@
       <Setter Property="Foreground" Value="{DynamicResource VdfGoodBrush}" />
       <Setter Property="FontWeight" Value="SemiBold" />
     </Style>
+    <!-- Only the best value is set in semibold. Both used to be, which left red against
+         green as the ONLY difference between a group's best and its other values, the
+         pair that color-blind users cannot tell apart. -->
     <Style Selector="TextBlock.metric-diff.lo">
       <Setter Property="Foreground" Value="{DynamicResource VdfDangerBrush}" />
-      <Setter Property="FontWeight" Value="SemiBold" />
     </Style>
     <Style Selector="TextBlock.metric-diff.eq">
       <Setter Property="Foreground" Value="{DynamicResource VdfMutedBrush}" />
@@ -125,7 +163,7 @@
     <!-- Hover-diff swap fades in instead of snapping (#849 report: values flipping
          "suddenly forth and back"). Only activation animates; clearing restores the
          familiar values immediately. -->
-    <Style Selector="TextBlock.metric-diff.diffing">
+    <Style Selector="Window:not(.reduce-motion) TextBlock.metric-diff.diffing">
       <Style.Animations>
         <Animation Duration="0:0:0.18" FillMode="Forward">
           <KeyFrame Cue="0%">
@@ -148,7 +186,7 @@
     <Style Selector="Border.hdrchip TextBlock">
       <Setter Property="FontSize" Value="9.5" />
       <Setter Property="FontWeight" Value="Bold" />
-      <Setter Property="Opacity" Value="0.75" />
+      <Setter Property="Opacity" Value="{DynamicResource VdfTextDim75Opacity}" />
     </Style>
     <Style Selector="Border.hdrchip.best">
       <Setter Property="Background" Value="{DynamicResource VdfGoodSoftBrush}" />
@@ -173,8 +211,14 @@
         IsVisible="{Binding Source={x:Static Settings:SettingsFile.Instance}, Path=!ResultsHintDismissed}">
       <DockPanel LastChildFill="True">
         <Button DockPanel.Dock="Right" Classes="group-action" FontSize="12"
-                Content="{Binding Source={x:Static local:App.Lang}, Path=[Setup.Welcome.Dismiss]}"
-                Command="{Binding DismissResultsHintCommand}" />
+                AutomationProperties.Name="{Binding Source={x:Static local:App.Lang}, Path=[Setup.Welcome.Dismiss]}"
+                Command="{Binding DismissResultsHintCommand}">
+          <!-- The glyph is decoration and stays out of the translated text. -->
+          <StackPanel Orientation="Horizontal" Spacing="4">
+            <TextBlock Text="{Binding Source={x:Static local:App.Lang}, Path=[Setup.Welcome.Dismiss]}" />
+            <TextBlock Text="✕" />
+          </StackPanel>
+        </Button>
         <Button DockPanel.Dock="Right" Classes="group-action" FontSize="12" Margin="0,0,6,0"
                 Content="{Binding Source={x:Static local:App.Lang}, Path=[Results.Hint.OpenSettings]}"
                 Command="{Binding ShowShellViewCommand}"
@@ -192,11 +236,12 @@
         BorderBrush="{actipro:ThemeResource Container3BorderBrush}"
         BorderThickness="0,0,0,1">
       <WrapPanel VerticalAlignment="Center">
-        <TextBlock Margin="0,0,4,0" VerticalAlignment="Center" FontSize="12"
+        <TextBlock x:Name="SortLabel" Margin="0,0,4,0" VerticalAlignment="Center" FontSize="12"
                    Text="{Binding Source={x:Static local:App.Lang}, Path=[MainWindow.Filter.Sort]}" />
         <ComboBox
             MinWidth="170"
             FontSize="12"
+            AutomationProperties.LabeledBy="{Binding #SortLabel}"
             ItemsSource="{Binding ResultsSortOptions}"
             SelectedItem="{Binding SelectedResultsSort}">
           <ComboBox.ItemTemplate>
@@ -209,6 +254,7 @@
             Classes="chip"
             Margin="4,0,0,0"
             IsChecked="{Binding ResultsSortDescending}"
+            AutomationProperties.Name="{Binding Source={x:Static local:App.Lang}, Path=[A11y.Results.SortDescending]}"
             Content="{Binding ResultsSortDescending, Converter={StaticResource SortDirectionGlyphConverter}}"
             ToolTip.Tip="{Binding Source={x:Static local:App.Lang}, Path=[Results.Toolbar.DescendingTip]}" />
         <ToggleButton
@@ -219,11 +265,12 @@
             Content="{Binding Source={x:Static local:App.Lang}, Path=[Results.Toolbar.BestFirst]}"
             ToolTip.Tip="{Binding Source={x:Static local:App.Lang}, Path=[Results.Toolbar.BestFirstTip]}" />
         <Border Width="1" Height="20" Margin="10,0" Background="{actipro:ThemeResource Container3BorderBrush}" />
-        <TextBlock Margin="0,0,4,0" VerticalAlignment="Center" FontSize="12"
+        <TextBlock x:Name="TypeLabel" Margin="0,0,4,0" VerticalAlignment="Center" FontSize="12"
                    Text="{Binding Source={x:Static local:App.Lang}, Path=[MainWindow.Filter.Type]}" />
         <ComboBox
             MinWidth="100"
             FontSize="12"
+            AutomationProperties.LabeledBy="{Binding #TypeLabel}"
             ItemsSource="{Binding TypeFilters}"
             SelectedItem="{Binding FileType}">
           <ComboBox.ItemTemplate>
@@ -236,12 +283,14 @@
                    Text="{Binding Source={x:Static local:App.Lang}, Path=[MainWindow.Filter.Similarity]}" />
         <NumericUpDown
             Width="110" FontSize="12"
+            AutomationProperties.Name="{Binding Source={x:Static local:App.Lang}, Path=[A11y.Results.SimilarityFrom]}"
             FormatString="\{0\}%" Maximum="100" Minimum="0"
             Value="{Binding FilterSimilarityFrom}" />
         <TextBlock Margin="4,0" VerticalAlignment="Center" FontSize="12"
                    Text="{Binding Source={x:Static local:App.Lang}, Path=[MainWindow.Filter.To]}" />
         <NumericUpDown
             Width="110" FontSize="12"
+            AutomationProperties.Name="{Binding Source={x:Static local:App.Lang}, Path=[A11y.Results.SimilarityTo]}"
             FormatString="\{0\}%" Maximum="100" Minimum="0"
             Value="{Binding FilterSimilarityTo}" />
         <ToggleButton
@@ -381,7 +430,7 @@
             <Thumb.Template>
               <ControlTemplate>
                 <Border Background="Transparent">
-                  <TextBlock Text="⋮" FontSize="13" Opacity="0.55" HorizontalAlignment="Center" VerticalAlignment="Center" />
+                  <TextBlock Text="⋮" FontSize="13" Opacity="{DynamicResource VdfTextFaintOpacity}" HorizontalAlignment="Center" VerticalAlignment="Center" />
                 </Border>
               </ControlTemplate>
             </Thumb.Template>
@@ -416,10 +465,13 @@
     <ListBox
         x:Name="ResultsList"
         Grid.Row="3"
+        AutomationProperties.Name="{Binding Source={x:Static local:App.Lang}, Path=[A11y.Results.List]}"
         Classes="results"
         Background="Transparent"
         Padding="0"
         TemplateApplied="OnResultsListTemplateApplied"
+        ContainerPrepared="OnResultsContainerPrepared"
+        ContainerClearing="OnResultsContainerClearing"
         ItemsSource="{Binding ResultsRows}"
         SelectionMode="Multiple"
         SelectionChanged="OnResultsSelectionChanged"
@@ -429,6 +481,7 @@
 
         <!-- ~~~~ Group header row ~~~~ -->
         <DataTemplate DataType="vm:ResultsGroupHeader">
+          <Panel>
           <Border
               Padding="6,5"
               Background="{actipro:ThemeResource Container2BackgroundBrush}"
@@ -457,7 +510,8 @@
             <DockPanel LastChildFill="True">
               <Button
                   DockPanel.Dock="Left"
-                  Classes="group-action"
+                  Classes="group-action chevron"
+                  Classes.collapsed="{Binding IsCollapsed}"
                   Width="24"
                   Padding="0"
                   Command="{Binding $parent[UserControl].((vm:MainWindowVM)DataContext).ToggleGroupCollapsedCommand}"
@@ -478,7 +532,7 @@
               <StackPanel Orientation="Horizontal" Spacing="10" VerticalAlignment="Center" Margin="8,0,0,0">
                 <TextBlock FontSize="13" FontWeight="SemiBold" Text="{Binding Title}" />
                 <TextBlock Classes="meta" VerticalAlignment="Center" Text="{Binding Summary}" />
-                <TextBlock FontSize="11" Opacity="0.6" VerticalAlignment="Center" Text="{Binding SimilarityRangeDisplay}" />
+                <TextBlock FontSize="11" Opacity="{DynamicResource VdfTextMutedOpacity}" VerticalAlignment="Center" Text="{Binding SimilarityRangeDisplay}" />
                 <!-- Combined-mode badges (#842): which classic algorithm(s) matched in
                      this group. Only ever set by the combined grayscale+pHash scan. -->
                 <Border Classes="simchip" Padding="5,0" CornerRadius="3" VerticalAlignment="Center"
@@ -496,10 +550,13 @@
               </StackPanel>
             </DockPanel>
           </Border>
+          <Border Classes="selframe" />
+          </Panel>
         </DataTemplate>
 
         <!-- ~~~~ File row ~~~~ -->
         <DataTemplate DataType="vm:ResultsItemRow">
+          <Panel>
           <!-- Left padding is 3 because the resultrow style reserves a 3px edge-bar
                border slot; 3+3 keeps the content aligned with the header row. -->
           <Border
@@ -549,6 +606,16 @@
                     Command="{Binding $parent[UserControl].((vm:MainWindowVM)DataContext).ToggleCheckboxCommand}"
                     Header="{Binding Source={x:Static local:App.Lang}, Path=[Results.Row.ToggleCheck]}"
                     InputGesture="{Binding Source={x:Static Settings:KeyboardShortcutManager.Instance}, Path=[ToggleCheckbox]}" />
+                <!-- Both are mouse-only on the row itself: the details button cannot be
+                     tabbed to inside a list, and the differences show on hover. -->
+                <MenuItem
+                    Command="{Binding $parent[UserControl].((vm:MainWindowVM)DataContext).ToggleItemDetailsCommand}"
+                    CommandParameter="{Binding Item}"
+                    Header="{Binding Source={x:Static local:App.Lang}, Path=[Results.Row.DetailsTip]}" />
+                <MenuItem
+                    Command="{Binding $parent[UserControl].((vm:MainWindowVM)DataContext).ToggleGroupDiffsCommand}"
+                    CommandParameter="{Binding Item}"
+                    Header="{Binding Source={x:Static local:App.Lang}, Path=[Results.Row.CompareWithBest]}" />
                 <MenuItem
                     Command="{Binding $parent[UserControl].((vm:MainWindowVM)DataContext).CopyPathsToClipboardCommand}"
                     Header="{Binding Source={x:Static local:App.Lang}, Path=[MainWindow.ContextMenu.CopyPaths]}" />
@@ -578,7 +645,15 @@
                   DockPanel.Dock="Left"
                   Width="30"
                   VerticalAlignment="Center"
-                  IsChecked="{Binding Item.Checked}" />
+                  IsChecked="{Binding Item.Checked}">
+                <!-- "Mark for deletion: clip.mp4": a bare checkbox says nothing about what it marks -->
+                <AutomationProperties.Name>
+                  <MultiBinding StringFormat="{}{0}: {1}">
+                    <Binding Source="{x:Static local:App.Lang}" Path="[A11y.Row.MarkForDeletion]" />
+                    <Binding Path="Item.ItemInfo.Path" Converter="{StaticResource FileNameConverter}" />
+                  </MultiBinding>
+                </AutomationProperties.Name>
+              </CheckBox>
               <!-- preview filmstrip -->
               <Grid DockPanel.Dock="Left"
                     Width="{Binding Source={x:Static Settings:SettingsFile.Instance}, Path=ResultsPreviewWidth}"
@@ -672,8 +747,8 @@
                            Text="{Binding Item.ItemInfo.Format, TargetNullValue=''}" />
                 <StackPanel Orientation="Horizontal" Spacing="3"
                             IsVisible="{Binding !Item.ItemInfo.IsImage}">
-                  <TextBlock FontSize="11.5" Opacity="0.8" Text="{Binding Item.ItemInfo.AudioFormat, TargetNullValue=''}" />
-                  <TextBlock FontSize="11.5" Opacity="0.8" Text="{Binding Item.ItemInfo.AudioChannel, TargetNullValue=''}" />
+                  <TextBlock FontSize="11.5" Opacity="{DynamicResource VdfTextDim80Opacity}" Text="{Binding Item.ItemInfo.AudioFormat, TargetNullValue=''}" />
+                  <TextBlock FontSize="11.5" Opacity="{DynamicResource VdfTextDim80Opacity}" Text="{Binding Item.ItemInfo.AudioChannel, TargetNullValue=''}" />
                 </StackPanel>
               </StackPanel>
               <!-- Bitrate: video over audio, same two-line convention as the other
@@ -737,7 +812,7 @@
                     </TextBlock.Text>
                   </TextBlock>
                 </Border>
-                <TextBlock FontSize="11.5" Opacity="0.8"
+                <TextBlock FontSize="11.5" Opacity="{DynamicResource VdfTextDim80Opacity}"
                            Text="{Binding Item.ItemInfo.DateCreated, Converter={StaticResource ExtraShortDateTimeConverter}}" />
               </StackPanel>
               <!-- Duration · Resolution: ONE hover zone for both metrics — two stacked
@@ -836,6 +911,7 @@
                   </Border>
                   <!-- Tier-2 metadata: toggles the details panel under this row -->
                   <Button Classes="group-action" Padding="4,0" FontSize="12" Content="ⓘ"
+                          AutomationProperties.Name="{Binding Source={x:Static local:App.Lang}, Path=[Results.Row.DetailsTip]}"
                           ToolTip.Tip="{Binding Source={x:Static local:App.Lang}, Path=[Results.Row.DetailsTip]}"
                           Command="{Binding $parent[UserControl].((vm:MainWindowVM)DataContext).ToggleItemDetailsCommand}"
                           CommandParameter="{Binding Item}" />
@@ -873,18 +949,20 @@
                         Text="{Binding Source={x:Static local:App.Lang}, Path=[Results.Row.PathCopied]}" />
                     <ctl:MiddleEllipsisTextBlock
                         FontSize="11.5"
-                        Opacity="0.65"
+                        Opacity="{DynamicResource VdfTextSoftOpacity}"
                         Text="{Binding Item.ItemInfo.Path, Converter={StaticResource DirectoryPathConverter}}" />
                   </DockPanel>
                 </Border>
               </StackPanel>
             </DockPanel>
           </Border>
+          <Border Classes="selframe" />
+          </Panel>
         </DataTemplate>
 
         <!-- ~~~~ Details panel (Tier 2 metadata, expanded via ⓘ) ~~~~ -->
         <DataTemplate DataType="vm:ResultsDetailsRow">
-          <Border Margin="36,2,16,6" Padding="14,8" CornerRadius="8"
+          <Border Classes="detailsrow" Margin="36,2,16,6" Padding="14,8" CornerRadius="8"
                   Background="{actipro:ThemeResource Container2BackgroundBrush}"
                   BorderBrush="{actipro:ThemeResource Container3BorderBrush}"
                   BorderThickness="1">
@@ -903,17 +981,17 @@
                     <TextBlock Classes="colheader" IsVisible="{Binding IsImage}"
                                Text="{Binding Source={x:Static local:App.Lang}, Path=[Results.Details.Image]}" />
                   </StackPanel>
-                  <TextBlock FontSize="12" Opacity="0.8" TextWrapping="Wrap" Text="{Binding VideoText}" />
+                  <TextBlock FontSize="12" Opacity="{DynamicResource VdfTextDim80Opacity}" TextWrapping="Wrap" Text="{Binding VideoText}" />
                 </StackPanel>
                 <StackPanel Margin="0,0,26,2" MinWidth="180" IsVisible="{Binding HasAudio}">
                   <TextBlock Classes="colheader"
                              Text="{Binding Source={x:Static local:App.Lang}, Path=[Results.Details.Audio]}" />
-                  <TextBlock FontSize="12" Opacity="0.8" TextWrapping="Wrap" Text="{Binding AudioText}" />
+                  <TextBlock FontSize="12" Opacity="{DynamicResource VdfTextDim80Opacity}" TextWrapping="Wrap" Text="{Binding AudioText}" />
                 </StackPanel>
                 <StackPanel Margin="0,0,26,2" MinWidth="160">
                   <TextBlock Classes="colheader"
                              Text="{Binding Source={x:Static local:App.Lang}, Path=[Results.Details.File]}" />
-                  <TextBlock FontSize="12" Opacity="0.8" TextWrapping="Wrap" Text="{Binding FileText}" />
+                  <TextBlock FontSize="12" Opacity="{DynamicResource VdfTextDim80Opacity}" TextWrapping="Wrap" Text="{Binding FileText}" />
                 </StackPanel>
               </WrapPanel>
             </DockPanel>
@@ -938,11 +1016,13 @@
         </TextBlock>
         <StackPanel DockPanel.Dock="Left" Orientation="Horizontal" Spacing="8" Margin="16,0,0,0">
           <Button
-              Background="{actipro:ThemeResource ControlBackgroundBrushSolidDanger}"
+              Classes="solid"
+              Background="{DynamicResource VdfDangerSolidBrush}"
               Foreground="White"
               FontSize="12.5"
               FontWeight="SemiBold"
-              Padding="14,5">
+              Padding="14,5"
+              AutomationProperties.Name="{Binding Source={x:Static local:App.Lang}, Path=[Results.Action.Delete]}">
             <Button.Content>
               <StackPanel Orientation="Horizontal" Spacing="6">
                 <TextBlock Text="{Binding Source={x:Static local:App.Lang}, Path=[Results.Action.Delete]}" />
@@ -971,7 +1051,8 @@
               </MenuFlyout>
             </Button.Flyout>
           </Button>
-          <Button FontSize="12.5" Padding="14,5">
+          <Button FontSize="12.5" Padding="14,5"
+                  AutomationProperties.Name="{Binding Source={x:Static local:App.Lang}, Path=[Results.Action.Remove]}">
             <Button.Content>
               <StackPanel Orientation="Horizontal" Spacing="6">
                 <TextBlock Text="{Binding Source={x:Static local:App.Lang}, Path=[Results.Action.Remove]}" />
@@ -1010,7 +1091,7 @@
               Command="{Binding ClearCheckedItemsCommand}"
               Content="{Binding Source={x:Static local:App.Lang}, Path=[Results.Action.ClearSelection]}" />
         </StackPanel>
-        <TextBlock DockPanel.Dock="Right" VerticalAlignment="Center" FontSize="12" Opacity="0.55"
+        <TextBlock DockPanel.Dock="Right" VerticalAlignment="Center" FontSize="12" Opacity="{DynamicResource VdfTextFaintOpacity}"
                    Text="{Binding Source={x:Static local:App.Lang}, Path=[Results.Action.Hint]}" />
       </DockPanel>
     </Border>
@@ -1025,17 +1106,17 @@
         BorderThickness="0,1,0,0">
       <DockPanel LastChildFill="False">
         <StackPanel Orientation="Horizontal" Spacing="16">
-          <TextBlock FontSize="12" Opacity="0.55">
+          <TextBlock FontSize="12" Opacity="{DynamicResource VdfTextFaintOpacity}">
             <Run Text="{Binding TotalDuplicateGroups, Mode=OneWay}" /><Run Text=" " /><Run Text="{Binding Source={x:Static local:App.Lang}, Path=[Results.Status.Groups]}" />
             <Run Text="· " /><Run Text="{Binding TotalDuplicates, Mode=OneWay}" /><Run Text=" " /><Run Text="{Binding Source={x:Static local:App.Lang}, Path=[Results.Status.Duplicates]}" />
             <Run Text="· " /><Run Text="{Binding TotalDuplicatesSize, Mode=OneWay}" /><Run Text=" " /><Run Text="{Binding Source={x:Static local:App.Lang}, Path=[Results.Status.TotalSize]}" />
           </TextBlock>
-          <TextBlock FontSize="12" Opacity="0.55"
+          <TextBlock FontSize="12" Opacity="{DynamicResource VdfTextFaintOpacity}"
                      ToolTip.Tip="{Binding Source={x:Static local:App.Lang}, Path=[MainWindow.Stats.PotentialSavingsTooltip]}">
             <Run Text="{Binding Source={x:Static local:App.Lang}, Path=[MainWindow.Stats.PotentialSavings]}" />
             <Run Text="{Binding PotentialSavings, Mode=OneWay}" />
           </TextBlock>
-          <TextBlock FontSize="12" Opacity="0.55">
+          <TextBlock FontSize="12" Opacity="{DynamicResource VdfTextFaintOpacity}">
             <Run Text="{Binding TotalSizeRemoved, Mode=OneWay}" /><Run Text=" " /><Run Text="{Binding Source={x:Static local:App.Lang}, Path=[Results.Status.RemovedSuffix]}" />
           </TextBlock>
         </StackPanel>
@@ -1043,9 +1124,10 @@
         <StackPanel DockPanel.Dock="Right" Orientation="Horizontal" Spacing="8"
                     VerticalAlignment="Center"
                     IsVisible="{Binding ShowThumbnailRetrievalProgress}">
-          <TextBlock FontSize="12" Opacity="0.55" VerticalAlignment="Center"
+          <TextBlock FontSize="12" Opacity="{DynamicResource VdfTextFaintOpacity}" VerticalAlignment="Center"
                      Text="{Binding ThumbnailRetrievalProgressText}" />
           <ProgressBar Width="90" Height="5"
+                       AutomationProperties.Name="{Binding ThumbnailRetrievalProgressText}"
                        IsIndeterminate="{Binding !ThumbnailProgressMax}"
                        Maximum="{Binding ThumbnailProgressMax, Mode=OneWay}"
                        Value="{Binding ThumbnailProgressCurrent, Mode=OneWay}" />

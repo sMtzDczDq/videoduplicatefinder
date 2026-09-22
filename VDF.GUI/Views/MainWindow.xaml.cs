@@ -56,6 +56,8 @@ namespace VDF.GUI.Views {
 			InitializeComponent();
 			Closing += MainWindow_Closing;
 			Opened += MainWindow_Opened;
+			KeepFocusAcrossBusyCurtain();
+			FollowViewModel();
 			//Don't use this Window.OnClosing event,
 			//datacontext might not be the same due to Avalonia internal handling data differently
 
@@ -70,10 +72,15 @@ namespace VDF.GUI.Views {
 				TransparencyLevelHint = new List<WindowTransparencyLevel> { WindowTransparencyLevel.Mica };
 				// Avalonia 12: ExtendClientAreaChromeHints was removed; WindowDecorations.Full
 				// (system chrome) is the default, matching the old PreferSystemChrome behavior.
-				if (SettingsFile.Instance.DarkMode)
-					this.FindControl<ExperimentalAcrylicBorder>("ExperimentalAcrylicBorderBackgroundBlack")!.IsVisible = true;
-				else
-					this.FindControl<ExperimentalAcrylicBorder>("ExperimentalAcrylicBorderBackgroundWhite")!.IsVisible = true;
+				// The tint under the Mica follows the theme, which can change while the window
+				// is open (the setting, or the system switching between light and dark).
+				void UpdateMicaTint() {
+					bool dark = Utils.Appearance.IsDarkNow;
+					this.FindControl<ExperimentalAcrylicBorder>("ExperimentalAcrylicBorderBackgroundBlack")!.IsVisible = dark;
+					this.FindControl<ExperimentalAcrylicBorder>("ExperimentalAcrylicBorderBackgroundWhite")!.IsVisible = !dark;
+				}
+				ActualThemeVariantChanged += (_, _) => UpdateMicaTint();
+				UpdateMicaTint();
 			}
 
 			// GNOME (and other Linux compositors) keep their server-side title bar even when
@@ -88,17 +95,8 @@ namespace VDF.GUI.Views {
 				this.FindControl<StackPanel>("TitlebarNav")!.Margin = new Thickness(0, 0, 8, 0);
 			}
 
-			// Application-level, not window-level: the managed window chrome (caption bar,
-			// titlebar buttons) resolves its brushes against the application's variant, so a
-			// window-only override leaves a dark titlebar band on an otherwise light window.
-			if (!SettingsFile.Instance.DarkMode && Application.Current != null)
-				Application.Current.RequestedThemeVariant = ThemeVariant.Light;
-
-			// Switch theme at runtime when the user toggles the DarkMode setting
-			SettingsFile.Instance.PropertyChanged += (_, e) => {
-				if (e.PropertyName == nameof(SettingsFile.DarkMode) && Application.Current != null)
-					Application.Current.RequestedThemeVariant = SettingsFile.Instance.DarkMode ? ThemeVariant.Dark : ThemeVariant.Light;
-			};
+			// Theme, and everything else that follows the system, for the whole application.
+			Utils.Appearance.Attach(this);
 
 			// The settings page has no Save button anymore ("Settings save instantly"):
 			// persist any settings change debounced, plus the folder/filter lists.
@@ -257,6 +255,87 @@ namespace VDF.GUI.Views {
 			var newResultsView = this.FindControl<DuplicateResultsView>("NewResultsView");
 			if (newResultsView != null)
 				KeyboardShortcutManager.Instance.ApplyBindings(newResultsView.ShortcutTarget, commandMap);
+		}
+
+		/// <summary>
+		/// The views under the busy curtain are disabled while it shows, which drops keyboard
+		/// focus. Without handing it back, every delete would throw a keyboard user out of the
+		/// results list and back to the start of the window. While the curtain is up, focus
+		/// goes to its Cancel button when there is one.
+		/// </summary>
+		void KeepFocusAcrossBusyCurtain() {
+			var covered = this.FindControl<Grid>("BusyCoveredViews")!;
+			var cancel = this.FindControl<Button>("BusyCancelButton")!;
+			Control? lastFocused = null;
+			// Tracked continuously: by the time IsEnabled flips, focus is already gone.
+			covered.AddHandler(GotFocusEvent, (_, e) => lastFocused = e.Source as Control, handledEventsToo: true);
+			covered.PropertyChanged += (_, e) => {
+				if (e.Property != IsEnabledProperty) return;
+				bool enabled = e.GetNewValue<bool>();
+				Dispatcher.UIThread.Post(() => {
+					if (!enabled) {
+						if (cancel.IsEffectivelyVisible) cancel.Focus(NavigationMethod.Unspecified);
+						return;
+					}
+					var current = FocusManager?.GetFocusedElement();
+					if (current != null && !ReferenceEquals(current, cancel)) return; // the user moved on
+					if (lastFocused is { IsEffectivelyEnabled: true, IsEffectivelyVisible: true } target && target.IsAttachedToVisualTree())
+						target.Focus(NavigationMethod.Unspecified);
+				}, DispatcherPriority.Loaded);
+			};
+		}
+
+		/// <summary>
+		/// Two things the window does on the view model's word. It speaks the view model's
+		/// announcements through the AnnouncerHost around its content. And it catches the
+		/// keyboard focus when the control that had it goes away with a state change: Scan
+		/// hides the Setup view and the Scan button with it, Pause turns into Resume, the end
+		/// of a scan replaces the scanning view. Avalonia then leaves focus on nothing, the
+		/// next Tab starts over at the top of the window, and a screen reader, which speaks
+		/// what gets focus, says nothing at all at the very moments something changed.
+		/// </summary>
+		void FollowViewModel() {
+			var announcer = this.FindControl<Controls.AnnouncerHost>("Announcer")!;
+			void OnAnnounced(string text, bool interrupt) {
+				if (Dispatcher.UIThread.CheckAccess()) announcer.Announce(text, interrupt);
+				else Dispatcher.UIThread.Post(() => announcer.Announce(text, interrupt));
+			}
+			void OnViewModelChanged(object? s, System.ComponentModel.PropertyChangedEventArgs e) {
+				if (e.PropertyName is nameof(MainWindowVM.IsScanningState) or nameof(MainWindowVM.IsReviewState)
+					or nameof(MainWindowVM.IsSetupState) or nameof(MainWindowVM.IsPaused))
+					Dispatcher.UIThread.Post(CatchLostFocus, DispatcherPriority.Loaded);
+			}
+			MainWindowVM? followed = null;
+			void Follow() {
+				if (followed != null) {
+					followed.Announced -= OnAnnounced;
+					followed.PropertyChanged -= OnViewModelChanged;
+				}
+				followed = DataContext as MainWindowVM;
+				if (followed != null) {
+					followed.Announced += OnAnnounced;
+					followed.PropertyChanged += OnViewModelChanged;
+				}
+			}
+			DataContextChanged += (_, _) => Follow();
+			Follow();
+		}
+
+		void CatchLostFocus() {
+			if (DataContext is not MainWindowVM vm || !vm.IsShellMainVisible) return;
+			// Focus that survived the change is where the user put it: leave it alone.
+			if (FocusManager?.GetFocusedElement() is Control { IsEffectivelyVisible: true, IsEffectivelyEnabled: true }) return;
+			Control? target = null;
+			if (vm.IsScanningState) {
+				var scanning = this.GetVisualDescendants().OfType<ScanningView>().FirstOrDefault();
+				target = scanning?.FindControl<Button>(vm.IsPaused ? "ResumeButton" : "PauseButton");
+			}
+			else if (vm.IsReviewState)
+				target = this.FindControl<DuplicateResultsView>("NewResultsView")?.FocusTarget;
+			else
+				target = this.GetVisualDescendants().OfType<SetupView>().FirstOrDefault()?.FindControl<Button>("ScanButton");
+			if (target is { IsEffectivelyVisible: true, IsEffectivelyEnabled: true })
+				target.Focus(NavigationMethod.Unspecified);
 		}
 
 		void MainWindow_Closing(object? sender, System.ComponentModel.CancelEventArgs e) {

@@ -5,6 +5,7 @@
     xmlns:Settings="clr-namespace:VDF.GUI.Data;assembly=VDF.GUI"
     xmlns:actipro="http://schemas.actiprosoftware.com/avaloniaui"
     xmlns:controls="clr-namespace:Avalonia.Controls;assembly=Avalonia.Controls"
+    xmlns:ctl="clr-namespace:VDF.GUI.Controls;assembly=VDF.GUI"
     xmlns:d="http://schemas.microsoft.com/expression/blend/2008"
     xmlns:i="clr-namespace:Avalonia.Xaml.Interactivity;assembly=Xaml.Behaviors.Interactivity"
     xmlns:ic="clr-namespace:Avalonia.Xaml.Interactions.Custom;assembly=Xaml.Behaviors.Interactions.Custom"
@@ -74,7 +75,7 @@
             <Setter Property="Padding" Value="10,3" />
             <Setter Property="FontSize" Value="13" />
             <Setter Property="VerticalAlignment" Value="Center" />
-            <Setter Property="Opacity" Value="0.8" />
+            <Setter Property="Opacity" Value="{DynamicResource VdfTextDim80Opacity}" />
         </Style>
         <Style Selector="Button.navlink:pointerover /template/ ContentPresenter">
             <Setter Property="Background" Value="{actipro:ThemeResource ControlBackgroundBrushSoftAccent}" />
@@ -83,6 +84,9 @@
             <Setter Property="Opacity" Value="1" />
         </Style>
     </Window.Styles>
+    <!-- Wraps everything, so that it is an ancestor of whatever has keyboard focus: the one
+         place a screen reader is sure to hear an announcement from (see AnnouncerHost). -->
+    <ctl:AnnouncerHost x:Name="Announcer">
     <Border BorderBrush="{DynamicResource SystemControlBackgroundChromeMediumBrush}" BorderThickness="2">
         <Grid>
             <controls:ExperimentalAcrylicBorder
@@ -150,6 +154,7 @@
                     Classes="navlink"
                     FontWeight="Bold"
                     Content="⋯"
+                    AutomationProperties.Name="{Binding Source={x:Static local:App.Lang}, Path=[Shell.MoreMenu]}"
                     ToolTip.Tip="{Binding Source={x:Static local:App.Lang}, Path=[Shell.MoreMenu]}">
                     <Button.Flyout>
                         <MenuFlyout Placement="BottomEdgeAlignedRight">
@@ -235,7 +240,17 @@
             <Grid x:Name="MainContentGrid" Margin="2,30,2,2">
                 <Grid IsVisible="{Binding IsShellMainVisible}">
                         <Grid>
-                            <Grid>
+                            <!-- Disabled while the busy curtain covers it: the curtain alone only
+                                 stops the mouse, Tab walked straight into the views below and
+                                 Space / Delete there acted in the middle of a running operation.
+                                 Same condition as the curtain's IsVisible, inverted. -->
+                            <Grid x:Name="BusyCoveredViews">
+                                <Grid.IsEnabled>
+                                    <MultiBinding Converter="{x:Static BoolConverters.Or}">
+                                        <Binding Path="!IsBusy" />
+                                        <Binding Path="IsScanning" />
+                                    </MultiBinding>
+                                </Grid.IsEnabled>
                                 <!-- One window, three states: Setup → Scanning → Review (stage 2).
                                      The legacy menu bar and stats row are gone (stage 7): stateless
                                      commands live in the titlebar ⋯ menu, selection tools in the
@@ -257,13 +272,14 @@
                                 </Grid.IsVisible>
                                 <!-- Curtain: fades the view underneath and swallows its input;
                                      kept as a sibling so the panel itself stays fully opaque. -->
-                                <Border Background="{actipro:ThemeResource Container1BackgroundBrush}" Opacity="0.85" />
+                                <Border Background="{actipro:ThemeResource Container1BackgroundBrush}" Opacity="{DynamicResource VdfTextDim85Opacity}" />
                                 <StackPanel HorizontalAlignment="Center" VerticalAlignment="Center">
                                     <ProgressBar
                                         Height="10"
                                         MaxWidth="200"
                                         BorderBrush="LimeGreen"
                                         BorderThickness="1"
+                                        AutomationProperties.Name="{Binding Source={x:Static local:App.Lang}, Path=[MainWindow.Busy.PleaseWait]}"
                                         IsIndeterminate="{Binding IsBusy}" />
                                     <TextBlock
                                         Margin="0,10,0,0"
@@ -278,6 +294,7 @@
                                         FontSize="14"
                                         Text="{Binding IsBusyOverlayText}" />
                                     <Button
+                                        x:Name="BusyCancelButton"
                                         Margin="0,15,0,0"
                                         HorizontalAlignment="Center"
                                         Command="{Binding CancelBusyCommand}"
@@ -292,6 +309,6 @@
             </Grid>
         </Grid>
     </Border>
-
+    </ctl:AnnouncerHost>
 
 </Window>

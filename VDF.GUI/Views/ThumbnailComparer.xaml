@@ -4,6 +4,7 @@
     xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
     xmlns:actipro="http://schemas.actiprosoftware.com/avaloniaui"
     xmlns:controls="clr-namespace:Avalonia.Controls;assembly=Avalonia.Controls"
+    xmlns:ctl="clr-namespace:VDF.GUI.Controls;assembly=VDF.GUI"
     xmlns:d="http://schemas.microsoft.com/expression/blend/2008"
     xmlns:data="using:VDF.GUI.Data"
     xmlns:mc="http://schemas.openxmlformats.org/markup-compatibility/2006"
@@ -60,7 +61,7 @@
             <Setter Property="FontFamily" Value="Cascadia Mono,Consolas,Menlo,monospace" />
             <Setter Property="FontSize" Value="11" />
             <Setter Property="FontWeight" Value="SemiBold" />
-            <Setter Property="Opacity" Value="0.75" />
+            <Setter Property="Opacity" Value="{DynamicResource VdfTextDim75Opacity}" />
         </Style>
         <!-- metadata chips (mockup .mchip) -->
         <Style Selector="Border.mchip">
@@ -73,7 +74,7 @@
         <Style Selector="Border.mchip TextBlock">
             <Setter Property="FontSize" Value="12" />
             <Setter Property="FontWeight" Value="SemiBold" />
-            <Setter Property="Opacity" Value="0.8" />
+            <Setter Property="Opacity" Value="{DynamicResource VdfTextDim80Opacity}" />
         </Style>
         <Style Selector="Border.mchip.hi">
             <Setter Property="BorderBrush" Value="{DynamicResource VdfGoodBorderBrush}" />
@@ -132,7 +133,7 @@
             <Setter Property="HorizontalAlignment" Value="Center" />
             <Setter Property="VerticalAlignment" Value="Bottom" />
             <Setter Property="Margin" Value="0,0,0,8" />
-            <Setter Property="Opacity" Value="0.85" />
+            <Setter Property="Opacity" Value="{DynamicResource VdfTextDim85Opacity}" />
         </Style>
         <Style Selector="Button.stripframe">
             <Setter Property="Padding" Value="0" />
@@ -148,6 +149,8 @@
             <Setter Property="BorderBrush" Value="{actipro:ThemeResource ControlBackgroundBrushEmphasizedAccent}" />
         </Style>
     </Window.Styles>
+    <!-- Speaks the transient messages to a screen reader (see AnnouncerHost). -->
+    <ctl:AnnouncerHost x:Name="Announcer">
     <Border BorderBrush="{DynamicResource SystemControlBackgroundChromeMediumBrush}" BorderThickness="2">
         <Grid RowDefinitions="Auto,Auto,*,Auto">
             <controls:ExperimentalAcrylicBorder
@@ -177,6 +180,7 @@
                 Text="{Binding #ThumbnailComparerWindow.Title}" />
             <!-- mockup: in-titlebar "✕ Close comparer", right-aligned before the caption buttons -->
             <Button
+                AutomationProperties.Name="{Binding Source={x:Static app:App.Lang}, Path=[Shell.CloseComparer]}"
                 Grid.Row="0"
                 Margin="0,0,190,0"
                 HorizontalAlignment="Right"
@@ -207,7 +211,7 @@
                         <TextBlock FontSize="14" FontWeight="SemiBold" VerticalAlignment="Center"
                                    IsVisible="{Binding GroupInfoText, Converter={x:Static StringConverters.IsNotNullOrEmpty}}"
                                    Text="{Binding GroupInfoText}" />
-                        <TextBlock FontSize="13.5" Opacity="0.7" VerticalAlignment="Center"
+                        <TextBlock FontSize="13.5" Opacity="{DynamicResource VdfTextDim70Opacity}" VerticalAlignment="Center"
                                    IsVisible="{Binding PairInfoText, Converter={x:Static StringConverters.IsNotNullOrEmpty}}"
                                    Text="{Binding PairInfoText}" />
                         <Border CornerRadius="6" Padding="9,2" VerticalAlignment="Center"
@@ -221,22 +225,23 @@
                                       IsChecked="{Binding HighlightDifferences}"
                                       Content="{Binding Source={x:Static app:App.Lang}, Path=[ThumbnailComparerDialog.HighlightDifferences]}"
                                       ToolTip.Tip="{Binding Source={x:Static app:App.Lang}, Path=[ThumbnailComparerDialog.DiffHint]}" />
-                        <TextBlock VerticalAlignment="Center" FontSize="12.5" Opacity="0.7"
+                        <TextBlock VerticalAlignment="Center" FontSize="12.5" Opacity="{DynamicResource VdfTextDim70Opacity}"
                                    IsVisible="{Binding HighlightDifferences}"
                                    Text="{Binding Source={x:Static app:App.Lang}, Path=[ThumbnailComparerDialog.DiffSensitivity]}" />
-                        <Slider Width="110" VerticalAlignment="Center" Minimum="0" Maximum="1"
+                        <Slider AutomationProperties.Name="{Binding Source={x:Static app:App.Lang}, Path=[ThumbnailComparerDialog.DiffSensitivity]}" Width="110" VerticalAlignment="Center" Minimum="0" Maximum="1"
+                                SmallChange="0.05" LargeChange="0.2"
                                 IsVisible="{Binding HighlightDifferences}"
                                 Value="{Binding DiffSensitivity}" />
                         <Border Width="1" Height="22" Margin="4,0" Background="{DynamicResource SystemControlHighlightBaseLowBrush}" />
-                        <TextBlock VerticalAlignment="Center" FontSize="12.5" Opacity="0.7"
+                        <TextBlock VerticalAlignment="Center" FontSize="12.5" Opacity="{DynamicResource VdfTextDim70Opacity}"
                                    Text="{Binding Source={x:Static app:App.Lang}, Path=[ThumbnailComparerDialog.Mode]}" />
-                        <ComboBox MinWidth="120" FontSize="12.5"
+                        <ComboBox AutomationProperties.Name="{Binding Source={x:Static app:App.Lang}, Path=[ThumbnailComparerDialog.Mode]}" MinWidth="120" FontSize="12.5"
                                   ItemsSource="{Binding CompareModes}"
                                   SelectedItem="{Binding SelectedCompareMode}" />
                         <Border Width="1" Height="22" Margin="4,0" Background="{DynamicResource SystemControlHighlightBaseLowBrush}" />
                         <Button Classes="tool-btn" Command="{Binding FitToViewCommand}" Content="{Binding Source={x:Static app:App.Lang}, Path=[ThumbnailComparerDialog.Fit]}" ToolTip.Tip="{Binding Source={x:Static app:App.Lang}, Path=[ThumbnailComparerDialog.FitTooltip]}" />
-                        <Button Classes="tool-btn" Command="{Binding ZoomOutCommand}" Content="{Binding Source={x:Static app:App.Lang}, Path=[ThumbnailComparerDialog.ZoomOut]}" />
-                        <Button Classes="tool-btn" Command="{Binding ZoomInCommand}" Content="{Binding Source={x:Static app:App.Lang}, Path=[ThumbnailComparerDialog.ZoomIn]}" />
+                        <Button AutomationProperties.Name="{Binding Source={x:Static app:App.Lang}, Path=[A11y.Comparer.ZoomOut]}" Classes="tool-btn" Command="{Binding ZoomOutCommand}" Content="{Binding Source={x:Static app:App.Lang}, Path=[ThumbnailComparerDialog.ZoomOut]}" />
+                        <Button AutomationProperties.Name="{Binding Source={x:Static app:App.Lang}, Path=[A11y.Comparer.ZoomIn]}" Classes="tool-btn" Command="{Binding ZoomInCommand}" Content="{Binding Source={x:Static app:App.Lang}, Path=[ThumbnailComparerDialog.ZoomIn]}" />
                     </StackPanel>
                 </DockPanel>
             </Border>
@@ -275,19 +280,19 @@
                             <DockPanel Grid.Row="1" Margin="0,8,0,0" LastChildFill="True"
                                        IsVisible="{Binding ShowFrameControls}">
                                 <StackPanel DockPanel.Dock="Right" Orientation="Horizontal" Spacing="2" VerticalAlignment="Center" Margin="8,0,0,0">
-                                    <Button Classes="offset-btn" Command="{Binding StepAMinusCommand}"
+                                    <Button AutomationProperties.Name="{Binding Source={x:Static app:App.Lang}, Path=[A11y.Comparer.PrevFrameLeft]}" Classes="offset-btn" Command="{Binding StepAMinusCommand}"
                                             ToolTip.Tip="{Binding Source={x:Static app:App.Lang}, Path=[ThumbnailComparerDialog.PrevFrame]}">
                                         <TextBlock FontSize="10" Text="&#9664;" />
                                     </Button>
                                     <Border MinWidth="30" VerticalAlignment="Center" Background="{actipro:ThemeResource Container1BackgroundBrush}" BorderBrush="{actipro:ThemeResource Container1BorderBrush}" BorderThickness="1" CornerRadius="3" Padding="4,2">
                                         <TextBlock HorizontalAlignment="Center" FontSize="11" FontWeight="SemiBold" Text="{Binding StepA}" />
                                     </Border>
-                                    <Button Classes="offset-btn" Command="{Binding StepAPlusCommand}"
+                                    <Button AutomationProperties.Name="{Binding Source={x:Static app:App.Lang}, Path=[A11y.Comparer.NextFrameLeft]}" Classes="offset-btn" Command="{Binding StepAPlusCommand}"
                                             ToolTip.Tip="{Binding Source={x:Static app:App.Lang}, Path=[ThumbnailComparerDialog.NextFrame]}">
                                         <TextBlock FontSize="10" Text="&#9654;" />
                                     </Button>
                                 </StackPanel>
-                                <ItemsControl ItemsSource="{Binding StripA}">
+                                <ItemsControl AutomationProperties.Name="{Binding Source={x:Static app:App.Lang}, Path=[A11y.Comparer.FramesLeft]}" ItemsSource="{Binding StripA}">
                                     <ItemsControl.ItemsPanel>
                                         <ItemsPanelTemplate>
                                             <StackPanel Orientation="Horizontal" />
@@ -295,7 +300,7 @@
                                     </ItemsControl.ItemsPanel>
                                     <ItemsControl.ItemTemplate>
                                         <DataTemplate x:DataType="vm:FrameStripEntry">
-                                            <Button Classes="stripframe"
+                                            <Button AutomationProperties.Name="{Binding AccessibleName}" Classes="stripframe"
                                                     Command="{Binding $parent[Window].((vm:ThumbnailComparerVM)DataContext).SelectBasePositionCommand}"
                                                     CommandParameter="{Binding}">
                                                 <Border Classes="stripframeborder" Classes.current="{Binding IsCurrent}"
@@ -310,7 +315,7 @@
 
                             <!-- name + badges (mockup .cmp-name) -->
                             <StackPanel Grid.Row="2" Orientation="Horizontal" Spacing="8" Margin="0,10,0,0">
-                                <ComboBox MinWidth="180" MaxWidth="340" FontSize="13.5" FontWeight="SemiBold"
+                                <ComboBox AutomationProperties.Name="{Binding Source={x:Static app:App.Lang}, Path=[A11y.Comparer.LeftFile]}" MinWidth="180" MaxWidth="340" FontSize="13.5" FontWeight="SemiBold"
                                           ItemsSource="{Binding Items}"
                                           SelectedItem="{Binding SelectedItemA}">
                                     <ComboBox.ItemTemplate>
@@ -330,13 +335,14 @@
                             </StackPanel>
 
                             <!-- path (mockup .cmp-path) -->
-                            <TextBlock Grid.Row="3" Margin="0,3,0,10" FontSize="12" Opacity="0.55"
+                            <TextBlock Grid.Row="3" Margin="0,3,0,10" FontSize="12" Opacity="{DynamicResource VdfTextFaintOpacity}"
                                        TextTrimming="CharacterEllipsis"
                                        Text="{Binding SelectedItemA.Item.ItemInfo.Folder, FallbackValue=''}"
                                        ToolTip.Tip="{Binding SelectedItemA.Item.ItemInfo.Path, FallbackValue=''}" />
 
                             <!-- metadata chips (mockup .mchips) -->
-                            <ItemsControl Grid.Row="4" ItemsSource="{Binding LeftChips}">
+                            <ItemsControl Grid.Row="4" ItemsSource="{Binding LeftChips}"
+                                          AutomationProperties.Name="{Binding Source={x:Static app:App.Lang}, Path=[A11y.Comparer.LeftFile]}">
                                 <ItemsControl.ItemsPanel>
                                     <ItemsPanelTemplate>
                                         <WrapPanel />
@@ -391,19 +397,19 @@
                             <DockPanel Grid.Row="1" Margin="0,8,0,0" LastChildFill="True"
                                        IsVisible="{Binding ShowFrameControls}">
                                 <StackPanel DockPanel.Dock="Right" Orientation="Horizontal" Spacing="2" VerticalAlignment="Center" Margin="8,0,0,0">
-                                    <Button Classes="offset-btn" Command="{Binding StepBMinusCommand}"
+                                    <Button AutomationProperties.Name="{Binding Source={x:Static app:App.Lang}, Path=[A11y.Comparer.PrevFrameRight]}" Classes="offset-btn" Command="{Binding StepBMinusCommand}"
                                             ToolTip.Tip="{Binding Source={x:Static app:App.Lang}, Path=[ThumbnailComparerDialog.PrevFrame]}">
                                         <TextBlock FontSize="10" Text="&#9664;" />
                                     </Button>
                                     <Border MinWidth="30" VerticalAlignment="Center" Background="{actipro:ThemeResource Container1BackgroundBrush}" BorderBrush="{actipro:ThemeResource Container1BorderBrush}" BorderThickness="1" CornerRadius="3" Padding="4,2">
                                         <TextBlock HorizontalAlignment="Center" FontSize="11" FontWeight="SemiBold" Text="{Binding StepB}" />
                                     </Border>
-                                    <Button Classes="offset-btn" Command="{Binding StepBPlusCommand}"
+                                    <Button AutomationProperties.Name="{Binding Source={x:Static app:App.Lang}, Path=[A11y.Comparer.NextFrameRight]}" Classes="offset-btn" Command="{Binding StepBPlusCommand}"
                                             ToolTip.Tip="{Binding Source={x:Static app:App.Lang}, Path=[ThumbnailComparerDialog.NextFrame]}">
                                         <TextBlock FontSize="10" Text="&#9654;" />
                                     </Button>
                                 </StackPanel>
-                                <ItemsControl ItemsSource="{Binding StripB}">
+                                <ItemsControl AutomationProperties.Name="{Binding Source={x:Static app:App.Lang}, Path=[A11y.Comparer.FramesRight]}" ItemsSource="{Binding StripB}">
                                     <ItemsControl.ItemsPanel>
                                         <ItemsPanelTemplate>
                                             <StackPanel Orientation="Horizontal" />
@@ -411,7 +417,7 @@
                                     </ItemsControl.ItemsPanel>
                                     <ItemsControl.ItemTemplate>
                                         <DataTemplate x:DataType="vm:FrameStripEntry">
-                                            <Button Classes="stripframe"
+                                            <Button AutomationProperties.Name="{Binding AccessibleName}" Classes="stripframe"
                                                     Command="{Binding $parent[Window].((vm:ThumbnailComparerVM)DataContext).SelectBasePositionCommand}"
                                                     CommandParameter="{Binding}">
                                                 <Border Classes="stripframeborder" Classes.current="{Binding IsCurrent}"
@@ -425,7 +431,7 @@
                             </DockPanel>
 
                             <StackPanel Grid.Row="2" Orientation="Horizontal" Spacing="8" Margin="0,10,0,0">
-                                <ComboBox MinWidth="180" MaxWidth="340" FontSize="13.5" FontWeight="SemiBold"
+                                <ComboBox AutomationProperties.Name="{Binding Source={x:Static app:App.Lang}, Path=[A11y.Comparer.RightFile]}" MinWidth="180" MaxWidth="340" FontSize="13.5" FontWeight="SemiBold"
                                           ItemsSource="{Binding Items}"
                                           SelectedItem="{Binding SelectedItemB}">
                                     <ComboBox.ItemTemplate>
@@ -444,12 +450,13 @@
                                 </Border>
                             </StackPanel>
 
-                            <TextBlock Grid.Row="3" Margin="0,3,0,10" FontSize="12" Opacity="0.55"
+                            <TextBlock Grid.Row="3" Margin="0,3,0,10" FontSize="12" Opacity="{DynamicResource VdfTextFaintOpacity}"
                                        TextTrimming="CharacterEllipsis"
                                        Text="{Binding SelectedItemB.Item.ItemInfo.Folder, FallbackValue=''}"
                                        ToolTip.Tip="{Binding SelectedItemB.Item.ItemInfo.Path, FallbackValue=''}" />
 
-                            <ItemsControl Grid.Row="4" ItemsSource="{Binding RightChips}">
+                            <ItemsControl Grid.Row="4" ItemsSource="{Binding RightChips}"
+                                          AutomationProperties.Name="{Binding Source={x:Static app:App.Lang}, Path=[A11y.Comparer.RightFile]}">
                                 <ItemsControl.ItemsPanel>
                                     <ItemsPanelTemplate>
                                         <WrapPanel />
@@ -490,10 +497,11 @@
                         <StackPanel Orientation="Horizontal" Spacing="8">
                             <StackPanel Orientation="Horizontal" Spacing="8" IsVisible="{Binding ShowPositionControls}">
                                 <TextBlock VerticalAlignment="Center" FontWeight="SemiBold" FontSize="12" Text="{Binding Source={x:Static app:App.Lang}, Path=[ThumbnailComparerDialog.BasePosition]}" />
-                                <Button Classes="offset-btn" Command="{Binding PrevBaseCommand}">
+                                <Button AutomationProperties.Name="{Binding Source={x:Static app:App.Lang}, Path=[A11y.Comparer.PrevPosition]}" Classes="offset-btn" Command="{Binding PrevBaseCommand}">
                                     <TextBlock FontSize="10" Text="&#9664;" />
                                 </Button>
                                 <Slider
+                                    AutomationProperties.Name="{Binding Source={x:Static app:App.Lang}, Path=[ThumbnailComparerDialog.BasePosition]}"
                                     Width="100"
                                     VerticalAlignment="Center"
                                     IsSnapToTickEnabled="True"
@@ -501,30 +509,30 @@
                                     Minimum="0"
                                     Maximum="{Binding BaseThumbnailIndexMax}"
                                     Value="{Binding BaseThumbnailIndex}" />
-                                <Button Classes="offset-btn" Command="{Binding NextBaseCommand}">
+                                <Button AutomationProperties.Name="{Binding Source={x:Static app:App.Lang}, Path=[A11y.Comparer.NextPosition]}" Classes="offset-btn" Command="{Binding NextBaseCommand}">
                                     <TextBlock FontSize="10" Text="&#9654;" />
                                 </Button>
                                 <Border Width="1" Height="22" Background="{DynamicResource SystemControlHighlightBaseLowBrush}" />
                             </StackPanel>
                             <TextBlock VerticalAlignment="Center" FontSize="12" Text="A" FontWeight="Bold" />
-                            <Button Classes="offset-btn" Command="{Binding StepAMinusCommand}">
+                            <Button AutomationProperties.Name="{Binding Source={x:Static app:App.Lang}, Path=[A11y.Comparer.PrevFrameLeft]}" Classes="offset-btn" Command="{Binding StepAMinusCommand}">
                                 <TextBlock FontSize="10" Text="&#9664;" />
                             </Button>
                             <Border MinWidth="36" Background="{actipro:ThemeResource Container1BackgroundBrush}" BorderBrush="{actipro:ThemeResource Container1BorderBrush}" BorderThickness="1" CornerRadius="3" Padding="4,2">
                                 <TextBlock HorizontalAlignment="Center" VerticalAlignment="Center" FontSize="12" FontWeight="SemiBold" Text="{Binding StepA}" />
                             </Border>
-                            <Button Classes="offset-btn" Command="{Binding StepAPlusCommand}">
+                            <Button AutomationProperties.Name="{Binding Source={x:Static app:App.Lang}, Path=[A11y.Comparer.NextFrameLeft]}" Classes="offset-btn" Command="{Binding StepAPlusCommand}">
                                 <TextBlock FontSize="10" Text="&#9654;" />
                             </Button>
                             <Border Width="1" Height="22" Background="{DynamicResource SystemControlHighlightBaseLowBrush}" />
                             <TextBlock VerticalAlignment="Center" FontSize="12" Text="B" FontWeight="Bold" />
-                            <Button Classes="offset-btn" Command="{Binding StepBMinusCommand}">
+                            <Button AutomationProperties.Name="{Binding Source={x:Static app:App.Lang}, Path=[A11y.Comparer.PrevFrameRight]}" Classes="offset-btn" Command="{Binding StepBMinusCommand}">
                                 <TextBlock FontSize="10" Text="&#9664;" />
                             </Button>
                             <Border MinWidth="36" Background="{actipro:ThemeResource Container1BackgroundBrush}" BorderBrush="{actipro:ThemeResource Container1BorderBrush}" BorderThickness="1" CornerRadius="3" Padding="4,2">
                                 <TextBlock HorizontalAlignment="Center" VerticalAlignment="Center" FontSize="12" FontWeight="SemiBold" Text="{Binding StepB}" />
                             </Border>
-                            <Button Classes="offset-btn" Command="{Binding StepBPlusCommand}">
+                            <Button AutomationProperties.Name="{Binding Source={x:Static app:App.Lang}, Path=[A11y.Comparer.NextFrameRight]}" Classes="offset-btn" Command="{Binding StepBPlusCommand}">
                                 <TextBlock FontSize="10" Text="&#9654;" />
                             </Button>
                             <Border Width="1" Height="22" Background="{DynamicResource SystemControlHighlightBaseLowBrush}" />
@@ -571,7 +579,7 @@
                                             HorizontalAlignment="Left"
                                             VerticalAlignment="Top"
                                             Background="Red"
-                                            Opacity="0.8"
+                                            Opacity="{DynamicResource VdfTextDim80Opacity}"
                                             IsHitTestVisible="False">
                                             <Border.RenderTransform>
                                                 <TranslateTransform X="{Binding LeftOffset}" Y="{Binding SeparatorY}" />
@@ -600,7 +608,7 @@
                                             HorizontalAlignment="Left"
                                             VerticalAlignment="Top"
                                             Background="Red"
-                                            Opacity="0.8"
+                                            Opacity="{DynamicResource VdfTextDim80Opacity}"
                                             IsHitTestVisible="False">
                                             <Border.RenderTransform>
                                                 <TranslateTransform X="{Binding SeparatorX}" Y="{Binding TopOffset}" />
@@ -624,7 +632,7 @@
                                 </Grid>
                             </data:ZoomPanPresenter>
                             <Border Classes="hint-bar" IsHitTestVisible="False" IsVisible="{Binding SwipeHintVisible}">
-                                <TextBlock FontSize="11" Opacity="0.8"
+                                <TextBlock FontSize="11" Opacity="{DynamicResource VdfTextDim80Opacity}"
                                            Text="{Binding Source={x:Static app:App.Lang}, Path=[ThumbnailComparerDialog.SwipeHint]}" />
                             </Border>
                         </Grid>
@@ -688,21 +696,21 @@
                 BorderThickness="0,1,0,0">
                 <DockPanel LastChildFill="False">
                     <StackPanel DockPanel.Dock="Left" Orientation="Horizontal" Spacing="10">
-                        <Button Command="{Binding KeepLeftCommand}">
+                        <Button AutomationProperties.Name="{Binding Source={x:Static app:App.Lang}, Path=[Comparer.KeepLeft]}" Command="{Binding KeepLeftCommand}">
                             <StackPanel Orientation="Horizontal" Spacing="8">
                                 <TextBlock VerticalAlignment="Center" FontSize="13"
                                            Text="{Binding Source={x:Static app:App.Lang}, Path=[Comparer.KeepLeft]}" />
                                 <Border Classes="kbd"><TextBlock Text="A" /></Border>
                             </StackPanel>
                         </Button>
-                        <Button Command="{Binding KeepRightCommand}">
+                        <Button AutomationProperties.Name="{Binding Source={x:Static app:App.Lang}, Path=[Comparer.KeepRight]}" Command="{Binding KeepRightCommand}">
                             <StackPanel Orientation="Horizontal" Spacing="8">
                                 <TextBlock VerticalAlignment="Center" FontSize="13"
                                            Text="{Binding Source={x:Static app:App.Lang}, Path=[Comparer.KeepRight]}" />
                                 <Border Classes="kbd"><TextBlock Text="D" /></Border>
                             </StackPanel>
                         </Button>
-                        <Button Command="{Binding NotAMatchCommand}" IsEnabled="{Binding CanNavigateGroups}">
+                        <Button AutomationProperties.Name="{Binding Source={x:Static app:App.Lang}, Path=[Comparer.NotAMatch]}" Command="{Binding NotAMatchCommand}" IsEnabled="{Binding CanNavigateGroups}">
                             <StackPanel Orientation="Horizontal" Spacing="8">
                                 <TextBlock VerticalAlignment="Center" FontSize="13"
                                            Text="{Binding Source={x:Static app:App.Lang}, Path=[Comparer.NotAMatch]}" />
@@ -712,21 +720,23 @@
                     </StackPanel>
                     <StackPanel DockPanel.Dock="Right" Orientation="Horizontal" Spacing="14" VerticalAlignment="Center">
                         <StackPanel Orientation="Horizontal" Spacing="5" VerticalAlignment="Center">
-                            <TextBlock FontSize="12.5" Opacity="0.6" VerticalAlignment="Center"
+                            <TextBlock FontSize="12.5" Opacity="{DynamicResource VdfTextMutedOpacity}" VerticalAlignment="Center"
                                        Text="{Binding Source={x:Static app:App.Lang}, Path=[Comparer.HintFrame]}" />
                             <Border Classes="kbd"><TextBlock Text="&#8592;" /></Border>
                             <Border Classes="kbd"><TextBlock Text="&#8594;" /></Border>
-                            <TextBlock FontSize="12.5" Opacity="0.6" VerticalAlignment="Center" Text="·" />
-                            <TextBlock FontSize="12.5" Opacity="0.6" VerticalAlignment="Center"
+                            <TextBlock FontSize="12.5" Opacity="{DynamicResource VdfTextMutedOpacity}" VerticalAlignment="Center" Text="·" />
+                            <TextBlock FontSize="12.5" Opacity="{DynamicResource VdfTextMutedOpacity}" VerticalAlignment="Center"
                                        Text="{Binding Source={x:Static app:App.Lang}, Path=[Comparer.HintZoom]}" />
                             <Border Classes="kbd"><TextBlock Text="Z" /></Border>
-                            <TextBlock FontSize="12.5" Opacity="0.6" VerticalAlignment="Center" Text="·" />
-                            <TextBlock FontSize="12.5" Opacity="0.6" VerticalAlignment="Center"
+                            <TextBlock FontSize="12.5" Opacity="{DynamicResource VdfTextMutedOpacity}" VerticalAlignment="Center" Text="·" />
+                            <TextBlock FontSize="12.5" Opacity="{DynamicResource VdfTextMutedOpacity}" VerticalAlignment="Center"
                                        Text="{Binding Source={x:Static app:App.Lang}, Path=[Comparer.HintNextPair]}" />
                             <Border Classes="kbd"><TextBlock Text="Space" /></Border>
                         </StackPanel>
-                        <Button Padding="18,8" FontSize="13.5" FontWeight="SemiBold"
+                        <Button AutomationProperties.Name="{Binding Source={x:Static app:App.Lang}, Path=[ThumbnailComparerDialog.NextGroup]}" Padding="18,8" FontSize="13.5" FontWeight="SemiBold"
+                                Classes="solid"
                                 Background="{actipro:ThemeResource ControlBackgroundBrushSolidAccent}"
+                                Foreground="{DynamicResource VdfOnAccentBrush}"
                                 Command="{Binding NextGroupCommand}"
                                 IsVisible="{Binding CanNavigateGroups}">
                             <StackPanel Orientation="Horizontal" Spacing="6">
@@ -748,12 +758,21 @@
                 VerticalAlignment="Stretch"
                 Background="#80000000"
                 IsVisible="{Binding IsLoadingThumbnails}">
-                <StackPanel
+                <!-- On a surface of its own: written straight onto the dim layer, the light
+                     theme's dark text stood on mid grey at 3.3:1, and white would not have
+                     reached 4.5:1 there either. -->
+                <Border
                     HorizontalAlignment="Center"
                     VerticalAlignment="Center"
-                    Spacing="8">
+                    Padding="28,20"
+                    Background="{actipro:ThemeResource Container1BackgroundBrush}"
+                    BorderBrush="{actipro:ThemeResource Container3BorderBrush}"
+                    BorderThickness="1"
+                    CornerRadius="10">
+                <StackPanel Spacing="8">
                     <TextBlock HorizontalAlignment="Center" Text="{Binding Source={x:Static app:App.Lang}, Path=[ThumbnailComparerDialog.LoadingThumbnails]}" />
                     <ProgressBar
+                        AutomationProperties.Name="{Binding Source={x:Static app:App.Lang}, Path=[ThumbnailComparerDialog.LoadingThumbnails]}"
                         Width="300"
                         Height="12"
                         Maximum="1"
@@ -767,7 +786,9 @@
                         Command="{Binding CancelThumbnailLoadingCommand}"
                         Content="{Binding Source={x:Static app:App.Lang}, Path=[Dialog.Cancel]}" />
                 </StackPanel>
+                </Border>
             </Border>
         </Grid>
     </Border>
+    </ctl:AnnouncerHost>
 </Window>

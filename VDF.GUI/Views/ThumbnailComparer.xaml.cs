@@ -23,6 +23,8 @@ using Avalonia.Layout;
 using Avalonia.LogicalTree;
 using Avalonia.Markup.Xaml;
 using Avalonia.Platform;
+using Avalonia.Threading;
+using Avalonia.VisualTree;
 using DynamicData;
 using VDF.GUI.Data;
 using VDF.GUI.ViewModels;
@@ -47,6 +49,11 @@ namespace VDF.GUI.Views {
 			// Culling keys are tunnel-handled so buttons/sliders never swallow them
 			// (locked decision 10: A/D keep a side, Space next pair, arrows step frames, Z zoom).
 			AddHandler(KeyDownEvent, OnCullingKeyDown, RoutingStrategies.Tunnel);
+			var announcer = this.FindControl<Controls.AnnouncerHost>("Announcer")!;
+			((ThumbnailComparerVM)DataContext).MessageShown += message => {
+				if (Dispatcher.UIThread.CheckAccess()) announcer.Announce(message);
+				else Dispatcher.UIThread.Post(() => announcer.Announce(message));
+			};
 
 			if (SettingsFile.Instance.UseMica &&
 				RuntimeInformation.IsOSPlatform(OSPlatform.Windows) &&
@@ -55,18 +62,21 @@ namespace VDF.GUI.Views {
 				TransparencyLevelHint = new List<WindowTransparencyLevel> { WindowTransparencyLevel.Mica };
 				// Avalonia 12: ExtendClientAreaChromeHints was removed; WindowDecorations.Full
 				// (system chrome) is the default, matching the old PreferSystemChrome behavior.
-				if (SettingsFile.Instance.DarkMode)
-					this.FindControl<ExperimentalAcrylicBorder>("ExperimentalAcrylicBorderBackgroundBlack")!.IsVisible = true;
-				else
-					this.FindControl<ExperimentalAcrylicBorder>("ExperimentalAcrylicBorderBackgroundWhite")!.IsVisible = true;
+				// The tint under the Mica follows the theme, which can change while the window
+				// is open (the setting, or the system switching between light and dark).
+				void UpdateMicaTint() {
+					bool dark = VDF.GUI.Utils.Appearance.IsDarkNow;
+					this.FindControl<ExperimentalAcrylicBorder>("ExperimentalAcrylicBorderBackgroundBlack")!.IsVisible = dark;
+					this.FindControl<ExperimentalAcrylicBorder>("ExperimentalAcrylicBorderBackgroundWhite")!.IsVisible = !dark;
+				}
+				ActualThemeVariantChanged += (_, _) => UpdateMicaTint();
+				UpdateMicaTint();
 			}
 
 			if (RuntimeInformation.IsOSPlatform(OSPlatform.Linux)) {
 				this.FindControl<TextBlock>("TextBlockWindowTitle")!.IsVisible = false;
 			}
-			if (!VDF.GUI.Data.SettingsFile.Instance.DarkMode)
-				RequestedThemeVariant = Avalonia.Styling.ThemeVariant.Light;
-
+			VDF.GUI.Utils.Appearance.Attach(this);
 		}
 		void InitializeComponent() => AvaloniaXamlLoader.Load(this);
 
@@ -120,6 +130,12 @@ namespace VDF.GUI.Views {
 			if (combo?.IsDropDownOpen == true) return;
 
 			bool shift = e.KeyModifiers.HasFlag(KeyModifiers.Shift);
+			// A focused slider keeps its plain arrow keys: taken away, it could be reached with
+			// Tab and then not moved, which left "difference sensitivity" to mouse users only.
+			// On the position slider the arrows do what they do anyway. Shift+arrows (one frame
+			// on both panes) and every other culling key stay with the comparer; a slider
+			// ignores modified arrows by itself.
+			if (!shift && e.Key is Key.Left or Key.Right && IsInsideSlider(focused)) return;
 			switch (e.Key) {
 				case Key.A:
 					vm.KeepLeftCommand.Execute().Subscribe();
@@ -152,6 +168,9 @@ namespace VDF.GUI.Views {
 					break;
 			}
 		}
+
+		static bool IsInsideSlider(Control? focused) =>
+			focused is Slider || focused?.FindAncestorOfType<Slider>() != null;
 
 		void ApplySavedWindowPlacement() {
 			var settings = SettingsFile.Instance;

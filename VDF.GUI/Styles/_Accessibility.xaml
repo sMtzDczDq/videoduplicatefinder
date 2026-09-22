@@ -1,0 +1,59 @@
+<Styles xmlns="https://github.com/avaloniaui"
+        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml">
+
+    <!-- Screen reader defaults. A control's accessible name is what Narrator/NVDA,
+         VoiceOver and Orca announce for it; these rules cover the cases where the name a
+         sighted user sees never reaches the control that takes keyboard focus. Anything
+         set on a control directly (AutomationProperties.Name="...") wins over them. -->
+
+    <!-- A text box that has only a placeholder for a label announces that placeholder. -->
+    <Style Selector="TextBox">
+        <Setter Property="AutomationProperties.Name" Value="{Binding $self.PlaceholderText}" />
+    </Style>
+
+    <!-- Focus goes to the text box INSIDE a NumericUpDown, so that is what gets announced:
+         hand it the name and help text of the control it belongs to. Must stay below the
+         TextBox rule, later styles take precedence. -->
+    <Style Selector="NumericUpDown /template/ TextBox#PART_TextBox">
+        <Setter Property="AutomationProperties.Name" Value="{Binding $parent[NumericUpDown].(AutomationProperties.Name)}" />
+        <Setter Property="AutomationProperties.HelpText" Value="{Binding $parent[NumericUpDown].(AutomationProperties.HelpText)}" />
+    </Style>
+
+    <!-- Same for the text box inside an AutoCompleteBox. -->
+    <Style Selector="AutoCompleteBox /template/ TextBox#PART_TextBox">
+        <Setter Property="AutomationProperties.Name" Value="{Binding $parent[AutoCompleteBox].(AutomationProperties.Name)}" />
+        <Setter Property="AutomationProperties.HelpText" Value="{Binding $parent[AutoCompleteBox].(AutomationProperties.HelpText)}" />
+    </Style>
+
+    <!-- UI scale. Windows scale their content with a layout transform (UiScale). Menus,
+         flyouts, dropdowns and tooltips are windows of their own and stay at 100 percent
+         unless their popup is told to take over the transform of what it belongs to. -->
+    <Style Selector="Popup">
+        <Setter Property="InheritsTransform" Value="True" />
+    </Style>
+
+    <!-- Contrast. The theme's accent button writes in the accent color itself, 3.6:1 on
+         the light theme's white. VdfAccentTextBrush (App.xaml) is the accent tone that
+         reaches 4.5:1 in both themes. -->
+    <!-- The theme dims placeholder text with a fixed opacity; as a token, the high contrast
+         themes can give it back its full strength (App.xaml). It stays italic as the theme
+         has it, which is what still tells it from typed text then. The :not() is there for
+         its side effect: the opacity is set in the control template, a template value
+         outranks a plain style, and only a style with a condition outranks the template. -->
+    <Style Selector="TextBox:not(.vdf-never) /template/ TextBlock#PART_Placeholder">
+        <Setter Property="Opacity" Value="{DynamicResource VdfPlaceholderOpacity}" />
+    </Style>
+    <Style Selector="ListBoxItem:selected:pointerover /template/ ContentPresenter#PART_ContentPresenter">
+        <Setter Property="Foreground" Value="{DynamicResource VdfSelectedHoverTextBrush}" />
+    </Style>
+    <Style Selector="Button.accent:not(.theme-solid)">
+        <Setter Property="Foreground" Value="{DynamicResource VdfAccentTextBrush}" />
+    </Style>
+    <!-- Under the pointer and pressed, the theme writes its own tone onto the presenter. -->
+    <Style Selector="Button.accent:not(.theme-solid):pointerover /template/ ContentPresenter#PART_ContentPresenter">
+        <Setter Property="Foreground" Value="{DynamicResource VdfAccentTextBrush}" />
+    </Style>
+    <Style Selector="Button.accent:not(.theme-solid):pressed /template/ ContentPresenter#PART_ContentPresenter">
+        <Setter Property="Foreground" Value="{DynamicResource VdfAccentTextBrush}" />
+    </Style>
+</Styles>

@@ -32,7 +32,7 @@
             <TextBlock FontSize="12" FontWeight="SemiBold" Text="{Binding ScanStageText}" />
           </Border>
         </StackPanel>
-        <TextBlock DockPanel.Dock="Right" FontSize="13.5" Opacity="0.8" VerticalAlignment="Center">
+        <TextBlock DockPanel.Dock="Right" FontSize="13.5" Opacity="{DynamicResource VdfTextDim80Opacity}" VerticalAlignment="Center">
           <Run Text="{Binding ScanProgressCount, Mode=OneWay}" />
           <Run Text="{Binding Source={x:Static local:App.Lang}, Path=[Scan.FilesUnit]}" />
           <Run Text="· ~" /><Run Text="{Binding RemainingTime, Mode=OneWay}" />
@@ -43,16 +43,17 @@
       <ProgressBar
           Height="10"
           CornerRadius="5"
+          AutomationProperties.Name="{Binding Source={x:Static local:App.Lang}, Path=[Scan.Title]}"
           Maximum="{Binding ScanProgressMaxValue, Mode=OneWay}"
           Value="{Binding ScanProgressValue, Mode=OneWay}" />
 
       <!-- elapsed + current file (mockup .scanmeta) -->
       <StackPanel Orientation="Horizontal" Spacing="18" Margin="0,6,0,0">
-        <TextBlock FontSize="12" Opacity="0.55">
+        <TextBlock FontSize="12" Opacity="{DynamicResource VdfTextFaintOpacity}">
           <Run Text="{Binding Source={x:Static local:App.Lang}, Path=[MainWindow.Stats.ElapsedTime]}" />
           <Run Text="{Binding TimeElapsed, Mode=OneWay}" />
         </TextBlock>
-        <TextBlock FontSize="12" Opacity="0.55" MaxWidth="520"
+        <TextBlock FontSize="12" Opacity="{DynamicResource VdfTextFaintOpacity}" MaxWidth="520"
                    FontFamily="Cascadia Mono,Consolas,monospace"
                    TextTrimming="PrefixCharacterEllipsis"
                    Text="{Binding ScanCurrentFile}" />
@@ -62,6 +63,7 @@
            Present only while the analysis phase reports drive data; compare phases carry none. -->
       <ItemsControl
           Margin="0,26,0,0"
+          AutomationProperties.Name="{Binding Source={x:Static local:App.Lang}, Path=[A11y.Scan.Drives]}"
           IsVisible="{Binding ScanDrives.HasRows}"
           ItemsSource="{Binding ScanDrives.Rows}">
         <ItemsControl.ItemsPanel>
@@ -79,15 +81,16 @@
                         BorderBrush="{actipro:ThemeResource Container3BorderBrush}"
                         BorderThickness="1"
                         IsVisible="{Binding HasType}">
-                  <TextBlock FontSize="10.5" FontWeight="Bold" LetterSpacing="0.6" Opacity="0.55"
+                  <TextBlock FontSize="10.5" FontWeight="Bold" LetterSpacing="0.6" Opacity="{DynamicResource VdfTextFaintOpacity}"
                              Text="{Binding TypeLabel}" />
                 </Border>
               </StackPanel>
               <ProgressBar Grid.Column="1" Height="7" CornerRadius="3.5" Margin="14,0"
+                           AutomationProperties.Name="{Binding Root}"
                            VerticalAlignment="Center"
                            Maximum="1"
                            Value="{Binding Fraction, Mode=OneWay}" />
-              <TextBlock Grid.Column="2" FontSize="12" Opacity="0.8"
+              <TextBlock Grid.Column="2" FontSize="12" Opacity="{DynamicResource VdfTextDim80Opacity}"
                          VerticalAlignment="Center" TextAlignment="Right"
                          Text="{Binding Stat}" />
             </Grid>
@@ -98,7 +101,9 @@
       <!-- actions + bordered trust note -->
       <StackPanel Orientation="Horizontal" Spacing="10" Margin="0,26,0,0">
         <Button
+            x:Name="PauseButton"
             FontSize="13" Padding="16,7" VerticalAlignment="Center"
+            AutomationProperties.Name="{Binding Source={x:Static local:App.Lang}, Path=[Scan.Pause]}"
             Command="{Binding PauseScanCommand}"
             IsVisible="{Binding !IsPaused}">
           <StackPanel Orientation="Horizontal" Spacing="6">
@@ -107,7 +112,9 @@
           </StackPanel>
         </Button>
         <Button
+            x:Name="ResumeButton"
             FontSize="13" Padding="16,7" VerticalAlignment="Center"
+            AutomationProperties.Name="{Binding Source={x:Static local:App.Lang}, Path=[Scan.Resume]}"
             Command="{Binding ResumeScanCommand}"
             IsVisible="{Binding IsPaused}">
           <StackPanel Orientation="Horizontal" Spacing="6">
@@ -117,6 +124,7 @@
         </Button>
         <Button
             FontSize="13" Padding="16,7" VerticalAlignment="Center"
+            AutomationProperties.Name="{Binding Source={x:Static local:App.Lang}, Path=[Scan.Stop]}"
             Command="{Binding StopScanCommand}">
           <StackPanel Orientation="Horizontal" Spacing="6">
             <TextBlock Text="⏹" FontSize="12" VerticalAlignment="Center" />
@@ -126,7 +134,7 @@
         <Border CornerRadius="8" Padding="14,7"
                 BorderBrush="{actipro:ThemeResource Container3BorderBrush}"
                 BorderThickness="1">
-          <TextBlock FontSize="12.5" Opacity="0.6" VerticalAlignment="Center"
+          <TextBlock FontSize="12.5" Opacity="{DynamicResource VdfTextMutedOpacity}" VerticalAlignment="Center"
                      Text="{Binding Source={x:Static local:App.Lang}, Path=[Scan.PauseNote]}" />
         </Border>
       </StackPanel>
@@ -139,10 +147,11 @@
             VerticalAlignment="Top"
             BorderBrush="{actipro:ThemeResource Container3BorderBrush}"
             BorderThickness="0,1,0,0">
-      <ItemsControl ItemsSource="{Binding LogTail}">
+      <ItemsControl ItemsSource="{Binding LogTail}"
+                    AutomationProperties.Name="{Binding Source={x:Static local:App.Lang}, Path=[MainWindow.Tab.Log]}">
         <ItemsControl.ItemTemplate>
           <DataTemplate x:DataType="data:LogTailRow">
-            <TextBlock FontSize="11.5" Opacity="0.55" Margin="0,1.5"
+            <TextBlock FontSize="11.5" Opacity="{DynamicResource VdfTextFaintOpacity}" Margin="0,1.5"
                        TextTrimming="CharacterEllipsis" Text="{Binding Display}">
               <ToolTip.Tip>
                 <TextBlock MaxWidth="800" TextWrapping="Wrap" Text="{Binding Tooltip}" />

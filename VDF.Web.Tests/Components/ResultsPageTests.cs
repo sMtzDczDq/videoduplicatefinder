@@ -97,6 +97,114 @@ public sealed class ResultsPageTests : BunitContext {
 		Assert.Contains("@ 00:00:42", partialBadge.TextContent);
 	}
 
+	// #899: a card lists the audio and subtitle languages, and only when there are any.
+	[Fact]
+	public void VideoCards_ShowTrackLanguages_WhenTheFileHasThem() {
+		Guid group = Guid.NewGuid();
+		var tagged = Seed("tagged.mkv", group);
+		tagged.AudioLanguages = "GER, ENG";
+		tagged.SubtitleLanguages = "GER";
+		Seed("plain.mp4", group);
+
+		var page = RenderPage();
+
+		string LabelsOf(string name) => string.Join("|", page.FindAll(".dup-card")
+			.Single(c => c.TextContent.Contains(name)).QuerySelectorAll(".meta-row")
+			.Select(r => r.TextContent.Trim().Replace("\n", " ")));
+		var taggedCard = page.FindAll(".dup-card").Single(c => c.TextContent.Contains("tagged.mkv"));
+		var rows = taggedCard.QuerySelectorAll(".meta-row")
+			.ToDictionary(r => r.QuerySelector(".meta-label")!.TextContent, r => r.QuerySelector(".meta-value")!.TextContent.Trim());
+		Assert.Equal("GER, ENG", rows["Audio"]);
+		Assert.Equal("GER", rows["Subs"]);
+		Assert.DoesNotContain("Audio", LabelsOf("plain.mp4"));
+		Assert.DoesNotContain("Subs", LabelsOf("plain.mp4"));
+	}
+
+	// === #926: Compare metadata ===
+
+	static readonly Func<string, IReadOnlyList<VDF.Core.Utils.MetadataField>?> FakeTags = path => {
+		VDF.Core.Utils.MetadataField C(string name, string value) => new(new(VDF.Core.Utils.MetadataSectionKind.Container), name, value);
+		if (path.Contains("gone")) return null;
+		string date = path.Contains("right") ? "2023-08-15T14:34:56+0200" : "2023-08-15T12:34:56";
+		return new[] { C("creation_time", "2023-08-15T12:34:56Z"), C("com.apple.quicktime.creationdate", date) };
+	};
+
+	IRenderedComponent<VDF.Web.Components.Pages.Results> OpenMetadataOfFirstGroup() {
+		var page = RenderPage();
+		page.Find(".metadata-btn").Click();
+		page.WaitForAssertion(() => Assert.NotEmpty(page.FindAll(".metadata-table")));
+		return page;
+	}
+
+	[Fact]
+	public void Metadata_MarksTheOneCopyWithTheOtherDate() {
+		MetadataLookup.Reader = FakeTags;
+		try {
+			Guid group = Guid.NewGuid();
+			Seed("wrong1.mov", group);
+			Seed("right.mov", group);
+			Seed("wrong2.mov", group);
+
+			var page = OpenMetadataOfFirstGroup();
+
+			Assert.Contains("1 of 2 fields differ", page.Find(".metadata-summary").TextContent);
+			var row = Assert.Single(page.FindAll(".metadata-table tbody tr"), r => r.QuerySelector("th[scope=row]") != null);
+			Assert.Equal("com.apple.quicktime.creationdate", row.QuerySelector("th")!.TextContent);
+			var odd = Assert.Single(row.QuerySelectorAll("td.metadata-odd"));
+			Assert.Contains("2023-08-15T14:34:56+0200", odd.TextContent);
+			Assert.Contains("(differs)", odd.TextContent); // said to screen readers, not only colored
+			Assert.Equal("Container", page.Find(".metadata-section th").TextContent);
+
+			// Untick the filter: the shared creation_time shows too, unmarked.
+			page.Find(".metadata-toolbar input").Change(false);
+			Assert.Equal(2, page.FindAll(".metadata-table th[scope=row]").Count);
+			Assert.Single(page.FindAll("td.metadata-odd"));
+		}
+		finally { MetadataLookup.Reader = VDF.Core.Utils.FileMetadata.Read; }
+	}
+
+	[Fact]
+	public void Metadata_ColumnCheckbox_SelectsTheFileOnThePage_AndEscCloses() {
+		MetadataLookup.Reader = FakeTags;
+		try {
+			Guid group = Guid.NewGuid();
+			Seed("wrong1.mov", group);
+			Seed("right.mov", group);
+			Seed("gone.mov", group);
+
+			var page = OpenMetadataOfFirstGroup();
+
+			var gone = page.FindAll(".metadata-table thead th").Single(th => th.TextContent.Contains("gone.mov"));
+			Assert.Contains("file not available", gone.TextContent);
+			page.FindAll(".metadata-table thead input").Single(i => i.GetAttribute("aria-label") == "Select wrong1.mov").Change(true);
+			Assert.Contains("1 selected", page.Markup);
+			Assert.Contains("selected", page.FindAll(".dup-card").Single(c => c.TextContent.Contains("wrong1.mov")).ClassName);
+
+			page.Find("#metadata-modal").KeyDown(new Microsoft.AspNetCore.Components.Web.KeyboardEventArgs { Key = "Escape" });
+			Assert.Empty(page.FindAll("#metadata-modal"));
+		}
+		finally { MetadataLookup.Reader = VDF.Core.Utils.FileMetadata.Read; }
+	}
+
+	[Fact]
+	public void Metadata_OpensFromTheCardMenu() {
+		MetadataLookup.Reader = FakeTags;
+		try {
+			Guid group = Guid.NewGuid();
+			Seed("wrong1.mov", group);
+			Seed("right.mov", group);
+			Seed("wrong2.mov", group);
+			var page = RenderPage();
+
+			page.FindAll(".dup-card").Single(c => c.TextContent.Contains("right.mov")).ContextMenu();
+			page.FindAll(".ctx-menu button").Single(b => b.TextContent == "Compare metadata").Click();
+
+			page.WaitForAssertion(() => Assert.Single(page.FindAll("td.metadata-odd")));
+			Assert.Empty(page.FindAll(".ctx-menu"));
+		}
+		finally { MetadataLookup.Reader = VDF.Core.Utils.FileMetadata.Read; }
+	}
+
 	// === Frames: which moment of a file is shown ===
 	// Seeded entries are 60 seconds long.
 
@@ -243,5 +351,34 @@ public sealed class ResultsPageTests : BunitContext {
 
 		Assert.Empty(page.FindAll(".badge-ai-matched"));
 		Assert.Empty(page.FindAll(".badge-partial-clip"));
+	}
+
+	// === CSV export ===
+
+	[Fact]
+	public void ExportCsv_MarksWhatIsSelectedInThisPage() {
+		// The export used to be a stateless endpoint with no way to know the selection,
+		// which lives in the page (one per tab), so the CSV had no Checked column at all.
+		Guid group = Guid.NewGuid();
+		Seed("keep.mp4", group);
+		Seed("drop.mp4", group);
+		string? csv = null;
+		JSInterop.SetupVoid("vdf.downloadStream", inv => {
+			Assert.Equal("vdf-results.csv", inv.Arguments[0]);
+			var stream = ((Microsoft.JSInterop.DotNetStreamReference)inv.Arguments[1]!).Stream;
+			csv = new StreamReader(stream).ReadToEnd();
+			return true;
+		}).SetVoidResult();
+
+		var page = RenderPage();
+		page.FindAll(".dup-card").Single(c => c.TextContent.Contains("drop.mp4"))
+			.QuerySelector(".card-check input")!.Change(true);
+		page.FindAll("button").Single(b => b.TextContent == "Export CSV").Click();
+
+		Assert.NotNull(csv);
+		string[] lines = csv!.TrimEnd().Split(Environment.NewLine);
+		Assert.EndsWith(",IsImage,Checked,AudioLanguages,SubtitleLanguages", lines[0]);
+		Assert.Equal("True", ResultsCsvTests.Field(lines[0], Assert.Single(lines, l => l.Contains("drop.mp4")), "Checked"));
+		Assert.Equal("False", ResultsCsvTests.Field(lines[0], Assert.Single(lines, l => l.Contains("keep.mp4")), "Checked"));
 	}
 }

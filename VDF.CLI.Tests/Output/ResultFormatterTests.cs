@@ -122,6 +122,36 @@ public class ResultFormatterTests {
 		Assert.Contains("\"PartialClip, AiMatched\"", lines[1]);
 	}
 
+	// #899: the track languages are the last two CSV columns ("GER, ENG" stays one field),
+	// part of the text output's detail line, and plain properties in the JSON.
+	[Fact]
+	public void TrackLanguages_AppearInEveryFormat() {
+		var item = MakeItem(Group1);
+		item.AudioLanguages = "GER, ENG";
+		item.SubtitleLanguages = "GER";
+		var items = new List<DuplicateItem> { item };
+
+		var csv = ResultFormatter.Format(items, OutputFormat.Csv).Split('\n', StringSplitOptions.RemoveEmptyEntries);
+		Assert.EndsWith(",AudioLanguages,SubtitleLanguages", csv[0].Trim());
+		Assert.Equal(csv[0].Split(',').Length, CountCsvColumns(csv[1].Trim()));
+		Assert.EndsWith(",\"GER, ENG\",GER", csv[1].Trim());
+
+		string text = ResultFormatter.Format(items, OutputFormat.Text);
+		Assert.Contains(", audio GER, ENG, subtitles GER", text);
+
+		using var json = JsonDocument.Parse(ResultFormatter.Format(items, OutputFormat.Json));
+		var row = json.RootElement[0].GetProperty("Items")[0];
+		Assert.Equal("GER, ENG", row.GetProperty("AudioLanguages").GetString());
+		Assert.Equal("GER", row.GetProperty("SubtitleLanguages").GetString());
+	}
+
+	[Fact]
+	public void TrackLanguages_Absent_LeaveTheTextLineAsItWas() {
+		string text = ResultFormatter.Format(new List<DuplicateItem> { MakeItem(Group1) }, OutputFormat.Text);
+		Assert.DoesNotContain("audio", text);
+		Assert.DoesNotContain("subtitles", text);
+	}
+
 	static int CountCsvColumns(string line) {
 		int columns = 1;
 		bool inQuotes = false;
@@ -190,5 +220,35 @@ public class ResultFormatterTests {
 		string result = ResultFormatter.Format(items, OutputFormat.Json);
 
 		Assert.Equal("[]", result.Trim());
+	}
+
+	[Fact]
+	public void Format_AllFormats_ShareGroupAndMemberOrder() {
+		// Text and CSV sorted groups by id while JSON kept discovery order; all three
+		// now come from one grouping.
+		var low = new Guid("00000000-0000-0000-0000-000000000001");
+		var high = new Guid("ffffffff-0000-0000-0000-000000000000");
+		var items = new List<DuplicateItem> {
+			MakeItem(high, similarity: 90f, path: "/test/h90.mp4"),
+			MakeItem(low, similarity: 91f, path: "/test/l91.mp4"),
+			MakeItem(high, similarity: 99f, path: "/test/h99.mp4"),
+			MakeItem(low, similarity: 97f, path: "/test/l97.mp4"),
+		};
+		string[] expected = ["/test/l97.mp4", "/test/l91.mp4", "/test/h99.mp4", "/test/h90.mp4"];
+
+		using var json = JsonDocument.Parse(ResultFormatter.Format(items, OutputFormat.Json));
+		var jsonPaths = json.RootElement.EnumerateArray()
+			.SelectMany(g => g.GetProperty("Items").EnumerateArray())
+			.Select(i => i.GetProperty("Path").GetString());
+		var csvPaths = ResultFormatter.Format(items, OutputFormat.Csv)
+			.Split('\n', StringSplitOptions.RemoveEmptyEntries).Skip(1)
+			.Select(l => l.Split(',')[2]);
+		string text = ResultFormatter.Format(items, OutputFormat.Text);
+		var textPaths = expected.OrderBy(p => text.IndexOf(p, StringComparison.Ordinal));
+
+		Assert.Equal(expected, jsonPaths);
+		Assert.Equal(expected, csvPaths);
+		Assert.Equal(expected, textPaths);
+		Assert.Contains("Found 2 duplicate group(s), 4 total file(s).", text);
 	}
 }

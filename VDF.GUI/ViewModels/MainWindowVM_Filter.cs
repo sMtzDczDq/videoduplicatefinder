@@ -50,6 +50,79 @@ namespace VDF.GUI.ViewModels {
 			}
 		}
 
+		bool _FilterHideGroupsWithOneFileLeft;
+		/// <summary>
+		/// Hides groups in which at most one file still exists: after deleting a folder that
+		/// had an identical copy elsewhere, every file of the copy stayed listed next to its
+		/// "Already deleted" twin, one group per file (#909).
+		/// </summary>
+		public bool FilterHideGroupsWithOneFileLeft {
+			get => _FilterHideGroupsWithOneFileLeft;
+			set {
+				if (value == _FilterHideGroupsWithOneFileLeft) return;
+				this.RaiseAndSetIfChanged(ref _FilterHideGroupsWithOneFileLeft, value);
+				RefreshResultsView();
+			}
+		}
+
+		/// <summary>Recomputed on every list rebuild while the chip is on, so deletions show up at once.</summary>
+		HashSet<Guid> _groupsWithOneFileLeft = new();
+		void RebuildGroupsWithOneFileLeft() {
+			if (!FilterHideGroupsWithOneFileLeft) { _groupsWithOneFileLeft.Clear(); return; }
+			var (isTombstone, _) = ResultsListBuilder.CreateCachedPathStatus(File.Exists, VDF.Core.ScanEngine.IsDriveReady);
+			_groupsWithOneFileLeft = GroupsWithAtMostOneFileLeft(Duplicates, isTombstone);
+		}
+
+		/// <summary>
+		/// Groups with at most one member that is not "Already deleted". A member on an
+		/// unplugged drive still counts as a file: offline is not deleted.
+		/// </summary>
+		internal static HashSet<Guid> GroupsWithAtMostOneFileLeft(IEnumerable<DuplicateItemVM> items, Func<DuplicateItemVM, bool> isTombstone) {
+			var liveCount = new Dictionary<Guid, int>();
+			foreach (var item in items) {
+				liveCount.TryGetValue(item.ItemInfo.GroupId, out int count);
+				liveCount[item.ItemInfo.GroupId] = isTombstone(item) ? count : count + 1;
+			}
+			return liveCount.Where(kv => kv.Value <= 1).Select(kv => kv.Key).ToHashSet();
+		}
+
+		bool _FilterOnlyGroupsWithAiMatches;
+		/// <summary>
+		/// Shows only the groups the AI pass contributed to: those holding a file that only
+		/// the AI accepted, which the classic comparison rejected (#927). Not an AI-only scan:
+		/// the rest of such a group stays visible, because the AI-matched file can only be
+		/// judged next to the file it was matched with, and which one that was is not recorded.
+		/// </summary>
+		public bool FilterOnlyGroupsWithAiMatches {
+			get => _FilterOnlyGroupsWithAiMatches;
+			set {
+				if (value == _FilterOnlyGroupsWithAiMatches) return;
+				this.RaiseAndSetIfChanged(ref _FilterOnlyGroupsWithAiMatches, value);
+				RefreshResultsView();
+				this.RaisePropertyChanged(nameof(ResultsShowAiMatchFilter));
+			}
+		}
+
+		HashSet<Guid> _groupsWithAiMatch = new();
+
+		/// <summary>
+		/// The chip only exists when it can do something: the results contain AI matches, or
+		/// it is still switched on (so it can be switched off after a scan without AI).
+		/// </summary>
+		public bool ResultsShowAiMatchFilter => _groupsWithAiMatch.Count > 0 || FilterOnlyGroupsWithAiMatches;
+
+		/// <summary>Recomputed on every list rebuild: removing or deleting files can empty a group of its AI match.</summary>
+		void RebuildGroupsWithAiMatch() {
+			bool had = _groupsWithAiMatch.Count > 0;
+			_groupsWithAiMatch = GroupsWithAiMatches(Duplicates);
+			if (had != _groupsWithAiMatch.Count > 0)
+				this.RaisePropertyChanged(nameof(ResultsShowAiMatchFilter));
+		}
+
+		/// <summary>Groups holding at least one file flagged <see cref="VDF.Core.DuplicateFlags.AiMatched"/>.</summary>
+		internal static HashSet<Guid> GroupsWithAiMatches(IEnumerable<DuplicateItemVM> items) =>
+			items.Where(d => d.ItemInfo.IsAiMatched).Select(d => d.ItemInfo.GroupId).ToHashSet();
+
 		HashSet<Guid> _groupsWithPathHit = new();
 		void RebuildSearchPathIndex() {
 			var needle = FilterByPath;
@@ -127,6 +200,12 @@ namespace VDF.GUI.ViewModels {
 
 			if (ok && FilterGroupsWithCheckedItems)
 				ok = GroupHasCheckedItems(data.ItemInfo.GroupId);
+
+			if (ok && FilterHideGroupsWithOneFileLeft)
+				ok = !_groupsWithOneFileLeft.Contains(data.ItemInfo.GroupId);
+
+			if (ok && FilterOnlyGroupsWithAiMatches)
+				ok = _groupsWithAiMatch.Contains(data.ItemInfo.GroupId);
 
 			data.IsVisibleInFilter = ok;
 			return ok;

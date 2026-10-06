@@ -526,6 +526,12 @@ namespace VDF.GUI.Data {
 			get;
 			set => this.RaiseAndSetIfChanged(ref field, value);
 		} = true;
+		/// <summary>Audio and subtitle track languages (#899). Off by default: experts opt in to extra columns.</summary>
+		[JsonPropertyName("ShowLanguagesColumn")]
+		public bool ShowLanguagesColumn {
+			get;
+			set => this.RaiseAndSetIfChanged(ref field, value);
+		}
 		// First-results hint: "drag the Preview handle / raise the thumbnail width" (one-shot)
 		[JsonPropertyName("ResultsHintDismissed")]
 		public bool ResultsHintDismissed {
@@ -565,6 +571,16 @@ namespace VDF.GUI.Data {
 			get;
 			set => this.RaiseAndSetIfChanged(ref field, Math.Clamp(value, 56, 1600));
 		} = 160;
+		/// <summary>
+		/// Show and use the date a file was last modified instead of the date it was created.
+		/// Copying or downloading a file sets its creation date to that moment; the modified
+		/// date usually survives both (#907).
+		/// </summary>
+		[JsonPropertyName("ResultsShowDateModified")]
+		public bool ResultsShowDateModified {
+			get;
+			set => this.RaiseAndSetIfChanged(ref field, value);
+		}
 		[JsonPropertyName("ResultsCompactRows")]
 		public bool ResultsCompactRows {
 			get;
@@ -644,7 +660,16 @@ namespace VDF.GUI.Data {
 		public List<string> QualityCriteriaOrder {
 			get;
 			set => this.RaiseAndSetIfChanged(ref field, value);
-		} = ["Duration", "Resolution", "Bitrate", "FPS", "Bits per pixel", "Audio Bitrate", "Size"];
+		} = ["Duration", "Resolution", "Bitrate", "FPS", "Bits per pixel", "Audio Bitrate", "Size", "SizeLarger"];
+		/// <summary>
+		/// Criteria the quality ranking ignores (#885). "Size (larger file wins)" starts
+		/// switched off, so nothing changes until someone turns it on (#895).
+		/// </summary>
+		[JsonPropertyName("QualityCriteriaDisabled")]
+		public List<string> QualityCriteriaDisabled {
+			get;
+			set => this.RaiseAndSetIfChanged(ref field, value);
+		} = ["SizeLarger"];
 
 		[JsonPropertyName("EnableScheduledScan")]
 		public bool EnableScheduledScan {

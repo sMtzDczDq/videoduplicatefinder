@@ -68,6 +68,22 @@ namespace VDF.Core {
 			public int Channels { get; set; }
 			[MemoryPackOrder(12)]
 			public string HdrFormat { get; set; }
+			/// <summary>
+			/// Embedded cover art or thumbnail (disposition attached_pic): a video stream of
+			/// one still picture, never the video itself (#905). False for entries probed
+			/// before this existed; <see cref="ViewModels.DuplicateItem.SelectVideoStream"/>
+			/// recognizes most of those by their codec.
+			/// </summary>
+			[MemoryPackOrder(13)]
+			public bool IsAttachedPicture { get; set; }
+			/// <summary>
+			/// The stream's language tag as the container stores it ("ger", "eng"), empty when
+			/// the stream has none or says "und" (#899). Null for entries probed before this
+			/// existed; <see cref="ScanEngine.BackfillTrackLanguages"/> fills those in for the
+			/// files that end up in the results.
+			/// </summary>
+			[MemoryPackOrder(14)]
+			public string? Language { get; set; }
 		}
 	}
 #pragma warning restore CS8618 // Non-nullable field is uninitialized.

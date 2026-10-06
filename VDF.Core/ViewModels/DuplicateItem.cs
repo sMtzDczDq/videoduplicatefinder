@@ -43,23 +43,18 @@ namespace VDF.Core.ViewModels {
 					for audio, it is the stream with the most channels,
 					In the case where several streams of the same type rate equally, the stream with the lowest index is chosen.
 				*/
-				int[] selVideo = { -1, 0 };
 				int[] selAudio = { -1, 0 };
 				for (int i = file.mediaInfo.Streams.Length - 1; i >= 0; i--) {
-					if (file.mediaInfo.Streams[i].CodecType?.Equals("video", StringComparison.OrdinalIgnoreCase) == true &&
-						file.mediaInfo.Streams[i].Width * file.mediaInfo.Streams[i].Height >= selVideo[1]) {
-						selVideo[0] = i;
-						selVideo[1] = file.mediaInfo.Streams[i].Width * file.mediaInfo.Streams[i].Height;
-					}
-					else if (file.mediaInfo.Streams[i].CodecType?.Equals("audio", StringComparison.OrdinalIgnoreCase) == true &&
+					if (file.mediaInfo.Streams[i].CodecType?.Equals("audio", StringComparison.OrdinalIgnoreCase) == true &&
 							 file.mediaInfo.Streams[i].Channels >= selAudio[1]) {
 						selAudio[0] = i;
 						selAudio[1] = file.mediaInfo.Streams[i].Channels;
 					}
 				}
 
-				if (selVideo[0] >= 0) {
-					int i = selVideo[0];
+				int selectedVideo = SelectVideoStream(file.mediaInfo.Streams);
+				if (selectedVideo >= 0) {
+					int i = selectedVideo;
 					Format = file.mediaInfo.Streams[i].CodecName ?? "<Unknown>";
 					Fps = file.mediaInfo.Streams[i].FrameRate;
 					BitRateKbs = Math.Round((decimal)file.mediaInfo.Streams[i].BitRate / 1000);
@@ -74,7 +69,7 @@ namespace VDF.Core.ViewModels {
 					AudioSampleRate = file.mediaInfo.Streams[i].SampleRate;
 					AudioBitRateKbs = Math.Round((decimal)file.mediaInfo.Streams[i].BitRate / 1000);
 				}
-
+				ApplyTrackLanguages(file.mediaInfo.Streams);
 			}
 			else {
 				//We have only one stream if its an image
@@ -85,6 +80,7 @@ namespace VDF.Core.ViewModels {
 			}
 			var fi = new FileInfo(Path);
 			DateCreated = file.DateCreated;
+			DateModified = file.DateModified;
 			// A missing file (deleted/offline entry included in the comparison) keeps its
 			// database-recorded size instead of a -1 sentinel that rendered as "-1.0 B".
 			SizeLong = fi.Exists ? fi.Length : file.FileSize;
@@ -93,6 +89,90 @@ namespace VDF.Core.ViewModels {
 			Similarity = (1f - difference) * 100;
 			IsImage = file.IsImage;
 		}
+
+		/// <summary>
+		/// The video stream the metadata columns describe: the one with the highest resolution
+		/// (ties: the lowest index), as FFmpeg picks it, but never embedded cover art while the
+		/// file has a real video stream. FFmpeg skips attached pictures in its own selection;
+		/// VDF did not, so an mp4 with a 1080p cover over 720p video was listed as a 1080p
+		/// mjpeg file (#905). Entries probed before the attached-picture flag existed have it
+		/// false, so a still-image codec next to a moving-picture one counts as a cover too.
+		/// Returns -1 when there is no video stream.
+		/// </summary>
+		internal static int SelectVideoStream(MediaInfo.StreamInfo[] streams) {
+			static bool IsVideo(MediaInfo.StreamInfo s) => s.CodecType?.Equals("video", StringComparison.OrdinalIgnoreCase) == true;
+			bool hasMovingPicture = System.Linq.Enumerable.Any(streams, s => IsVideo(s) && !s.IsAttachedPicture && !IsStillImageCodec(s.CodecName));
+			bool IsCover(MediaInfo.StreamInfo s) => s.IsAttachedPicture || (hasMovingPicture && IsStillImageCodec(s.CodecName));
+
+			int best = -1, bestCover = -1;
+			long bestPixels = -1, bestCoverPixels = -1;
+			for (int i = 0; i < streams.Length; i++) {
+				var s = streams[i];
+				if (!IsVideo(s)) continue;
+				long pixels = (long)s.Width * s.Height;
+				if (IsCover(s)) {
+					if (pixels > bestCoverPixels) { bestCover = i; bestCoverPixels = pixels; }
+				}
+				else if (pixels > bestPixels) { best = i; bestPixels = pixels; }
+			}
+			return best >= 0 ? best : bestCover;
+		}
+
+		/// <summary>
+		/// Fills <see cref="AudioLanguages"/> and <see cref="SubtitleLanguages"/> from the
+		/// streams, one entry per track in file order (#899). A track without a language tag
+		/// reads "?". Audio stays empty when no audio track is tagged at all: every home video
+		/// would otherwise read "?", and the Format column already says there is audio.
+		/// Subtitles are listed even untagged, because having them at all is the information.
+		/// </summary>
+		internal void ApplyTrackLanguages(MediaInfo.StreamInfo[] streams) {
+			AudioLanguages = JoinLanguages(streams, "audio", listUntaggedOnly: false);
+			SubtitleLanguages = JoinLanguages(streams, "subtitle", listUntaggedOnly: true);
+		}
+
+		static string JoinLanguages(MediaInfo.StreamInfo[] streams, string codecType, bool listUntaggedOnly) {
+			var codes = new List<string>();
+			bool anyTagged = false;
+			foreach (var s in streams) {
+				if (s.CodecType?.Equals(codecType, StringComparison.OrdinalIgnoreCase) != true)
+					continue;
+				string code = DisplayLanguage(s.Language);
+				anyTagged |= code.Length > 0;
+				codes.Add(code.Length > 0 ? code : "?");
+			}
+			return anyTagged || listUntaggedOnly ? string.Join(", ", codes) : string.Empty;
+		}
+
+		/// <summary>
+		/// "GER" for "ger" and "deu" alike: ISO 639-2 has two codes for twenty languages, and
+		/// Matroska muxers write the bibliographic one while others write the terminology one,
+		/// so two copies of the same film would otherwise seem to differ. Unified on the
+		/// bibliographic code because that is what mkvtoolnix and most players show.
+		/// </summary>
+		internal static string DisplayLanguage(string? tag) {
+			if (string.IsNullOrWhiteSpace(tag))
+				return string.Empty;
+			tag = tag.Trim().ToLowerInvariant();
+			if (tag == "und")
+				return string.Empty;
+			return (TerminologyToBibliographic.TryGetValue(tag, out var bibliographic) ? bibliographic : tag).ToUpperInvariant();
+		}
+
+		static readonly Dictionary<string, string> TerminologyToBibliographic = new() {
+			["sqi"] = "alb", ["hye"] = "arm", ["eus"] = "baq", ["mya"] = "bur", ["zho"] = "chi",
+			["ces"] = "cze", ["nld"] = "dut", ["fra"] = "fre", ["kat"] = "geo", ["deu"] = "ger",
+			["ell"] = "gre", ["isl"] = "ice", ["mkd"] = "mac", ["mri"] = "mao", ["msa"] = "may",
+			["fas"] = "per", ["ron"] = "rum", ["slk"] = "slo", ["bod"] = "tib", ["cym"] = "wel",
+		};
+
+		/// <summary>Codecs FFmpeg uses for embedded pictures. mjpeg is also real (motion JPEG) video, which is why it only counts next to another video stream.</summary>
+		static bool IsStillImageCodec(string? codec) => codec is not null && (
+			codec.Equals("mjpeg", StringComparison.OrdinalIgnoreCase) ||
+			codec.Equals("png", StringComparison.OrdinalIgnoreCase) ||
+			codec.Equals("bmp", StringComparison.OrdinalIgnoreCase) ||
+			codec.Equals("gif", StringComparison.OrdinalIgnoreCase) ||
+			codec.Equals("webp", StringComparison.OrdinalIgnoreCase) ||
+			codec.Equals("tiff", StringComparison.OrdinalIgnoreCase));
 
 		public Guid GroupId { get; set; }
 		/// <summary>Encoded thumbnails (JPEG bytes; or the shared placeholder bytes when extraction failed).</summary>
@@ -143,6 +223,12 @@ namespace VDF.Core.ViewModels {
 		public bool IsBestBitRateKbs { get; set; }
 		[JsonInclude]
 		public string HdrFormat { get; set; } = string.Empty;
+		/// <summary>"GER, ENG": language of every audio track, see <see cref="ApplyTrackLanguages"/>.</summary>
+		[JsonInclude]
+		public string AudioLanguages { get; set; } = string.Empty;
+		/// <summary>"GER, ?": language of every subtitle track; empty when the file has none.</summary>
+		[JsonInclude]
+		public string SubtitleLanguages { get; set; } = string.Empty;
 		public bool IsBestHdrFormat { get; set; }
 		[JsonIgnore]
 		public int FolderDepth {
@@ -167,6 +253,9 @@ namespace VDF.Core.ViewModels {
 		public bool IsBestFps { get; set; }
 		[JsonInclude]
 		public DateTime DateCreated { get; set; }
+		/// <summary>Last write time. Default for results saved before it was recorded.</summary>
+		[JsonInclude]
+		public DateTime DateModified { get; set; }
 		[JsonInclude]
 		public DuplicateFlags Flags { get; set; }
 

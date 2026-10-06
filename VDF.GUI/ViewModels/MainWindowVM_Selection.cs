@@ -183,7 +183,7 @@ namespace VDF.GUI.ViewModels {
 			using var undoBatch = BeginSelectionUndoBatch();
 			ForEachGroupCluster(ScopedDuplicates(), (d, first) => d.EqualsButQuality(first), (first, cluster) => {
 				cluster.Add(first);
-				cluster = cluster.OrderByDescending(s => s.ItemInfo.DateCreated).ToList();
+				cluster = cluster.OrderByDescending(s => s.ShownDate).ToList();
 				cluster[0].Checked = false;
 				for (int i = 1; i < cluster.Count; i++)
 					cluster[i].Checked = true;
@@ -194,7 +194,7 @@ namespace VDF.GUI.ViewModels {
 			using var undoBatch = BeginSelectionUndoBatch();
 			ForEachGroupCluster(ScopedDuplicates(), (d, first) => d.EqualsButQuality(first), (first, cluster) => {
 				cluster.Add(first);
-				cluster = cluster.OrderBy(s => s.ItemInfo.DateCreated).ToList();
+				cluster = cluster.OrderBy(s => s.ShownDate).ToList();
 				cluster[0].Checked = false;
 				for (int i = 1; i < cluster.Count; i++)
 					cluster[i].Checked = true;
@@ -203,12 +203,15 @@ namespace VDF.GUI.ViewModels {
 
 		public ReactiveCommand<Unit, Unit> CheckLowestQualityCommand => ReactiveCommand.CreateFromTask(async () => {
 			var dlg = new QualityOrderDialog();
-			var result = await dlg.ShowDialog<List<string>>(ApplicationHelpers.MainWindow);
-			if (result == null || result.Count == 0) return;
-			QualityCriteriaOrder = result;
+			var result = await dlg.ShowDialog<QualityOrderResult?>(ApplicationHelpers.MainWindow);
+			if (result == null || result.Order.Count == 0) return;
+			QualityCriteriaOrder = result.Order;
+			SettingsFile.Instance.QualityCriteriaDisabled = result.Disabled;
+			// The BEST badges and the green size follow the new order at once.
+			RebuildResultsList();
 
 			using var undoBatch = BeginSelectionUndoBatch();
-			var criteria = ResolveCriteria(QualityCriteriaOrder);
+			var criteria = ActiveQualityCriteria.ToList();
 			ForEachGroupCluster(ScopedDuplicates(), (d, first) => d.EqualsButQuality(first), (first, cluster) => {
 				cluster.Insert(0, first);
 
@@ -360,14 +363,17 @@ namespace VDF.GUI.ViewModels {
 			if (selectedItems.Count == 0) return;
 
 			IsBusy = true;
+			BusyProgress = 0;
 			IsBusyOverlayText = string.Format(App.Lang["Busy.Copying"], 0, selectedItems.Count);
 			int errorCounter;
 			var renames = new List<(DuplicateItemVM Item, string NewPath)>();
 			try {
 				errorCounter = await Task.Run(() =>
 					Utils.FileUtils.CopyFile(selectedItems, result[0], true, false, renames,
-						(done, total) => Dispatcher.UIThread.Post(() =>
-							IsBusyOverlayText = string.Format(App.Lang["Busy.Copying"], done, total))));
+						(done, total, fraction) => Dispatcher.UIThread.Post(() => {
+							IsBusyOverlayText = string.Format(App.Lang["Busy.Copying"], done, total);
+							if (IsBusy) BusyProgress = fraction;
+						})));
 			}
 			finally {
 				IsBusy = false;
@@ -404,6 +410,7 @@ namespace VDF.GUI.ViewModels {
 			if (selectedItems.Count == 0) return;
 
 			IsBusy = true;
+			BusyProgress = 0;
 			IsBusyOverlayText = string.Format(App.Lang["Busy.Moving"], 0, selectedItems.Count);
 			int errorCounter;
 			var renames = new List<(DuplicateItemVM Item, string NewPath)>();
@@ -416,8 +423,10 @@ namespace VDF.GUI.ViewModels {
 							dbEntries[item] = dbEntry!;
 					}
 					int errors = Utils.FileUtils.CopyFile(selectedItems, result[0], true, true, renames,
-						(done, total) => Dispatcher.UIThread.Post(() =>
-							IsBusyOverlayText = string.Format(App.Lang["Busy.Moving"], done, total)));
+						(done, total, fraction) => Dispatcher.UIThread.Post(() => {
+							IsBusyOverlayText = string.Format(App.Lang["Busy.Moving"], done, total);
+							if (IsBusy) BusyProgress = fraction;
+						}));
 					foreach (var (item, newPath) in renames)
 						if (dbEntries.TryGetValue(item, out var entry))
 							ScanEngine.UpdateFilePathInDatabase(newPath, entry);
@@ -507,10 +516,10 @@ namespace VDF.GUI.ViewModels {
 
 				switch (data.DateTimeSelection) {
 				case 1: // check the newest copies, keep the oldest
-					cluster = cluster.OrderBy(s => s.ItemInfo.DateCreated).ToList();
+					cluster = cluster.OrderBy(s => s.ShownDate).ToList();
 					break;
 				case 2: // check the oldest copies, keep the newest
-					cluster = cluster.OrderByDescending(s => s.ItemInfo.DateCreated).ToList();
+					cluster = cluster.OrderByDescending(s => s.ShownDate).ToList();
 					break;
 				default:
 					if (data.IdenticalSelection == 0 && cluster.Count < visibleGroupSize[groupId]) {

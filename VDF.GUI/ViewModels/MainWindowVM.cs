@@ -192,8 +192,29 @@ namespace VDF.GUI.ViewModels {
 		bool _IsBusy;
 		public bool IsBusy {
 			get => _IsBusy;
-			set => this.RaiseAndSetIfChanged(ref _IsBusy, value);
+			set {
+				this.RaiseAndSetIfChanged(ref _IsBusy, value);
+				if (!value)
+					BusyProgress = null;
+			}
 		}
+		double? _BusyProgress;
+		/// <summary>
+		/// How far the current busy-overlay operation is, 0..1. Null (the default, and again
+		/// whenever the overlay closes) keeps the bar animating for operations that cannot
+		/// measure themselves; moving and copying files report their bytes (#879).
+		/// </summary>
+		public double? BusyProgress {
+			get => _BusyProgress;
+			set {
+				if (value == _BusyProgress) return;
+				this.RaiseAndSetIfChanged(ref _BusyProgress, value);
+				this.RaisePropertyChanged(nameof(BusyProgressIsIndeterminate));
+				this.RaisePropertyChanged(nameof(BusyProgressPercent));
+			}
+		}
+		public bool BusyProgressIsIndeterminate => BusyProgress == null;
+		public double BusyProgressPercent => Math.Round((BusyProgress ?? 0) * 100, 1);
 		bool _IsBusyCancelable;
 		/// <summary>Shows the busy overlay's Cancel button while a cancelable operation runs.</summary>
 		public bool IsBusyCancelable {
@@ -420,13 +441,18 @@ namespace VDF.GUI.ViewModels {
 			scheduledScanTimer.Start();
 			CheckScheduledScan();
 
+			// Skip the initial (empty) value: it rebuilt the list half a second after start,
+			// replacing results restored from the backup under the user's keyboard focus.
 			this.WhenAnyValue(vm => vm.FilterByPath)
+					.Skip(1)
 					.Throttle(TimeSpan.FromMilliseconds(500), RxSchedulers.MainThreadScheduler)
 						.Subscribe(_ => { RebuildSearchPathIndex(); RefreshResultsView(); });
 
 			SettingsFile.Instance.PropertyChanged += (_, e) => {
 				if (e.PropertyName == nameof(SettingsFile.EnablePartialClipDetection))
 					this.RaisePropertyChanged(nameof(ResultsShowClipOffsetColumn));
+				if (e.PropertyName == nameof(SettingsFile.ResultsShowDateModified))
+					RebuildResultsList();
 				// Editing any profile-managed knob re-derives the Setup screen's selection
 				// (switches the card to Custom when values no longer match a bundle).
 				if (e.PropertyName is nameof(SettingsFile.Percent)
@@ -954,7 +980,7 @@ namespace VDF.GUI.ViewModels {
 			var inv = System.Globalization.CultureInfo.InvariantCulture;
 			// UTF-8 BOM so Excel detects the encoding.
 			using var writer = new StreamWriter(path, append: false, new UTF8Encoding(encoderShouldEmitUTF8Identifier: true));
-			writer.WriteLine("GroupId,Path,SizeBytes,Duration,Resolution,Fps,BitrateKbs,AudioFormat,AudioSampleRate,Similarity,DateCreated,IsImage,Checked");
+			writer.WriteLine("GroupId,Path,SizeBytes,Duration,Resolution,Fps,BitrateKbs,AudioFormat,AudioSampleRate,Similarity,DateCreated,IsImage,Checked,AudioLanguages,SubtitleLanguages");
 			// Keep group members on adjacent rows regardless of list order.
 			foreach (var group in items.GroupBy(i => i.ItemInfo.GroupId))
 				foreach (var item in group) {
@@ -972,7 +998,9 @@ namespace VDF.GUI.ViewModels {
 						info.Similarity.ToString(inv),
 						info.DateCreated.ToString("yyyy-MM-dd HH:mm:ss", inv),
 						info.IsImage.ToString(),
-						item.Checked.ToString()));
+						item.Checked.ToString(),
+						Escape(info.AudioLanguages),
+						Escape(info.SubtitleLanguages)));
 				}
 		}
 
@@ -1884,7 +1912,7 @@ Non-Windows setup:
 			if (list.Count >= 2) {
 				var keeper = VDF.Core.Utils.QualityRanker.PickKeeper(
 					list.Select(l => l.Item).ToList(),
-					ResolveCriteria(QualityCriteriaOrder),
+					ActiveQualityCriteria,
 					d => d.ItemInfo.IsImage);
 				foreach (var entry in list)
 					entry.IsGroupBest = ReferenceEquals(entry.Item, keeper);
@@ -1905,7 +1933,7 @@ Non-Windows setup:
 
 			var keep = VDF.Core.Utils.QualityRanker.PickKeeper(
 				groupItems,
-				ResolveCriteria(QualityCriteriaOrder),
+				ActiveQualityCriteria,
 				d => d.ItemInfo.IsImage);
 
 			using var _ = BeginSelectionUndoBatch();
@@ -1913,6 +1941,19 @@ Non-Windows setup:
 			foreach (var item in groupItems)
 				if (item.ItemInfo.Path != keep.ItemInfo.Path)
 					item.Checked = true;
+		}
+
+		/// <summary>
+		/// Checks every member of the group, for groups where no copy is wanted (#894).
+		/// "Already deleted" entries are left alone: there is no file behind them to act on.
+		/// </summary>
+		public void CheckAllInGroup(Guid groupId) {
+			var groupItems = Duplicates.Where(d => d.ItemInfo.GroupId == groupId && !d.IsTombstone).ToList();
+			if (groupItems.Count == 0) return;
+
+			using var _ = BeginSelectionUndoBatch();
+			foreach (var item in groupItems)
+				item.Checked = true;
 		}
 
 		public ReactiveCommand<Unit, Unit> LoadThumbnailsForCheckedItemsCommand => ReactiveCommand.CreateFromTask(async () => {

@@ -109,6 +109,101 @@ public class AiComponentsTests {
 			AiComponents.RunDownloadsAsync(downloads, cts.Token));
 	}
 
+	/// <summary>A folder holding a runtime library file that will not load.</summary>
+	static string BrokenRuntimeFolder() {
+		string folder = Directory.CreateTempSubdirectory("vdf-ai-broken").FullName;
+		string name = OperatingSystem.IsWindows() ? "onnxruntime.dll"
+			: OperatingSystem.IsMacOS() ? $"libonnxruntime.{AiComponents.RuntimeVersion}.dylib"
+			: $"libonnxruntime.so.{AiComponents.RuntimeVersion}";
+		File.WriteAllBytes(Path.Combine(folder, name), new byte[4096]);
+		return folder;
+	}
+
+	/// <summary>
+	/// The reported crash: the downloaded runtime would not load (its Visual C++ runtime
+	/// was missing), the resolver fell through to default probing, and that bound Windows'
+	/// own older System32\onnxruntime.dll, which then failed with "Unable to find an entry
+	/// point named 'OrtGetApiBase'" (or an access violation on newer Windows builds).
+	/// </summary>
+	[Fact]
+	public void ResolveRuntimeImport_DownloadThatWillNotLoad_FailsInsteadOfFallingBackToAnotherOnnxRuntime() {
+		string folder = BrokenRuntimeFolder();
+		try {
+			string lib = Directory.GetFiles(folder).Single();
+
+			var ex = Assert.Throws<InvalidOperationException>(() => AiComponents.ResolveRuntimeImport("onnxruntime", lib));
+
+			Assert.Contains(lib, ex.Message);
+			Assert.Contains(AiComponents.RuntimeVersion, ex.Message);
+		}
+		finally {
+			Directory.Delete(folder, true);
+		}
+	}
+
+	[Fact]
+	public void ResolveRuntimeImport_NothingDownloaded_FallsThroughToDefaultProbing() {
+		// Test runs (and a runtime placed next to the executable) rely on default probing.
+		Assert.Equal(IntPtr.Zero, AiComponents.ResolveRuntimeImport("onnxruntime", null));
+		Assert.Equal(IntPtr.Zero, AiComponents.ResolveRuntimeImport("kernel32", @"C:\does\not\matter.dll"));
+	}
+
+	[Fact]
+	public void EnsureReady_RuntimeThatWillNotLoad_FailsBeforeTheScanStarts() {
+		string folder = BrokenRuntimeFolder();
+		File.WriteAllText(Path.Combine(folder, "runtime.version"), AiComponents.RuntimeVersion);
+		File.WriteAllBytes(Path.Combine(folder, AiComponents.ModelFileName), new byte[16]);
+		try {
+			AiComponents.TestAiFolder.Value = folder;
+			// Every file is in place, so the settings page says Ready...
+			Assert.Equal(AiComponentsState.Ready, AiComponents.GetState());
+
+			// ...but the scan start (PrepareSearch / PrepareCompare) must stop with the reason.
+			var ex = Assert.Throws<InvalidOperationException>(AiComponents.EnsureReady);
+			Assert.Contains("could not be loaded", ex.Message);
+		}
+		finally {
+			AiComponents.TestAiFolder.Value = null;
+			Directory.Delete(folder, true);
+		}
+	}
+
+	[Fact]
+	public void DescribeRuntimeLoadFailure_NamesTheMissingVcRuntimeAndWhereToGetIt() {
+		string message = AiComponents.DescribeRuntimeLoadFailure(@"C:\vdf\ai\onnxruntime.dll", "The specified module could not be found.",
+			new[] { "VCRUNTIME140_1.dll", "MSVCP140_1.dll" });
+
+		Assert.Contains(@"C:\vdf\ai\onnxruntime.dll", message);
+		Assert.Contains("The specified module could not be found.", message);
+		Assert.Contains("Visual C++ Redistributable", message);
+		Assert.Contains("VCRUNTIME140_1.dll, MSVCP140_1.dll", message);
+		Assert.Contains("https://aka.ms/vc14/vc_redist.", message);
+	}
+
+	[Fact]
+	public void DescribeRuntimeLoadFailure_DoesNotBlameTheVcRuntimeWhenItIsInstalled() {
+		string message = AiComponents.DescribeRuntimeLoadFailure("/state/ai/libonnxruntime.so.1.23.2", "invalid ELF header", Array.Empty<string>());
+
+		Assert.Contains("invalid ELF header", message);
+		Assert.DoesNotContain("Visual C++", message);
+	}
+
+	[Fact]
+	public void MissingVcRuntimeLibraries_ReportsExactlyWhatTheSystemLacks() {
+		List<string> missing = AiComponents.MissingVcRuntimeLibraries();
+
+		if (!OperatingSystem.IsWindows()) {
+			Assert.Empty(missing);
+			return;
+		}
+		// No false alarms where the redistributable is installed (a misspelled name would
+		// show up here), and every absent one is named.
+		string[] expected = new[] { "VCRUNTIME140.dll", "VCRUNTIME140_1.dll", "MSVCP140.dll", "MSVCP140_1.dll" }
+			.Where(dll => !File.Exists(Path.Combine(Environment.SystemDirectory, dll)))
+			.ToArray();
+		Assert.Equal(expected, missing);
+	}
+
 	[Fact]
 	public void EnsureReady_HonorsTestOverride() {
 		string? prev = AiComponents.TestOverrideModelPath;

@@ -51,7 +51,7 @@ namespace VDF.Core.AI {
 		const string ModelFallbackUrl = "https://huggingface.co/Xenova/dinov2-small/resolve/main/onnx/model_quantized.onnx";
 		const string VersionMarkerFileName = "runtime.version";
 
-		public static string AiFolder => Path.Combine(CoreUtils.StateFolder, "ai");
+		public static string AiFolder => TestAiFolder.Value ?? Path.Combine(CoreUtils.StateFolder, "ai");
 		public static string ModelPath => TestOverrideModelPath ?? Path.Combine(AiFolder, ModelFileName);
 
 		/// <summary>
@@ -61,8 +61,23 @@ namespace VDF.Core.AI {
 		/// </summary>
 		internal static string? TestOverrideModelPath;
 
+		/// <summary>
+		/// Test hook: redirects AiFolder for the calling test's async flow only. AsyncLocal
+		/// rather than a static field because OnnxEmbedderTests load the real runtime in
+		/// parallel and must not resolve it from another test's folder.
+		/// </summary>
+		internal static readonly AsyncLocal<string?> TestAiFolder = new();
+
 		static bool resolverInstalled;
 		static readonly object resolverLock = new();
+
+		/// <summary>
+		/// The Visual C++ runtime the pinned Windows build links dynamically (dumpbin
+		/// /dependents of onnxruntime.dll 1.23.2). VDF itself is Native AOT and its FFmpeg
+		/// is static, so machines without the redistributable run VDF fine until AI matching
+		/// tries to load the runtime. Recheck when bumping RuntimeVersion.
+		/// </summary>
+		static readonly string[] VcRuntimeLibraries = { "VCRUNTIME140.dll", "VCRUNTIME140_1.dll", "MSVCP140.dll", "MSVCP140_1.dll" };
 
 		public static AiComponentsState GetState() {
 			bool runtime = FindRuntimeLibrary() != null && HasCurrentRuntimeVersion();
@@ -75,15 +90,20 @@ namespace VDF.Core.AI {
 
 		public static bool IsReady => GetState() == AiComponentsState.Ready;
 
-		/// <summary>Throws with an actionable message when the components are not present.</summary>
+		/// <summary>
+		/// Throws with an actionable message when the components are not present, or when
+		/// the runtime is present but cannot be loaded (the scan should fail at its start,
+		/// not after the file list has been built).
+		/// </summary>
 		public static void EnsureReady() {
 			if (TestOverrideModelPath != null)
 				return;
 			AiComponentsState state = GetState();
-			if (state == AiComponentsState.Ready) return;
-			throw new InvalidOperationException(
-				$"AI matching components are not available ({state}). " +
-				$"Download them in Settings → Matching, or place onnxruntime {RuntimeVersion} and {ModelFileName} into '{AiFolder}'.");
+			if (state != AiComponentsState.Ready)
+				throw new InvalidOperationException(
+					$"AI matching components are not available ({state}). " +
+					$"Download them in Settings → Matching, or place onnxruntime {RuntimeVersion} and {ModelFileName} into '{AiFolder}'.");
+			LoadRuntime();
 		}
 
 		static bool HasCurrentRuntimeVersion() {
@@ -123,16 +143,71 @@ namespace VDF.Core.AI {
 			if (resolverInstalled) return;
 			lock (resolverLock) {
 				if (resolverInstalled) return;
-				NativeLibrary.SetDllImportResolver(typeof(InferenceSession).Assembly, (name, _, _) => {
-					if (!name.Contains("onnxruntime", StringComparison.OrdinalIgnoreCase))
-						return IntPtr.Zero;
-					string? lib = FindRuntimeLibrary();
-					if (lib != null && NativeLibrary.TryLoad(lib, out IntPtr handle))
-						return handle;
-					return IntPtr.Zero; // fall through to default probing (PATH / app dir)
-				});
+				NativeLibrary.SetDllImportResolver(typeof(InferenceSession).Assembly,
+					(name, _, _) => ResolveRuntimeImport(name, FindRuntimeLibrary()));
 				resolverInstalled = true;
 			}
+		}
+
+		/// <summary>
+		/// Loads the downloaded runtime before anything touches an OnnxRuntime type. A load
+		/// failure inside the wrapper's static constructor would surface as a
+		/// TypeInitializationException that stays cached for the rest of the process, so
+		/// installing the missing piece would not help until VDF is restarted.
+		/// </summary>
+		internal static void LoadRuntime() {
+			EnsureResolverInstalled();
+			string? lib = FindRuntimeLibrary();
+			if (lib != null)
+				LoadRuntimeLibrary(lib);
+		}
+
+		/// <summary>
+		/// The DllImport resolver. Nothing downloaded falls through to default probing (test
+		/// runs ship the runtime next to their binaries). A download that will not load must
+		/// NOT fall through: Windows has its own onnxruntime.dll in System32 (Windows ML), and
+		/// default probing binds to that one. It is an older version, so the wrapper died with
+		/// "Unable to find an entry point named 'OrtGetApiBase'" on older Windows builds and
+		/// with an access violation on newer ones.
+		/// </summary>
+		internal static IntPtr ResolveRuntimeImport(string libraryName, string? downloadedLibrary) {
+			if (!libraryName.Contains("onnxruntime", StringComparison.OrdinalIgnoreCase) || downloadedLibrary == null)
+				return IntPtr.Zero;
+			return LoadRuntimeLibrary(downloadedLibrary);
+		}
+
+		// Loading an already loaded path just returns the same module, so no caching needed.
+		static IntPtr LoadRuntimeLibrary(string lib) {
+			try {
+				return NativeLibrary.Load(lib);
+			}
+			catch (Exception e) when (e is DllNotFoundException or BadImageFormatException) {
+				throw new InvalidOperationException(DescribeRuntimeLoadFailure(lib, e.Message, MissingVcRuntimeLibraries()), e);
+			}
+		}
+
+		internal static string DescribeRuntimeLoadFailure(string lib, string reason, IReadOnlyList<string> missingVcRuntime) {
+			string message = $"ONNX Runtime {RuntimeVersion} could not be loaded from '{lib}': {reason}";
+			if (missingVcRuntime.Count == 0)
+				return message;
+			string arch = RuntimeInformation.ProcessArchitecture == Architecture.Arm64 ? "arm64" : "x64";
+			return message + Environment.NewLine +
+				$"The Microsoft Visual C++ Redistributable is missing or outdated (not found: {string.Join(", ", missingVcRuntime)}). " +
+				$"Install the current one from https://aka.ms/vc14/vc_redist.{arch}.exe and restart VDF.";
+		}
+
+		/// <summary>The VC++ runtime libraries the Windows runtime needs that the OS cannot find.</summary>
+		internal static List<string> MissingVcRuntimeLibraries() {
+			var missing = new List<string>();
+			if (!OperatingSystem.IsWindows())
+				return missing;
+			foreach (string dll in VcRuntimeLibraries) {
+				if (NativeLibrary.TryLoad(dll, out IntPtr handle))
+					NativeLibrary.Free(handle);
+				else
+					missing.Add(dll);
+			}
+			return missing;
 		}
 
 		internal static (Uri Url, string ArchiveFileName) GetRuntimeDownloadPlan() {

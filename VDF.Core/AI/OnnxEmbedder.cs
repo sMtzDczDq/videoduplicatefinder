@@ -40,7 +40,7 @@ namespace VDF.Core.AI {
 		readonly bool clsFromHiddenState;
 
 		public OnnxEmbedder(string modelPath) {
-			AiComponents.EnsureResolverInstalled();
+			AiComponents.LoadRuntime();
 			// InferenceSession does NOT take ownership of caller-supplied options —
 			// without the using this native handle waited for its finalizer.
 			using var options = new SessionOptions();

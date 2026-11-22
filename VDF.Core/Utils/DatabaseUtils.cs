@@ -63,7 +63,7 @@ namespace VDF.Core.Utils {
 		/// cannot be parsed. Used by the main loader and the standalone SQLite exporter; the
 		/// format knowledge lives in exactly one place.
 		/// </summary>
-		internal static DatabaseWrapper? ReadDatabaseFromFile(string path) {
+		internal static DatabaseWrapper? ReadDatabaseFromFile(string path, bool logLegacyFormat = false) {
 			FileInfo databaseFile = new(path);
 			if (!databaseFile.Exists || databaseFile.Length == 0)
 				return null;
@@ -80,6 +80,8 @@ namespace VDF.Core.Utils {
 					?? throw new InvalidDataException("Database payload deserialized to null.");
 			}
 			// Legacy protobuf-net database (3.x / early 4.x).
+			if (logLegacyFormat)
+				Logger.Instance.Info("Legacy database format detected — it will be stored in the new format on the next save.");
 			file.Position = 0;
 			byte[] raw = new byte[file.Length];
 			file.ReadExactly(raw);
@@ -105,7 +107,7 @@ namespace VDF.Core.Utils {
 			Logger.Instance.Info("Found previously scanned files, importing...");
 			var st = Stopwatch.StartNew();
 			try {
-				DbWrapper = ReadDatabaseFromFile(databaseFile.FullName) ?? throw new InvalidDataException("Empty or unreadable database.");
+				DbWrapper = ReadDatabaseFromFile(databaseFile.FullName, logLegacyFormat: true) ?? throw new InvalidDataException("Empty or unreadable database.");
 			}
 			catch (Exception ex) {
 				st.Stop();

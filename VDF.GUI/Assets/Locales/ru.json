@@ -254,6 +254,7 @@
 	"MainWindow.Selection.SavedExpressions": "Сохранённые выражения",
 	"MainWindow.Selection.CheckIdenticalExceptSizeKeepSmallest": "Отметить 100% идентичные, кроме размера (Оставить наименьший)",
 	"MainWindow.Selection.CheckIdenticalKeepFirst": "Отметить 100% идентичные (Оставить первый)",
+	"MainWindow.Selection.CheckIdenticalKeepLongestFilename": "Отметить 100% идентичные, кроме размера (Оставить с самым длинным именем файла)",
 	"MainWindow.Selection.CheckLowestQuality": "Отметить с наименьшим качеством",
 	"MainWindow.Selection.CheckMissingFiles": "Отметить отсутствующие файлы (больше не на диске)",
 	"MainWindow.Selection.CheckNewest": "Отметить самые новые",
